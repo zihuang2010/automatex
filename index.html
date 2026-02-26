@@ -1,271 +1,435 @@
 <!doctype html>
 <html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8" />
+        <link rel="stylesheet" href="/src/styles.css" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>AutomateX Workspace PRO v2</title>
+    </head>
 
-<head>
-  <meta charset="UTF-8" />
-  <link rel="stylesheet" href="/src/styles.css" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AutomateX Workspace PRO v2</title>
-</head>
-
-<body>
-  <!-- ===== 开屏 ===== -->
-  <div class="splash" id="splash">
-    <div class="absolute inset-0 overflow-hidden pointer-events-none">
-      <div class="splash-blob splash-blob-1"></div>
-      <div class="splash-blob splash-blob-2"></div>
-      <div class="splash-blob splash-blob-3"></div>
-    </div>
-    <div class="splash-orbit splash-orbit-1"></div>
-    <div class="splash-orbit splash-orbit-2"></div>
-    <div class="splash-orbit splash-orbit-3"></div>
-    <div class="splash-grid"></div>
-    <div class="splash-center">
-      <div class="splash-glow"></div>
-      <div class="splash-logo-wrap">
-        <svg class="splash-logo" viewBox="0 0 120 120" width="96" height="96">
-          <defs>
-            <linearGradient id="sg1" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="#6366f1" />
-              <stop offset="50%" stop-color="#3b82f6" />
-              <stop offset="100%" stop-color="#06b6d4" />
-            </linearGradient>
-            <linearGradient id="sg2" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="#818cf8" />
-              <stop offset="100%" stop-color="#67e8f9" />
-            </linearGradient>
-            <filter id="sdrop">
-              <feDropShadow dx="0" dy="4" stdDeviation="16" flood-color="rgba(99,102,241,0.5)" />
-            </filter>
-          </defs>
-          <g filter="url(#sdrop)">
-            <rect x="15" y="15" width="90" height="90" rx="26" fill="url(#sg1)" />
-            <path d="M67 30 L43 62 L56 62 L52 90 L77 55 L63 55 L67 30Z" fill="white" opacity="0.95" />
-            <circle cx="40" cy="85" r="3.5" fill="url(#sg2)" opacity="0.7" />
-            <circle cx="60" cy="85" r="3.5" fill="url(#sg2)" opacity="0.5" />
-            <circle cx="80" cy="85" r="3.5" fill="url(#sg2)" opacity="0.7" />
-            <line x1="44" y1="85" x2="56" y2="85" stroke="url(#sg2)" stroke-width="1.5" opacity="0.4" />
-            <line x1="64" y1="85" x2="76" y2="85" stroke="url(#sg2)" stroke-width="1.5" opacity="0.4" />
-          </g>
-        </svg>
-      </div>
-      <h1 class="splash-name">AutomateX</h1>
-      <p class="splash-tagline">Device Automation Platform</p>
-      <div class="splash-time">--:--</div>
-      <div class="splash-spinner">
-        <svg viewBox="0 0 50 50" width="32" height="32">
-          <circle cx="25" cy="25" r="20" fill="none" stroke="rgba(99,102,241,0.08)" stroke-width="2.5" />
-          <circle class="spinner-arc" cx="25" cy="25" r="20" fill="none" stroke="url(#sg1)" stroke-width="2.5"
-            stroke-linecap="round" stroke-dasharray="70 126" />
-        </svg>
-      </div>
-      <span class="splash-version">v2.5.1-EXEC</span>
-    </div>
-  </div>
-
-  <!-- ===== 主应用 ===== -->
-  <div class="app h-screen flex flex-col overflow-hidden" id="app">
-
-    <!-- Header (code.html style) -->
-    <header class="bg-white border-b border-slate-200 px-5 flex items-center justify-between shrink-0 z-30 h-10">
-      <div class="flex items-center space-x-3">
-        <div class="bg-[var(--action-blue)] p-1 rounded text-white">
-          <span class="material-symbols-outlined text-base fill-1">bolt</span>
+    <body>
+        <!-- ===== 开屏 ===== -->
+        <div class="splash" id="splash">
+            <div class="absolute inset-0 overflow-hidden pointer-events-none">
+                <div class="splash-blob splash-blob-1"></div>
+                <div class="splash-blob splash-blob-2"></div>
+                <div class="splash-blob splash-blob-3"></div>
+            </div>
+            <div class="splash-orbit splash-orbit-1"></div>
+            <div class="splash-orbit splash-orbit-2"></div>
+            <div class="splash-orbit splash-orbit-3"></div>
+            <div class="splash-grid"></div>
+            <div class="splash-center">
+                <div class="splash-glow"></div>
+                <div class="splash-logo-wrap">
+                    <svg class="splash-logo" viewBox="0 0 120 120" width="96" height="96">
+                        <defs>
+                            <linearGradient id="sg1" x1="0%" y1="0%" x2="100%" y2="100%">
+                                <stop offset="0%" stop-color="#6366f1" />
+                                <stop offset="50%" stop-color="#3b82f6" />
+                                <stop offset="100%" stop-color="#06b6d4" />
+                            </linearGradient>
+                            <linearGradient id="sg2" x1="0%" y1="0%" x2="100%" y2="100%">
+                                <stop offset="0%" stop-color="#818cf8" />
+                                <stop offset="100%" stop-color="#67e8f9" />
+                            </linearGradient>
+                            <filter id="sdrop">
+                                <feDropShadow
+                                    dx="0"
+                                    dy="4"
+                                    stdDeviation="16"
+                                    flood-color="rgba(99,102,241,0.5)"
+                                />
+                            </filter>
+                        </defs>
+                        <g filter="url(#sdrop)">
+                            <rect x="15" y="15" width="90" height="90" rx="26" fill="url(#sg1)" />
+                            <path
+                                d="M67 30 L43 62 L56 62 L52 90 L77 55 L63 55 L67 30Z"
+                                fill="white"
+                                opacity="0.95"
+                            />
+                            <circle cx="40" cy="85" r="3.5" fill="url(#sg2)" opacity="0.7" />
+                            <circle cx="60" cy="85" r="3.5" fill="url(#sg2)" opacity="0.5" />
+                            <circle cx="80" cy="85" r="3.5" fill="url(#sg2)" opacity="0.7" />
+                            <line
+                                x1="44"
+                                y1="85"
+                                x2="56"
+                                y2="85"
+                                stroke="url(#sg2)"
+                                stroke-width="1.5"
+                                opacity="0.4"
+                            />
+                            <line
+                                x1="64"
+                                y1="85"
+                                x2="76"
+                                y2="85"
+                                stroke="url(#sg2)"
+                                stroke-width="1.5"
+                                opacity="0.4"
+                            />
+                        </g>
+                    </svg>
+                </div>
+                <h1 class="splash-name">AutomateX</h1>
+                <p class="splash-tagline">Device Automation Platform</p>
+                <div class="splash-time">--:--</div>
+                <div class="splash-spinner">
+                    <svg viewBox="0 0 50 50" width="32" height="32">
+                        <circle
+                            cx="25"
+                            cy="25"
+                            r="20"
+                            fill="none"
+                            stroke="rgba(99,102,241,0.08)"
+                            stroke-width="2.5"
+                        />
+                        <circle
+                            class="spinner-arc"
+                            cx="25"
+                            cy="25"
+                            r="20"
+                            fill="none"
+                            stroke="url(#sg1)"
+                            stroke-width="2.5"
+                            stroke-linecap="round"
+                            stroke-dasharray="70 126"
+                        />
+                    </svg>
+                </div>
+                <span class="splash-version">v2.5.1-EXEC</span>
+            </div>
         </div>
-        <div class="flex items-baseline space-x-2">
-          <h1 class="text-xs font-black tracking-tight text-slate-800 leading-none">AutomateX Workspace <span
-              class="text-[var(--action-blue)]">PRO</span></h1>
-          <span
-            class="text-[8px] text-slate-400 font-bold uppercase tracking-widest border-l border-slate-200 pl-2">Enterprise
-            Client</span>
-        </div>
-      </div>
-      <div class="flex items-center">
-        <div class="flex items-center text-slate-500 font-bold text-[10px] uppercase tracking-widest"
-          id="topbar-status">
-          <span class="pulsing-dot">Connected</span>
-        </div>
-      </div>
-    </header>
 
-    <!-- 三栏主体 -->
-    <main class="flex-1 p-3 flex gap-4 overflow-hidden">
+        <!-- ===== 主应用 ===== -->
+        <div class="app h-screen flex flex-col overflow-hidden" id="app">
+            <!-- Header (code.html style) -->
+            <header
+                class="bg-white border-b border-slate-200 px-5 flex items-center justify-between shrink-0 z-30 h-10"
+            >
+                <div class="flex items-center space-x-3">
+                    <div class="bg-[var(--action-blue)] p-1 rounded text-white">
+                        <span class="material-symbols-outlined text-base fill-1">bolt</span>
+                    </div>
+                    <div class="flex items-baseline space-x-2">
+                        <h1 class="text-xs font-black tracking-tight text-slate-800 leading-none">
+                            AutomateX Workspace <span class="text-[var(--action-blue)]">PRO</span>
+                        </h1>
+                        <span
+                            class="text-[8px] text-slate-400 font-bold uppercase tracking-widest border-l border-slate-200 pl-2"
+                            >Enterprise Client</span
+                        >
+                    </div>
+                </div>
+                <div class="flex items-center">
+                    <div
+                        class="flex items-center text-slate-500 font-bold text-[10px] uppercase tracking-widest"
+                        id="topbar-status"
+                    >
+                        <span class="pulsing-dot">Connected</span>
+                    </div>
+                </div>
+            </header>
 
-      <!-- 左栏：设备管理 -->
-      <aside
-        class="w-[280px] bg-white rounded-md border border-[var(--panel-border)] shadow-sm flex flex-col h-full overflow-hidden shrink-0">
-        <div class="p-3 border-b border-slate-100 flex justify-between items-center bg-slate-50/30">
-          <h2 class="text-[10px] font-black text-slate-500 uppercase tracking-widest">Devices Management</h2>
-          <span class="text-[9px] font-bold text-slate-400 bg-slate-200/50 px-1.5 py-0.5 rounded" id="dev-count">0
-            Total</span>
-        </div>
-        <div class="flex-1 overflow-y-auto" id="device-tree">
-          <div class="empty-hint">Click <strong>WiFi</strong> or <strong>USB</strong> to add devices</div>
-        </div>
-        <div class="p-3 border-t border-slate-100 bg-white space-y-2">
-          <div class="grid grid-cols-3 gap-1.5">
-            <button
-              class="flex flex-col items-center justify-center py-2 bg-white border border-slate-200 text-slate-500 hover:border-blue-500 hover:text-blue-600 rounded-lg transition-all text-[8px] font-black uppercase"
-              id="btn-add-device">
-              <span class="material-symbols-outlined text-base mb-0.5">wifi</span>WIFI
-            </button>
-            <button
-              class="flex flex-col items-center justify-center py-2 bg-white border border-slate-200 text-slate-500 hover:border-blue-500 hover:text-blue-600 rounded-lg transition-all text-[8px] font-black uppercase"
-              id="btn-scan-usb">
-              <span class="material-symbols-outlined text-base mb-0.5">usb</span>USB
-            </button>
-            <button
-              class="flex flex-col items-center justify-center py-2 bg-white border border-slate-200 text-slate-300 rounded-lg transition-all text-[8px] font-black uppercase disabled:opacity-50 disabled:cursor-not-allowed enabled:text-red-500 enabled:border-red-200 enabled:hover:bg-red-50 enabled:hover:border-red-400"
-              id="btn-remove-selected" disabled>
-              <span class="material-symbols-outlined text-base mb-0.5">delete</span>REMOVE
-            </button>
-          </div>
-          <div class="flex items-center justify-between pt-1">
-            <button class="text-slate-400 hover:text-slate-600 transition-colors" id="btn-settings">
-              <span class="material-symbols-outlined text-lg">settings</span>
-            </button>
-            <span class="text-[8px] font-bold text-slate-400 uppercase tracking-widest">v2.5.1-EXEC</span>
-          </div>
-        </div>
-      </aside>
+            <!-- 三栏主体 -->
+            <main class="flex-1 p-3 flex gap-3 overflow-hidden">
+                <!-- 左栏：设备管理 -->
+                <aside
+                    class="w-[280px] bg-white rounded-md border border-[var(--panel-border)] shadow-sm flex flex-col h-full overflow-hidden shrink-0"
+                >
+                    <div
+                        class="p-3 border-b border-slate-100 flex justify-between items-center bg-slate-50/30"
+                    >
+                        <h2 class="text-[10px] font-black text-slate-500 uppercase tracking-widest">
+                            Devices Management
+                        </h2>
+                        <span
+                            class="text-[9px] font-bold text-slate-400 bg-slate-200/50 px-1.5 py-0.5 rounded"
+                            id="dev-count"
+                            >0 Total</span
+                        >
+                    </div>
+                    <div class="flex-1 overflow-y-auto" id="device-tree">
+                        <div class="empty-hint">
+                            Click <strong>WiFi</strong> or <strong>USB</strong> to add devices
+                        </div>
+                    </div>
+                    <div class="p-3 border-t border-slate-100 bg-white space-y-2">
+                        <div class="grid grid-cols-3 gap-1.5">
+                            <button
+                                class="flex flex-col items-center justify-center py-2 bg-white border border-slate-200 text-slate-500 hover:border-blue-500 hover:text-blue-600 rounded-lg transition-all text-[8px] font-black uppercase"
+                                id="btn-add-device"
+                            >
+                                <span class="material-symbols-outlined text-base mb-0.5">wifi</span
+                                >WIFI
+                            </button>
+                            <button
+                                class="flex flex-col items-center justify-center py-2 bg-white border border-slate-200 text-slate-500 hover:border-blue-500 hover:text-blue-600 rounded-lg transition-all text-[8px] font-black uppercase"
+                                id="btn-scan-usb"
+                            >
+                                <span class="material-symbols-outlined text-base mb-0.5">usb</span
+                                >USB
+                            </button>
+                            <button
+                                class="flex flex-col items-center justify-center py-2 bg-white border border-slate-200 text-slate-300 rounded-lg transition-all text-[8px] font-black uppercase disabled:opacity-50 disabled:cursor-not-allowed enabled:text-red-500 enabled:border-red-200 enabled:hover:bg-red-50 enabled:hover:border-red-400"
+                                id="btn-remove-selected"
+                                disabled
+                            >
+                                <span class="material-symbols-outlined text-base mb-0.5"
+                                    >delete</span
+                                >REMOVE
+                            </button>
+                        </div>
+                        <div class="flex items-center justify-between pt-1">
+                            <button
+                                class="text-slate-400 hover:text-slate-600 transition-colors"
+                                id="btn-settings"
+                            >
+                                <span class="material-symbols-outlined text-lg">settings</span>
+                            </button>
+                            <span
+                                class="text-[8px] font-bold text-slate-400 uppercase tracking-widest"
+                                >v2.5.1-EXEC</span
+                            >
+                        </div>
+                    </div>
+                </aside>
 
-      <!-- 中栏：任务详情 -->
-      <section class="flex-1 flex flex-col h-full overflow-hidden min-w-0" id="col-mid">
-        <div class="empty-hint" style="padding:40px;text-align:center">Select a device to view tasks</div>
-      </section>
+                <!-- 中栏：任务详情 -->
+                <section class="flex-1 flex flex-col h-full overflow-hidden min-w-0" id="col-mid">
+                    <div class="empty-hint" style="padding: 40px; text-align: center">
+                        Select a device to view tasks
+                    </div>
+                </section>
 
-      <!-- 右栏：全局队列 -->
-      <aside
-        class="w-[280px] bg-white rounded-md border border-[var(--panel-border)] shadow-sm flex flex-col h-full overflow-hidden shrink-0">
-        <div class="p-3 border-b border-slate-100 bg-slate-50/30 flex justify-between items-center">
-          <div>
-            <h2 class="text-[10px] font-black text-slate-500 uppercase tracking-widest leading-none">Global Queue</h2>
-            <p class="text-[9px] text-slate-400 font-bold mt-1 uppercase tracking-tighter queue-sub">0 Active Tasks</p>
-          </div>
-          <button class="material-symbols-outlined text-slate-400 text-base">filter_list</button>
+                <!-- 右栏：全局队列 -->
+                <aside
+                    class="w-[280px] bg-white rounded-md border border-[var(--panel-border)] shadow-sm flex flex-col h-full overflow-hidden shrink-0"
+                >
+                    <div
+                        class="p-3 border-b border-slate-100 bg-slate-50/30 flex justify-between items-center"
+                    >
+                        <div>
+                            <h2
+                                class="text-[10px] font-black text-slate-500 uppercase tracking-widest leading-none"
+                            >
+                                Global Queue
+                            </h2>
+                            <p
+                                class="text-[9px] text-slate-400 font-bold mt-1 uppercase tracking-tighter queue-sub"
+                            >
+                                0 Active Tasks
+                            </p>
+                        </div>
+                        <button class="material-symbols-outlined text-slate-400 text-base">
+                            filter_list
+                        </button>
+                    </div>
+                    <div class="flex-1 overflow-y-auto p-2.5 space-y-2" id="chain-cards">
+                        <div class="empty-hint">Select a device to view tasks</div>
+                    </div>
+                </aside>
+            </main>
         </div>
-        <div class="flex-1 overflow-y-auto p-2.5 space-y-2" id="chain-cards">
-          <div class="empty-hint">Select a device to view tasks</div>
-        </div>
-      </aside>
 
-    </main>
-  </div>
-
-  <!-- 添加设备对话框 -->
-  <div class="modal-mask" id="add-device-modal" style="display:none">
-    <div class="modal-card" style="max-width:400px">
-      <div class="flex items-center justify-between px-6 py-4.5 border-b border-s100">
-        <h3 class="text-base font-bold text-s900">Add Device</h3>
-        <button
-          class="w-8 h-8 flex items-center justify-center bg-transparent border-none rounded-sm text-s400 text-base cursor-pointer transition-all duration-100 hover:bg-s100 hover:text-s600"
-          id="add-device-close">✕</button>
-      </div>
-      <div class="p-5 px-6">
-        <div class="mb-4">
-          <label class="block text-xs font-semibold text-s500 mb-1.5">Device Address</label>
-          <input type="text"
-            class="w-full px-3.5 py-2.5 border border-s200 rounded-sm font-mono text-[13px] text-s800 bg-s50 outline-none transition-colors duration-150 focus:border-blue focus:shadow-[0_0_0_3px_rgba(37,99,235,.1)] placeholder:text-s300"
-            id="add-device-addr" placeholder="192.168.1.100:5555" autofocus />
-          <span class="block text-[11px] text-s400 mt-1">IP address with optional port (default: 5555)</span>
+        <!-- 添加设备对话框 -->
+        <div class="modal-mask" id="add-device-modal" style="display: none">
+            <div class="modal-card" style="max-width: 400px">
+                <div class="flex items-center justify-between px-6 py-4.5 border-b border-s100">
+                    <h3 class="text-base font-bold text-s900">Add Device</h3>
+                    <button
+                        class="w-8 h-8 flex items-center justify-center bg-transparent border-none rounded-sm text-s400 text-base cursor-pointer transition-all duration-100 hover:bg-s100 hover:text-s600"
+                        id="add-device-close"
+                    >
+                        ✕
+                    </button>
+                </div>
+                <div class="p-5 px-6">
+                    <div class="mb-4">
+                        <label class="block text-xs font-semibold text-s500 mb-1.5"
+                            >Device Address</label
+                        >
+                        <input
+                            type="text"
+                            class="w-full px-3.5 py-2.5 border border-s200 rounded-sm font-mono text-[13px] text-s800 bg-s50 outline-none transition-colors duration-150 focus:border-blue focus:shadow-[0_0_0_3px_rgba(37,99,235,.1)] placeholder:text-s300"
+                            id="add-device-addr"
+                            placeholder="192.168.1.100:5555"
+                            autofocus
+                        />
+                        <span class="block text-[11px] text-s400 mt-1"
+                            >IP address with optional port (default: 5555)</span
+                        >
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-xs font-semibold text-s500 mb-1.5"
+                            >Name (optional)</label
+                        >
+                        <input
+                            type="text"
+                            class="w-full px-3.5 py-2.5 border border-s200 rounded-sm font-mono text-[13px] text-s800 bg-s50 outline-none transition-colors duration-150 focus:border-blue focus:shadow-[0_0_0_3px_rgba(37,99,235,.1)] placeholder:text-s300"
+                            id="add-device-name"
+                            placeholder="My Phone"
+                        />
+                    </div>
+                    <div class="flex gap-2 justify-end mt-4.5">
+                        <button
+                            class="px-5 py-2 rounded-sm font-sans text-xs font-semibold cursor-pointer border border-s200 bg-s50 text-s500 transition-all duration-150 hover:border-s300 hover:bg-s50"
+                            id="add-device-cancel"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            class="form-btn-primary px-5 py-2 rounded-sm font-sans text-xs font-semibold cursor-pointer border border-blue bg-blue text-white shadow-[0_2px_8px_rgba(37,99,235,.2)] transition-all duration-150 hover:bg-blue-dark hover:border-blue-dark"
+                            id="add-device-submit"
+                        >
+                            Connect
+                        </button>
+                    </div>
+                    <div
+                        class="mt-2.5 px-3.5 py-2.5 rounded-sm bg-red-light border border-red/30 text-red text-xs"
+                        id="add-device-error"
+                        style="display: none"
+                    ></div>
+                </div>
+            </div>
         </div>
-        <div class="mb-4">
-          <label class="block text-xs font-semibold text-s500 mb-1.5">Name (optional)</label>
-          <input type="text"
-            class="w-full px-3.5 py-2.5 border border-s200 rounded-sm font-mono text-[13px] text-s800 bg-s50 outline-none transition-colors duration-150 focus:border-blue focus:shadow-[0_0_0_3px_rgba(37,99,235,.1)] placeholder:text-s300"
-            id="add-device-name" placeholder="My Phone" />
-        </div>
-        <div class="flex gap-2 justify-end mt-4.5">
-          <button
-            class="px-5 py-2 rounded-sm font-sans text-xs font-semibold cursor-pointer border border-s200 bg-s50 text-s500 transition-all duration-150 hover:border-s300 hover:bg-s50"
-            id="add-device-cancel">Cancel</button>
-          <button
-            class="form-btn-primary px-5 py-2 rounded-sm font-sans text-xs font-semibold cursor-pointer border border-blue bg-blue text-white shadow-[0_2px_8px_rgba(37,99,235,.2)] transition-all duration-150 hover:bg-blue-dark hover:border-blue-dark"
-            id="add-device-submit">Connect</button>
-        </div>
-        <div class="mt-2.5 px-3.5 py-2.5 rounded-sm bg-red-light border border-red/30 text-red text-xs"
-          id="add-device-error" style="display:none"></div>
-      </div>
-    </div>
-  </div>
 
-  <!-- 信息弹窗 -->
-  <div class="modal-mask" id="modal" style="display:none">
-    <div class="modal-card">
-      <div class="flex items-center justify-between px-6 py-4.5 border-b border-s100">
-        <h3 class="text-base font-bold text-s900">Device Info</h3>
-        <button
-          class="w-8 h-8 flex items-center justify-center bg-transparent border-none rounded-sm text-s400 text-base cursor-pointer transition-all duration-100 hover:bg-s100 hover:text-s600"
-          id="modal-close">✕</button>
-      </div>
-      <div class="p-5 px-6" id="modal-body">Loading…</div>
-    </div>
-  </div>
-
-  <!-- 设置弹窗 -->
-  <div class="modal-mask" id="settings-overlay" style="display:none">
-    <div class="modal-card max-w-[440px] w-[90%]">
-      <div class="flex items-center justify-between px-6 py-4.5 border-b border-s100">
-        <h3 class="text-base font-bold text-s900">⚙ Settings</h3>
-        <button
-          class="w-8 h-8 flex items-center justify-center bg-transparent border-none rounded-sm text-s400 text-base cursor-pointer transition-all duration-100 hover:bg-s100 hover:text-s600"
-          id="settings-close">✕</button>
-      </div>
-      <div class="px-6 py-4">
-        <div class="mb-4">
-          <h4 class="text-xs font-extrabold text-s400 mb-2.5 uppercase tracking-wide">MQTT Broker</h4>
-          <div class="flex items-center gap-2.5 mb-2">
-            <label class="w-20 text-xs font-semibold text-s400 shrink-0">Host</label>
-            <input type="text" id="set-mqtt-host" placeholder="127.0.0.1"
-              class="flex-1 px-3 py-2 border border-s200 rounded-sm text-[13px] font-mono bg-s50 text-s800 transition-colors duration-150 outline-none focus:border-blue focus:shadow-[0_0_0_3px_rgba(37,99,235,.08)] placeholder:text-s300" />
-          </div>
-          <div class="flex items-center gap-2.5 mb-2">
-            <label class="w-20 text-xs font-semibold text-s400 shrink-0">Port</label>
-            <input type="number" id="set-mqtt-port" placeholder="1883"
-              class="flex-1 px-3 py-2 border border-s200 rounded-sm text-[13px] font-mono bg-s50 text-s800 transition-colors duration-150 outline-none focus:border-blue focus:shadow-[0_0_0_3px_rgba(37,99,235,.08)] placeholder:text-s300" />
-          </div>
-          <div class="flex items-center gap-2.5 mb-2">
-            <label class="w-20 text-xs font-semibold text-s400 shrink-0">Client ID</label>
-            <input type="text" id="set-mqtt-client-id" placeholder="automatex-001"
-              class="flex-1 px-3 py-2 border border-s200 rounded-sm text-[13px] font-mono bg-s50 text-s800 transition-colors duration-150 outline-none focus:border-blue focus:shadow-[0_0_0_3px_rgba(37,99,235,.08)] placeholder:text-s300" />
-          </div>
-          <div class="flex items-center gap-2.5 mb-2">
-            <label class="w-20 text-xs font-semibold text-s400 shrink-0">Username</label>
-            <input type="text" id="set-mqtt-username" placeholder="(optional)"
-              class="flex-1 px-3 py-2 border border-s200 rounded-sm text-[13px] font-mono bg-s50 text-s800 transition-colors duration-150 outline-none focus:border-blue focus:shadow-[0_0_0_3px_rgba(37,99,235,.08)] placeholder:text-s300" />
-          </div>
-          <div class="flex items-center gap-2.5 mb-2">
-            <label class="w-20 text-xs font-semibold text-s400 shrink-0">Password</label>
-            <input type="password" id="set-mqtt-password" placeholder="(optional)"
-              class="flex-1 px-3 py-2 border border-s200 rounded-sm text-[13px] font-mono bg-s50 text-s800 transition-colors duration-150 outline-none focus:border-blue focus:shadow-[0_0_0_3px_rgba(37,99,235,.08)] placeholder:text-s300" />
-          </div>
+        <!-- 信息弹窗 -->
+        <div class="modal-mask" id="modal" style="display: none">
+            <div class="modal-card">
+                <div class="flex items-center justify-between px-6 py-4.5 border-b border-s100">
+                    <h3 class="text-base font-bold text-s900">Device Info</h3>
+                    <button
+                        class="w-8 h-8 flex items-center justify-center bg-transparent border-none rounded-sm text-s400 text-base cursor-pointer transition-all duration-100 hover:bg-s100 hover:text-s600"
+                        id="modal-close"
+                    >
+                        ✕
+                    </button>
+                </div>
+                <div class="p-5 px-6" id="modal-body">Loading…</div>
+            </div>
         </div>
-        <div class="mb-4">
-          <h4 class="text-xs font-extrabold text-s400 mb-2.5 uppercase tracking-wide">MQTT Status</h4>
-          <div class="flex items-center gap-2">
-            <span class="w-2 h-2 rounded-full bg-s300 shrink-0" id="mqtt-dot"></span>
-            <span class="text-xs text-s500 flex-1" id="mqtt-status-text">Disconnected</span>
-            <button
-              class="px-3 py-1 text-[11px] font-semibold rounded-sm border border-green text-green cursor-pointer transition-all duration-150 bg-white hover:bg-green-light disabled:opacity-40 disabled:cursor-not-allowed"
-              id="btn-mqtt-connect">Connect</button>
-            <button
-              class="px-3 py-1 text-[11px] font-semibold rounded-sm border border-red text-red cursor-pointer transition-all duration-150 bg-white hover:bg-red-light disabled:opacity-40 disabled:cursor-not-allowed"
-              id="btn-mqtt-disconnect" disabled>Disconnect</button>
-          </div>
+
+        <!-- 设置弹窗 -->
+        <div class="modal-mask" id="settings-overlay" style="display: none">
+            <div class="modal-card max-w-[440px] w-[90%]">
+                <div class="flex items-center justify-between px-6 py-4.5 border-b border-s100">
+                    <h3 class="text-base font-bold text-s900">⚙ Settings</h3>
+                    <button
+                        class="w-8 h-8 flex items-center justify-center bg-transparent border-none rounded-sm text-s400 text-base cursor-pointer transition-all duration-100 hover:bg-s100 hover:text-s600"
+                        id="settings-close"
+                    >
+                        ✕
+                    </button>
+                </div>
+                <div class="px-6 py-4">
+                    <div class="mb-4">
+                        <h4 class="text-xs font-extrabold text-s400 mb-2.5 uppercase tracking-wide">
+                            MQTT Broker
+                        </h4>
+                        <div class="flex items-center gap-2.5 mb-2">
+                            <label class="w-20 text-xs font-semibold text-s400 shrink-0"
+                                >Host</label
+                            >
+                            <input
+                                type="text"
+                                id="set-mqtt-host"
+                                placeholder="127.0.0.1"
+                                class="flex-1 px-3 py-2 border border-s200 rounded-sm text-[13px] font-mono bg-s50 text-s800 transition-colors duration-150 outline-none focus:border-blue focus:shadow-[0_0_0_3px_rgba(37,99,235,.08)] placeholder:text-s300"
+                            />
+                        </div>
+                        <div class="flex items-center gap-2.5 mb-2">
+                            <label class="w-20 text-xs font-semibold text-s400 shrink-0"
+                                >Port</label
+                            >
+                            <input
+                                type="number"
+                                id="set-mqtt-port"
+                                placeholder="1883"
+                                class="flex-1 px-3 py-2 border border-s200 rounded-sm text-[13px] font-mono bg-s50 text-s800 transition-colors duration-150 outline-none focus:border-blue focus:shadow-[0_0_0_3px_rgba(37,99,235,.08)] placeholder:text-s300"
+                            />
+                        </div>
+                        <div class="flex items-center gap-2.5 mb-2">
+                            <label class="w-20 text-xs font-semibold text-s400 shrink-0"
+                                >Client ID</label
+                            >
+                            <input
+                                type="text"
+                                id="set-mqtt-client-id"
+                                placeholder="automatex-001"
+                                class="flex-1 px-3 py-2 border border-s200 rounded-sm text-[13px] font-mono bg-s50 text-s800 transition-colors duration-150 outline-none focus:border-blue focus:shadow-[0_0_0_3px_rgba(37,99,235,.08)] placeholder:text-s300"
+                            />
+                        </div>
+                        <div class="flex items-center gap-2.5 mb-2">
+                            <label class="w-20 text-xs font-semibold text-s400 shrink-0"
+                                >Username</label
+                            >
+                            <input
+                                type="text"
+                                id="set-mqtt-username"
+                                placeholder="(optional)"
+                                class="flex-1 px-3 py-2 border border-s200 rounded-sm text-[13px] font-mono bg-s50 text-s800 transition-colors duration-150 outline-none focus:border-blue focus:shadow-[0_0_0_3px_rgba(37,99,235,.08)] placeholder:text-s300"
+                            />
+                        </div>
+                        <div class="flex items-center gap-2.5 mb-2">
+                            <label class="w-20 text-xs font-semibold text-s400 shrink-0"
+                                >Password</label
+                            >
+                            <input
+                                type="password"
+                                id="set-mqtt-password"
+                                placeholder="(optional)"
+                                class="flex-1 px-3 py-2 border border-s200 rounded-sm text-[13px] font-mono bg-s50 text-s800 transition-colors duration-150 outline-none focus:border-blue focus:shadow-[0_0_0_3px_rgba(37,99,235,.08)] placeholder:text-s300"
+                            />
+                        </div>
+                    </div>
+                    <div class="mb-4">
+                        <h4 class="text-xs font-extrabold text-s400 mb-2.5 uppercase tracking-wide">
+                            MQTT Status
+                        </h4>
+                        <div class="flex items-center gap-2">
+                            <span
+                                class="w-2 h-2 rounded-full bg-s300 shrink-0"
+                                id="mqtt-dot"
+                            ></span>
+                            <span class="text-xs text-s500 flex-1" id="mqtt-status-text"
+                                >Disconnected</span
+                            >
+                            <button
+                                class="px-3 py-1 text-[11px] font-semibold rounded-sm border border-green text-green cursor-pointer transition-all duration-150 bg-white hover:bg-green-light disabled:opacity-40 disabled:cursor-not-allowed"
+                                id="btn-mqtt-connect"
+                            >
+                                Connect
+                            </button>
+                            <button
+                                class="px-3 py-1 text-[11px] font-semibold rounded-sm border border-red text-red cursor-pointer transition-all duration-150 bg-white hover:bg-red-light disabled:opacity-40 disabled:cursor-not-allowed"
+                                id="btn-mqtt-disconnect"
+                                disabled
+                            >
+                                Disconnect
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="flex justify-end gap-2 px-6 py-3.5 border-t border-s100">
+                    <button
+                        class="flex flex-col items-center justify-center gap-1 px-1.5 py-2.5 border border-s200 rounded-md bg-white text-[10px] font-bold text-s500 uppercase tracking-tight shadow-1 cursor-pointer transition-all duration-[180ms] hover:-translate-y-px hover:shadow-2"
+                        id="settings-cancel"
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        class="flex flex-col items-center justify-center gap-1 px-1.5 py-2.5 border border-s200 rounded-md bg-white text-[10px] font-bold text-orange uppercase tracking-tight shadow-1 cursor-pointer transition-all duration-[180ms] hover:-translate-y-px hover:shadow-2 hover:border-orange hover:text-white hover:bg-orange"
+                        id="settings-save"
+                    >
+                        Save
+                    </button>
+                </div>
+            </div>
         </div>
-      </div>
-      <div class="flex justify-end gap-2 px-6 py-3.5 border-t border-s100">
-        <button
-          class="flex flex-col items-center justify-center gap-1 px-1.5 py-2.5 border border-s200 rounded-md bg-white text-[10px] font-bold text-s500 uppercase tracking-tight shadow-1 cursor-pointer transition-all duration-[180ms] hover:-translate-y-px hover:shadow-2"
-          id="settings-cancel">Cancel</button>
-        <button
-          class="flex flex-col items-center justify-center gap-1 px-1.5 py-2.5 border border-s200 rounded-md bg-white text-[10px] font-bold text-orange uppercase tracking-tight shadow-1 cursor-pointer transition-all duration-[180ms] hover:-translate-y-px hover:shadow-2 hover:border-orange hover:text-white hover:bg-orange"
-          id="settings-save">Save</button>
-      </div>
-    </div>
-  </div>
 
-  <script type="module" src="/src/main.ts"></script>
-</body>
-
+        <script type="module" src="/src/main.ts"></script>
+    </body>
 </html>
