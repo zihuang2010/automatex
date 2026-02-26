@@ -4,30 +4,22 @@
 <head>
   <meta charset="UTF-8" />
   <link rel="stylesheet" href="/src/styles.css" />
-  <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AutomateX</title>
+  <title>AutomateX Workspace PRO v2</title>
 </head>
 
 <body>
   <!-- ===== 开屏 ===== -->
   <div class="splash" id="splash">
-    <!-- 背景渐变光斑 -->
     <div class="absolute inset-0 overflow-hidden pointer-events-none">
       <div class="splash-blob splash-blob-1"></div>
       <div class="splash-blob splash-blob-2"></div>
       <div class="splash-blob splash-blob-3"></div>
     </div>
-
-    <!-- 轨道光环 -->
     <div class="splash-orbit splash-orbit-1"></div>
     <div class="splash-orbit splash-orbit-2"></div>
     <div class="splash-orbit splash-orbit-3"></div>
-
-    <!-- 网格线条 -->
     <div class="splash-grid"></div>
-
-    <!-- 中心内容 -->
     <div class="splash-center">
       <div class="splash-glow"></div>
       <div class="splash-logo-wrap">
@@ -67,119 +59,97 @@
             stroke-linecap="round" stroke-dasharray="70 126" />
         </svg>
       </div>
-      <span class="splash-version">v1.1.0-stable</span>
+      <span class="splash-version">v2.5.1-EXEC</span>
     </div>
   </div>
 
   <!-- ===== 主应用 ===== -->
-  <div class="app" id="app">
+  <div class="app h-screen flex flex-col overflow-hidden" id="app">
 
-    <!-- Header -->
-    <header
-      class="flex items-center gap-3 px-5 h-14 bg-white/80 backdrop-blur-xl border-b border-s200 shrink-0 z-20 shadow-[0_1px_3px_rgba(0,0,0,.03)]">
-      <div class="flex items-center gap-3">
-        <div
-          class="shrink-0 bg-blue p-1.5 rounded-md flex items-center justify-center shadow-[0_4px_12px_rgba(37,99,235,.25)]">
-          <span class="material-icons-round text-xl text-white">bolt</span>
+    <!-- Header (code.html style) -->
+    <header class="bg-white border-b border-slate-200 px-5 flex items-center justify-between shrink-0 z-30 h-10">
+      <div class="flex items-center space-x-3">
+        <div class="bg-[var(--action-blue)] p-1 rounded text-white">
+          <span class="material-symbols-outlined text-base fill-1">bolt</span>
         </div>
-        <div class="flex flex-col leading-tight">
-          <span class="text-[15px] font-semibold text-s700 tracking-tight">AutomateX Workspace <strong
-              class="font-extrabold text-blue">PRO</strong></span>
-          <span class="text-[10px] font-semibold text-s400 uppercase tracking-[2px] mt-px">Enterprise Control
+        <div class="flex items-baseline space-x-2">
+          <h1 class="text-xs font-black tracking-tight text-slate-800 leading-none">AutomateX Workspace <span
+              class="text-[var(--action-blue)]">PRO</span></h1>
+          <span
+            class="text-[8px] text-slate-400 font-bold uppercase tracking-widest border-l border-slate-200 pl-2">Enterprise
             Client</span>
         </div>
       </div>
-      <div class="ml-auto flex items-center gap-4">
-        <span class="inline-flex items-center gap-1.5 text-[13px] font-semibold text-green" id="topbar-status">
-          <span class="material-icons-round text-base">wifi</span>
-          Connected
-        </span>
+      <div class="flex items-center">
+        <div class="flex items-center text-slate-500 font-bold text-[10px] uppercase tracking-widest"
+          id="topbar-status">
+          <span class="pulsing-dot">Connected</span>
+        </div>
       </div>
     </header>
 
     <!-- 三栏主体 -->
-    <div class="flex-1 flex overflow-hidden p-4 gap-2">
+    <main class="flex-1 p-3 flex gap-4 overflow-hidden">
 
-      <!-- 左栏 -->
-      <section id="col-left"
-        class="flex flex-col overflow-hidden bg-white/75 backdrop-blur-xl border border-white/70 rounded-md shadow-[0_2px_8px_rgba(0,0,0,.04),0_8px_24px_rgba(0,0,0,.06),0_16px_48px_rgba(0,0,0,.04)] w-100 min-w-[280px] max-w-[500px] shrink-0">
-        <div
-          class="flex items-center justify-between px-4 pt-4 pb-3 border-b border-s100 bg-white/40 shrink-0 rounded-t-md">
-          <h2 class="text-xs font-extrabold text-s400 uppercase tracking-[1.5px]">Devices Management</h2>
-          <span
-            class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold text-red bg-red-light border border-red/15"
-            id="dev-count">
-            <span id="online-count-text">0 Total</span>
-          </span>
+      <!-- 左栏：设备管理 -->
+      <aside
+        class="w-[280px] bg-white rounded-md border border-[var(--panel-border)] shadow-sm flex flex-col h-full overflow-hidden shrink-0">
+        <div class="p-3 border-b border-slate-100 flex justify-between items-center bg-slate-50/30">
+          <h2 class="text-[10px] font-black text-slate-500 uppercase tracking-widest">Devices Management</h2>
+          <span class="text-[9px] font-bold text-slate-400 bg-slate-200/50 px-1.5 py-0.5 rounded" id="dev-count">0
+            Total</span>
         </div>
-        <div class="px-3 py-2 border-b border-s100 hidden" id="dev-search">
-          <input type="text"
-            class="w-full px-3 py-2 border border-s200 rounded-sm font-sans text-xs text-s900 bg-white outline-none transition-colors duration-150 focus:border-blue focus:shadow-[0_0_0_3px_rgba(37,99,235,.08)] placeholder:text-s300"
-            id="dev-search-input" placeholder="Search by name or address…" />
+        <div class="flex-1 overflow-y-auto" id="device-tree">
+          <div class="empty-hint">Click <strong>WiFi</strong> or <strong>USB</strong> to add devices</div>
         </div>
-        <div class="flex-1 overflow-y-auto p-3" id="device-tree">
-          <div class="empty-hint">Click <strong>+ Add Device</strong> or <strong>⚡ Scan USB</strong></div>
+        <div class="p-3 border-t border-slate-100 bg-white space-y-2">
+          <div class="grid grid-cols-3 gap-1.5">
+            <button
+              class="flex flex-col items-center justify-center py-2 bg-white border border-slate-200 text-slate-500 hover:border-blue-500 hover:text-blue-600 rounded-lg transition-all text-[8px] font-black uppercase"
+              id="btn-add-device">
+              <span class="material-symbols-outlined text-base mb-0.5">wifi</span>WIFI
+            </button>
+            <button
+              class="flex flex-col items-center justify-center py-2 bg-white border border-slate-200 text-slate-500 hover:border-blue-500 hover:text-blue-600 rounded-lg transition-all text-[8px] font-black uppercase"
+              id="btn-scan-usb">
+              <span class="material-symbols-outlined text-base mb-0.5">usb</span>USB
+            </button>
+            <button
+              class="flex flex-col items-center justify-center py-2 bg-white border border-slate-200 text-slate-300 rounded-lg transition-all text-[8px] font-black uppercase disabled:opacity-50 disabled:cursor-not-allowed enabled:text-red-500 enabled:border-red-200 enabled:hover:bg-red-50 enabled:hover:border-red-400"
+              id="btn-remove-selected" disabled>
+              <span class="material-symbols-outlined text-base mb-0.5">delete</span>REMOVE
+            </button>
+          </div>
+          <div class="flex items-center justify-between pt-1">
+            <button class="text-slate-400 hover:text-slate-600 transition-colors" id="btn-settings">
+              <span class="material-symbols-outlined text-lg">settings</span>
+            </button>
+            <span class="text-[8px] font-bold text-slate-400 uppercase tracking-widest">v2.5.1-EXEC</span>
+          </div>
         </div>
-        <div class="grid grid-cols-3 gap-2 p-4 border-t border-s100 bg-white/80 shrink-0 rounded-b-xl">
-          <button
-            class="flex flex-col items-center justify-center gap-1 px-1.5 py-2.5 border border-s200 rounded-md bg-white text-[10px] font-bold text-orange uppercase tracking-tight shadow-1 cursor-pointer transition-all duration-[180ms] hover:-translate-y-px hover:shadow-2 hover:border-orange hover:text-white hover:bg-orange hover:shadow-[0_4px_12px_rgba(245,158,11,.3)]"
-            id="btn-add-device">
-            <span class="material-icons-round text-lg">wifi</span>
-            WiFi
-          </button>
-          <button
-            class="flex flex-col items-center justify-center gap-1 px-1.5 py-2.5 border border-s200 rounded-md bg-white text-[10px] font-bold text-blue uppercase tracking-tight shadow-1 cursor-pointer transition-all duration-[180ms] hover:-translate-y-px hover:shadow-2 hover:border-blue hover:text-white hover:bg-blue hover:shadow-[0_4px_12px_rgba(37,99,235,.3)] disabled:opacity-50 disabled:cursor-not-allowed"
-            id="btn-scan-usb">
-            <span class="material-icons-round text-lg">usb</span>
-            USB
-          </button>
-          <button
-            class="flex flex-col items-center justify-center gap-1 px-1.5 py-2.5 border border-s200 rounded-md bg-white text-[10px] font-bold text-red uppercase tracking-tight shadow-1 cursor-pointer transition-all duration-[180ms] hover:-translate-y-px hover:shadow-2 hover:border-red hover:text-white hover:bg-red hover:shadow-[0_4px_12px_rgba(239,68,68,.3)] disabled:opacity-30 disabled:cursor-not-allowed disabled:transform-none disabled:shadow-none"
-            id="btn-remove-selected" disabled>
-            <span class="material-icons-round text-lg">delete_outline</span>
-            Remove
-          </button>
-        </div>
-        <!-- Settings + Version -->
-        <div class="flex items-center justify-between px-4 py-3 border-t border-s100 shrink-0 rounded-b-xl">
-          <button
-            class="w-9 h-9 flex items-center justify-center border-none rounded-md bg-transparent text-s400 cursor-pointer transition-all duration-200 hover:bg-s100 hover:text-s600"
-            id="btn-settings" title="Settings">
-            <span class="material-icons-round text-xl">settings</span>
-          </button>
-          <span class="text-[11px] font-medium text-s400 tracking-wide">v1.1.0-stable</span>
-        </div>
-      </section>
+      </aside>
 
-      <!-- 左中拖拽分隔条 -->
-      <div class="col-resizer" id="resizer-left" title="Drag to resize"></div>
-
-      <!-- 中栏 -->
-      <section
-        class="flex flex-col overflow-hidden bg-white/75 backdrop-blur-xl border border-white/70 rounded-md shadow-[0_2px_8px_rgba(0,0,0,.04),0_8px_24px_rgba(0,0,0,.06),0_16px_48px_rgba(0,0,0,.04)] flex-1 min-w-[200px]"
-        id="col-mid">
+      <!-- 中栏：任务详情 -->
+      <section class="flex-1 flex flex-col h-full overflow-hidden min-w-0" id="col-mid">
         <div class="empty-hint" style="padding:40px;text-align:center">Select a device to view tasks</div>
       </section>
 
-      <!-- 中右拖拽分隔条 -->
-      <div class="col-resizer" id="resizer-right" title="Drag to resize"></div>
-
-      <!-- 右栏 -->
-      <section id="col-right"
-        class="flex flex-col overflow-hidden bg-white/75 backdrop-blur-xl border border-white/70 rounded-md shadow-[0_2px_8px_rgba(0,0,0,.04),0_8px_24px_rgba(0,0,0,.06),0_16px_48px_rgba(0,0,0,.04)] w-90 min-w-[200px] max-w-[400px] shrink-0">
-        <div
-          class="flex items-center justify-between px-4 pt-4 pb-3 border-b border-s100 bg-white/40 shrink-0 rounded-t-md">
+      <!-- 右栏：全局队列 -->
+      <aside
+        class="w-[280px] bg-white rounded-md border border-[var(--panel-border)] shadow-sm flex flex-col h-full overflow-hidden shrink-0">
+        <div class="p-3 border-b border-slate-100 bg-slate-50/30 flex justify-between items-center">
           <div>
-            <h2 class="text-xs font-extrabold text-s400 uppercase tracking-[1.5px]">Global Queue</h2>
-            <span class="text-[11px] font-medium text-s400 mt-0.5 block queue-sub">12 Active Tasks</span>
+            <h2 class="text-[10px] font-black text-slate-500 uppercase tracking-widest leading-none">Global Queue</h2>
+            <p class="text-[9px] text-slate-400 font-bold mt-1 uppercase tracking-tighter queue-sub">0 Active Tasks</p>
           </div>
+          <button class="material-symbols-outlined text-slate-400 text-base">filter_list</button>
         </div>
-        <div class="flex-1 overflow-y-auto px-3 py-2 flex flex-col gap-1.5" id="chain-cards">
+        <div class="flex-1 overflow-y-auto p-2.5 space-y-2" id="chain-cards">
           <div class="empty-hint">Select a device to view tasks</div>
         </div>
-      </section>
+      </aside>
 
-    </div>
+    </main>
   </div>
 
   <!-- 添加设备对话框 -->

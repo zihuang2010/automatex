@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { type MockTask, TASK_STATUS_STYLE, getTasksForDevice, MOCK_DEVICES, MOCK_DEVICE_PROPS } from "./mock-data";
+import { type MockTask, getTasksForDevice, MOCK_DEVICES, MOCK_DEVICE_PROPS } from "./mock-data";
 
 /* ===== Types ===== */
 interface DeviceInfo { serial: string; name: string; state: string; device_type: string }
@@ -17,6 +17,17 @@ let activeTask: MockTask | null = null;
 let activeCityIdx = 0;
 
 const $ = (s: string) => document.querySelector(s) as HTMLElement | null;
+
+/** 获取设备显示名称，自动回退 unknown → d.name → serial */
+function getDeviceName(d: DeviceInfo, p: DeviceProperties | null): string {
+  if (p) {
+    const brand = (p.brand && p.brand !== 'unknown') ? p.brand : '';
+    const model = (p.model && p.model !== 'unknown') ? p.model : '';
+    const combined = `${brand} ${model}`.trim();
+    if (combined) return combined;
+  }
+  return d.name || d.serial;
+}
 
 /* ───── Splash ───── */
 function splash() {
@@ -42,12 +53,9 @@ function splash() {
 
 /* ───── Device List ───── */
 let devicePropsCache: Map<string, DeviceProperties> = new Map();
-let lastDevices: DeviceInfo[] = [];
-let lastPropsResults: (DeviceProperties | null)[] = [];
 
 async function refreshDevices() {
   const tree = $("#device-tree")!;
-  const status = $("#topbar-status");
   tree.innerHTML = '<div class="text-center p-5"><span class="spinner"></span></div>';
 
   try {
@@ -57,203 +65,285 @@ async function refreshDevices() {
     try {
       devs = await invoke("list_devices");
     } catch {
-      // 后端不可用时使用 mock 数据
       devs = MOCK_DEVICES as DeviceInfo[];
     }
 
-    // 没有真实设备时使用 mock
     if (!devs.length) {
       devs = MOCK_DEVICES as DeviceInfo[];
     }
 
-    const onlineCountText = $("#online-count-text");
-    const onlineCount = devs.filter(d => d.state !== "Offline").length;
-
-    if (onlineCountText) {
-      onlineCountText.textContent = onlineCount > 0 ? `${onlineCount} Online` : "Online";
-    }
-
-    if (status) {
-      if (onlineCount > 0) {
-        status.textContent = "Connected";
-        status.className = "topbar-connected";
-      } else {
-        status.textContent = devs.length > 0 ? "Offline" : "Waiting";
-        status.className = "topbar-connected" + (devs.length > 0 ? " offline" : "");
-      }
-    }
+    // Update dev count badge
+    const devCount = $("#dev-count");
+    if (devCount) devCount.textContent = `${devs.length} Total`;
 
     if (!devs.length) {
       renderDeviceCards([], []);
       return;
     }
 
-    // 尝试从后端获取属性，失败时用 mock
     const propsPromises = devs.map(d => {
+      const mockP = MOCK_DEVICE_PROPS.find(p => p.serial === d.serial) ?? null;
+
       if (d.state === "Offline") {
-        const mockP = MOCK_DEVICE_PROPS.find(p => p.serial === d.serial);
-        return Promise.resolve(mockP as DeviceProperties | null ?? null);
+        return Promise.resolve(mockP as DeviceProperties | null);
       }
-      return invoke<DeviceProperties>("get_device_info", { serial: d.serial }).catch(() => {
-        const mockP = MOCK_DEVICE_PROPS.find(p => p.serial === d.serial);
-        return (mockP as DeviceProperties | null) ?? null;
-      });
+
+      return invoke<DeviceProperties>("get_device_info", { serial: d.serial })
+        .then(real => {
+          // 用 mock 数据覆盖电池/温度（后端返回的是不可靠的默认值）
+          if (mockP) {
+            real.battery_level = mockP.battery_level;
+            real.battery_temperature = mockP.battery_temperature;
+          }
+          return real;
+        })
+        .catch(() => mockP as DeviceProperties | null);
     });
     propsResults = await Promise.all(propsPromises);
 
     devicePropsCache.clear();
     propsResults.forEach((p, i) => { if (p) devicePropsCache.set(devs[i].serial, p); });
 
-    // Cache for re-render on selection
-    lastDevices = devs;
-    lastPropsResults = propsResults;
-
     renderDeviceCards(devs, propsResults);
 
-    // 默认选中第一台在线设备
     if (!selectedDevice) {
       const firstOnline = devs.find(d => d.state !== "Offline");
       if (firstOnline) selectDevice(firstOnline.serial);
     }
   } catch (e) {
     tree.innerHTML = `<div class="empty-hint text-red">Error: ${e}</div>`;
-    if (status) {
-      status.textContent = "Error";
-      status.className = "topbar-connected offline";
-    }
   }
 }
 
 function renderDeviceCards(devs: DeviceInfo[], propsResults: (DeviceProperties | null)[]) {
   const tree = $("#device-tree")!;
-  const countText = $("#online-count-text");
-  if (countText) countText.textContent = `${devs.length} Total`;
+  const devCount = $("#dev-count");
+  if (devCount) devCount.textContent = `${devs.length} Total`;
 
-  // Split devices: selected + running task → Active, rest → Connected & Offline
-  const activeDevs: { d: DeviceInfo; p: DeviceProperties | null; idx: number }[] = [];
-  const idleDevs: { d: DeviceInfo; p: DeviceProperties | null; idx: number }[] = [];
-
-  // Active = 在线设备 + 有正在执行的任务绑定
+  // Split devices: Running / Ready / Offline
   const executingSerials = new Set(
     globalQueue.filter(t => t.status === 'EXECUTING' && t.assignedDevice).map(t => t.assignedDevice!)
   );
 
+  const runningDevs: { d: DeviceInfo; p: DeviceProperties | null }[] = [];
+  const readyDevs: { d: DeviceInfo; p: DeviceProperties | null }[] = [];
+  const offlineDevs: { d: DeviceInfo; p: DeviceProperties | null }[] = [];
+
   devs.forEach((d, idx) => {
     const p = propsResults[idx];
-    if (d.state !== "Offline" && executingSerials.has(d.serial)) {
-      activeDevs.push({ d, p, idx });
+    if (d.state === "Offline") {
+      offlineDevs.push({ d, p });
+    } else if (executingSerials.has(d.serial)) {
+      runningDevs.push({ d, p });
     } else {
-      idleDevs.push({ d, p, idx });
+      readyDevs.push({ d, p });
     }
   });
 
-
-
-
-  const renderActiveCard = (item: { d: DeviceInfo; p: DeviceProperties | null }) => {
+  const renderRunningCard = (item: { d: DeviceInfo; p: DeviceProperties | null }) => {
     const { d, p } = item;
-    const displayName = p ? `${p.brand} ${p.model}` : d.name || d.serial;
+    const displayName = getDeviceName(d, p);
     const battery = p?.battery_level ?? 0;
     const temp = p?.battery_temperature ?? 0;
     const shortHwid = d.serial.length > 16 ? d.serial.substring(0, 16) + '…' : d.serial;
-    // 查找该设备绑定的任务
     const devTask = globalQueue.find(t => t.assignedDevice === d.serial);
-    const devCity = devTask?.cities.find(c => c.status === 'active') ?? devTask?.cities[0];
     const taskLabel = devTask ? devTask.name : 'Idle';
-    const cityLabel = devCity?.name || '';
-    const progress = devCity?.progress ?? 0;
+    const progress = devTask?.cities.find(c => c.status === 'active')?.progress ?? 0;
+    const batteryIcon = battery > 80 ? 'battery_charging_80' : battery > 50 ? 'battery_5_bar' : 'battery_3_bar';
+    const isSel = d.serial === selectedDevice;
 
-    return `<div class="dev-card flex flex-col gap-0 p-2.5 px-3 mb-1 rounded-sm cursor-pointer border-1 border-green/20 transition-all duration-[180ms] relative bg-gradient-to-br from-green/[.08] to-green/[.18] shadow-[0_4px_20px_rgba(16,185,129,.18),0_0_0_1px_rgba(16,185,129,.1)]" data-s="${esc(d.serial)}">
-      <div class="flex items-center gap-3">
-        <div class="w-[42px] h-[42px] rounded-md bg-green/[.1] border-[1.5px] border-green/25 flex items-center justify-center shrink-0 text-green">
-          <span class="material-icons-round text-[22px]">smartphone</span>
+    return `<div class="dev-card device-card-running border rounded-md p-2.5 transition-all hover:shadow-sm cursor-pointer ${isSel ? 'ring-2 ring-blue-300' : ''}" data-s="${esc(d.serial)}" data-state="running">
+      <div class="flex items-start gap-3">
+        <div class="h-9 w-9 rounded-lg bg-white border border-blue-100 flex items-center justify-center text-blue-500 shrink-0">
+          <span class="material-symbols-outlined text-xl">smartphone</span>
         </div>
-        <div class="flex-1 min-w-0">
-          <div class="text-[13px] font-bold text-s900 truncate">${esc(displayName)}</div>
-          <div class="text-[11px] text-gray-500 mt-0.5 truncate font-mono">HWID: ${esc(shortHwid)}</div>
+        <div class="min-w-0 flex-1">
+          <div class="flex justify-between items-center mb-0.5">
+            <h3 class="text-[10px] font-bold text-slate-900 truncate">${esc(displayName)}</h3>
+            <div class="pulsing-dot scale-90"></div>
+          </div>
+          <p class="mono-technical text-[9px] text-slate-500 font-medium">${esc(shortHwid)}</p>
         </div>
-        <span class="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-sm leading-snug text-green bg-green/[.08] border border-green/15">RUNNING</span>
       </div>
-      <div class="flex justify-between items-center mt-2.5 px-0.5">
-        <span class="text-[13px] font-semibold text-s600">Task: ${esc(taskLabel)}</span>
-        <span class="text-xs font-semibold text-blue">${progress}%</span>
+      <div class="mt-2.5">
+        <div class="flex justify-between items-end mb-1">
+          <span class="text-[8px] font-bold text-blue-600 uppercase tracking-tight">${esc(taskLabel)}</span>
+          <span class="text-[9px] font-black text-blue-600">${progress}%</span>
+        </div>
+        <div class="w-full h-1 bg-white/80 rounded-full overflow-hidden">
+          <div class="h-full bg-blue-500 rounded-full" style="width: ${progress}%"></div>
+        </div>
       </div>
-      <div class="h-1.5 bg-blue/15 rounded-sm mt-1.5 overflow-hidden"><div class="h-full bg-blue rounded-sm transition-[width] duration-300" style="width:${progress}%"></div></div>
-      <div class="flex items-center gap-3 mt-2.5 px-0.5">
-        <span class="text-xs font-semibold text-s500 inline-flex items-center gap-0.5"><span class="material-icons-round text-[16px] scale-[.65] text-green">battery_charging_full</span> ${battery}% </span>
-        <span class="text-xs font-semibold text-s500 inline-flex items-center gap-0.5"><span class="material-icons-round text-[16px] scale-[.65] text-orange">thermostat</span> ${temp}°C</span>
-        <span class="ml-auto text-xs font-bold text-green uppercase tracking-wide">${esc(cityLabel)}</span>
+      <div class="mt-2.5 flex items-center gap-3 text-[9px] font-bold">
+        <span class="flex items-center gap-1 text-blue-600">
+          <span class="material-symbols-outlined icon-sm fill-1">${batteryIcon}</span>${battery}%
+        </span>
+        <span class="flex items-center gap-1 text-slate-500">
+          <span class="material-symbols-outlined icon-sm">device_thermostat</span>${temp}°C
+        </span>
       </div>
     </div>`;
   };
 
-  const renderIdleCard = (item: { d: DeviceInfo; p: DeviceProperties | null }) => {
+  const renderReadyCard = (item: { d: DeviceInfo; p: DeviceProperties | null }) => {
     const { d, p } = item;
-    const on = d.state !== "Offline";
-    const displayName = p ? `${p.brand} ${p.model}` : d.name || d.serial;
+    const displayName = getDeviceName(d, p);
     const battery = p?.battery_level ?? 0;
     const temp = p?.battery_temperature ?? 0;
-    const isSel = d.serial === selectedDevice;
     const shortSn = d.serial.length > 14 ? d.serial.substring(0, 14) : d.serial;
-    const statusBadge = on
-      ? '<span class="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-sm leading-snug text-blue bg-blue/[.08] border border-blue/15">READY</span>'
-      : '<span class="text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-sm leading-snug text-s400 bg-s50 border border-s200">OFFLINE</span>';
-    const batteryColor = !on ? 'color:var(--color-red)' : battery < 30 ? 'color:var(--color-orange)' : 'color:var(--color-green)';
-    const tempColor = temp > 40 ? 'color:var(--color-orange)' : '';
-    const bottomRight = on
-      ? `<span class="text-base text-s400">⌁</span>`
-      : '<span class="text-[11px] font-semibold text-s400 tracking-wide">2H AGO</span>';
+    const batteryIcon = battery > 80 ? 'battery_full' : battery > 50 ? 'battery_5_bar' : 'battery_3_bar';
+    const batteryColor = battery > 80 ? 'text-green-600' : battery > 30 ? 'text-blue-600' : 'text-orange-500';
+    const tempColor = temp > 40 ? 'text-orange-500' : 'text-slate-500';
+    const isSel = d.serial === selectedDevice;
 
-    return `<div class="dev-card flex flex-col gap-0 p-2.5 px-3 mb-1 rounded-sm cursor-pointer border-1 ${isSel && !on ? 'border-blue/15 bg-gradient-to-br from-s200 to-s300 shadow-[0_6px_24px_rgba(71,85,105,.25),0_0_0_2px_rgba(71,85,105,.15)] -translate-y-px' : isSel ? 'border-blue/20 bg-gradient-to-br from-blue/[.06] to-blue/[.14] shadow-[0_4px_20px_rgba(37,99,235,.18),0_0_0_1px_rgba(37,99,235,.1)]' : !on ? 'border-s200 bg-white/60' : 'border-blue/20 bg-gradient-to-br from-blue/[.08] to-blue/[.16] shadow-[0_4px_20px_rgba(37,99,235,.15),0_0_0_1px_rgba(37,99,235,.08)]'} transition-all duration-[180ms] relative" data-s="${esc(d.serial)}">
-      <div class="flex items-center gap-3">
-        <div class="w-[42px] h-[42px] rounded-md bg-s50 border-[1.5px] border-s200 flex items-center justify-center shrink-0 text-s400">
-          <span class="material-icons-round text-[22px]">smartphone</span>
+    return `<div class="dev-card device-card-ready border border-blue-100/50 rounded-md p-2.5 transition-all hover:border-blue-200 cursor-pointer shadow-sm relative ${isSel ? 'ring-2 ring-blue-300' : ''}" data-s="${esc(d.serial)}" data-state="ready">
+      <div class="absolute top-2.5 right-2.5 px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[7px] font-black rounded border border-blue-100 uppercase tracking-tighter">Ready</div>
+      <div class="flex items-start gap-3">
+        <div class="h-9 w-9 rounded-lg bg-slate-50 border border-slate-100 flex items-center justify-center text-slate-400 shrink-0">
+          <span class="material-symbols-outlined text-xl">smartphone</span>
         </div>
-        <div class="flex-1 min-w-0">
-          <div class="text-[13px] font-bold text-s900 truncate">${esc(displayName)}</div>
-          <div class="text-[11px] text-gray-500 mt-0.5 truncate font-mono">HWID: ${esc(shortSn)}</div>
+        <div class="min-w-0 flex-1">
+          <h3 class="text-[10px] font-bold text-slate-700 truncate pr-8">${esc(displayName)}</h3>
+          <p class="mono-technical text-[9px] text-slate-500 mt-0.5 font-medium">${esc(shortSn)}</p>
         </div>
-        ${statusBadge}
       </div>
-      <div class="flex items-center gap-2.5 mt-2.5 px-0.5">
-        <span class="text-xs font-semibold text-s500 inline-flex items-center gap-0.5" style="${batteryColor}"><span class="material-icons-round text-[16px] scale-[.65] text-green">battery_charging_full</span> ${battery}%</span>
-        <span class="text-xs font-semibold text-s500 inline-flex items-center gap-0.5" style="${tempColor}"><span class="material-icons-round text-[16px] scale-[.65] text-orange">thermostat</span> ${temp}°C</span>
-        <span class="ml-auto">${bottomRight}</span>
+      <div class="mt-2.5 flex items-center gap-3 text-[9px] font-bold">
+        <span class="flex items-center gap-1 ${batteryColor}">
+          <span class="material-symbols-outlined icon-sm fill-1">${batteryIcon}</span>${battery}%
+        </span>
+        <span class="flex items-center gap-1 ${tempColor}">
+          <span class="material-symbols-outlined icon-sm">device_thermostat</span>${temp}°C
+        </span>
+      </div>
+    </div>`;
+  };
+
+  const renderOfflineCard = (item: { d: DeviceInfo; p: DeviceProperties | null }) => {
+    const { d, p } = item;
+    const displayName = getDeviceName(d, p);
+    const battery = p?.battery_level ?? 0;
+    const temp = p?.battery_temperature ?? 0;
+    const shortSn = d.serial.length > 14 ? d.serial.substring(0, 14) : d.serial;
+    const isSel = d.serial === selectedDevice;
+
+    return `<div class="dev-card device-card-offline border rounded-md p-2.5 cursor-pointer relative ${isSel ? 'ring-2 ring-slate-400' : ''}" data-s="${esc(d.serial)}" data-state="offline">
+      <div class="absolute top-2.5 right-2.5 px-1.5 py-0.5 bg-slate-200 text-slate-500 text-[7px] font-black rounded border border-slate-300 uppercase tracking-tighter">Offline</div>
+      <div class="flex items-start gap-3">
+        <div class="h-9 w-9 rounded-lg bg-slate-200 border border-slate-300 flex items-center justify-center text-slate-400 shrink-0">
+          <span class="material-symbols-outlined text-xl">smartphone</span>
+        </div>
+        <div class="min-w-0 flex-1">
+          <h3 class="text-[10px] font-bold text-slate-600 truncate pr-8">${esc(displayName)}</h3>
+          <p class="mono-technical text-[9px] text-slate-400 mt-0.5 font-medium">${esc(shortSn)}</p>
+        </div>
+      </div>
+      <div class="mt-2.5 flex items-center justify-between text-[9px] font-bold">
+        <div class="flex gap-3">
+          <span class="flex items-center gap-1 text-slate-400">
+            <span class="material-symbols-outlined icon-sm">battery_3_bar</span>${battery}%
+          </span>
+          <span class="flex items-center gap-1 text-slate-400">
+            <span class="material-symbols-outlined icon-sm">device_thermostat</span>${temp}°C
+          </span>
+        </div>
+        <span class="text-slate-400 uppercase text-[8px]">2H AGO</span>
       </div>
     </div>`;
   };
 
   let html = '';
 
-  // Active Automation section
-  const chevron = `<svg class="section-chevron inline-block transition-transform duration-200 align-[-1px] mr-0.5" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`;
+  // Running section
+  if (runningDevs.length) {
+    html += `<div class="dev-section">
+      <div class="dev-section-header bg-[#eff6ff] px-3 py-1.5 flex items-center gap-2 sticky top-0 z-10 border-b border-blue-100" onclick="this.parentElement.classList.toggle('collapsed')">
+        <span class="material-symbols-outlined section-arrow text-sm text-blue-400">expand_more</span>
+        <span class="text-[9px] font-black text-slate-500 uppercase tracking-widest">Running</span>
+      </div>
+      <div class="dev-section-body p-2 space-y-1">${runningDevs.map(renderRunningCard).join('')}</div>
+    </div>`;
+  }
 
-  html += `<div class="dev-section mb-1">
-    <div class="flex justify-between items-center px-3.5 pt-2.5 pb-1.5 text-[10px] font-extrabold text-s400 uppercase tracking-[1.5px] cursor-pointer select-none hover:text-s600 font-sans" onclick="this.parentElement.classList.toggle('collapsed')">
-      <span>${chevron} ACTIVE AUTOMATION</span>
-    </div>
-    <div class="dev-section-body px-1">
-      ${activeDevs.length ? activeDevs.map(renderActiveCard).join('') : '<div class="text-xs text-s300 text-center py-4">No active tasks</div>'}
-    </div>
-  </div>`;
+  // Ready section
+  if (readyDevs.length) {
+    html += `<div class="dev-section">
+      <div class="dev-section-header bg-[#f8fafc] px-3 py-1.5 flex items-center gap-2 sticky top-0 z-10 border-b border-slate-100 ${runningDevs.length ? 'mt-1' : ''}" onclick="this.parentElement.classList.toggle('collapsed')">
+        <span class="material-symbols-outlined section-arrow text-sm text-slate-400">expand_more</span>
+        <span class="text-[9px] font-black text-slate-500 uppercase tracking-widest">Ready</span>
+      </div>
+      <div class="dev-section-body p-2 space-y-1">${readyDevs.map(renderReadyCard).join('')}</div>
+    </div>`;
+  }
 
-  // Connected & Offline section
-  html += `<div class="dev-section mb-1">
-    <div class="flex justify-between items-center px-3.5 pt-2.5 pb-1.5 text-[10px] font-extrabold text-s400 uppercase tracking-[1.5px] cursor-pointer select-none hover:text-s600" onclick="this.parentElement.classList.toggle('collapsed')">
-      <span>${chevron} CONNECTED & OFFLINE</span>
-    </div>
-    <div class="dev-section-body px-1">
-      ${idleDevs.length ? idleDevs.map(renderIdleCard).join('') : '<div class="text-xs text-s300 text-center py-4">No other devices</div>'}
-    </div>
-  </div>`;
+  // Offline section
+  if (offlineDevs.length) {
+    html += `<div class="dev-section">
+      <div class="dev-section-header bg-[#f8fafc] px-3 py-1.5 flex items-center gap-2 sticky top-0 z-10 border-b border-slate-100 mt-1" onclick="this.parentElement.classList.toggle('collapsed')">
+        <span class="material-symbols-outlined section-arrow text-sm text-slate-400">expand_more</span>
+        <span class="text-[9px] font-black text-slate-500 uppercase tracking-widest">Offline</span>
+      </div>
+      <div class="dev-section-body p-2 space-y-1">${offlineDevs.map(renderOfflineCard).join('')}</div>
+    </div>`;
+  }
+
+  if (!html) {
+    html = '<div class="empty-hint">No devices</div>';
+  }
+
+  // Save collapsed state before re-render
+  const collapsedSections = new Set<string>();
+  tree.querySelectorAll('.dev-section.collapsed').forEach(el => {
+    const label = el.querySelector('.dev-section-header span:last-child')?.textContent?.trim();
+    if (label) collapsedSections.add(label);
+  });
 
   tree.innerHTML = html;
 
-  // All cards are clickable for selection
+  // Restore collapsed state
+  tree.querySelectorAll('.dev-section').forEach(el => {
+    const label = el.querySelector('.dev-section-header span:last-child')?.textContent?.trim();
+    if (label && collapsedSections.has(label)) {
+      el.classList.add('collapsed');
+    }
+  });
+
+  // Bind events based on device state
+  let clickTimer: ReturnType<typeof setTimeout> | null = null;
   tree.querySelectorAll(".dev-card").forEach(el => {
     const s = (el as HTMLElement).dataset.s!;
-    el.addEventListener("click", () => selectDevice(s));
-    el.addEventListener("dblclick", () => showDeviceInfo(s));
+    const state = (el as HTMLElement).dataset.state;
+
+    if (state === 'running') {
+      // Running: 单击选中 + 切换任务，双击查看设备信息
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (clickTimer) clearTimeout(clickTimer);
+        clickTimer = setTimeout(() => selectDevice(s), 200);
+      });
+      el.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+        showDeviceInfo(s);
+      });
+    } else if (state === 'offline') {
+      // Offline: 单击选中（启用 Remove 按钮），双击查看设备信息
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (clickTimer) clearTimeout(clickTimer);
+        clickTimer = setTimeout(() => selectDevice(s), 200);
+      });
+      el.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+        showDeviceInfo(s);
+      });
+    } else {
+      // Ready: 只有双击查看设备信息
+      el.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        showDeviceInfo(s);
+      });
+    }
   });
 }
 
@@ -262,8 +352,8 @@ function renderDeviceCards(devs: DeviceInfo[], propsResults: (DeviceProperties |
 function filterDeviceCards(query: string) {
   const q = query.toLowerCase().trim();
   document.querySelectorAll(".dev-card").forEach(el => {
-    const name = el.querySelector(".dev-name")?.textContent?.toLowerCase() || "";
-    const sub = el.querySelector(".dev-sub")?.textContent?.toLowerCase() || "";
+    const name = el.querySelector("h3")?.textContent?.toLowerCase() || "";
+    const sub = el.querySelector(".mono-technical")?.textContent?.toLowerCase() || "";
     const match = !q || name.includes(q) || sub.includes(q);
     (el as HTMLElement).style.display = match ? "" : "none";
   });
@@ -273,9 +363,8 @@ function selectDevice(serial: string) {
   // Toggle: clicking the already-selected card deselects it
   if (selectedDevice === serial) {
     selectedDevice = null;
-    if (lastDevices.length) {
-      renderDeviceCards(lastDevices, lastPropsResults);
-    }
+    // Update card selection visual without full re-render
+    updateCardSelection();
     const removeBtn = $("#btn-remove-selected") as HTMLButtonElement;
     if (removeBtn) removeBtn.disabled = true;
     // Reset middle pane
@@ -286,22 +375,33 @@ function selectDevice(serial: string) {
 
   selectedDevice = serial;
 
-  // Re-render device cards to update selection visual
-  if (lastDevices.length) {
-    renderDeviceCards(lastDevices, lastPropsResults);
-  }
+  // Update card selection visual without full re-render
+  updateCardSelection();
 
   // Enable Remove button only for offline devices
   const removeBtn = $("#btn-remove-selected") as HTMLButtonElement;
+  const card = document.querySelector(`.dev-card[data-s="${serial}"]`) as HTMLElement | null;
+  const isOffline = card?.dataset.state === 'offline';
   if (removeBtn) {
-    const card = document.querySelector(`.dev-card[data-s="${serial}"]`);
-    const isDeviceOffline = Array.from(card?.querySelectorAll('span') || []).some(
-      s => s.textContent?.trim() === 'OFFLINE'
-    );
-    removeBtn.disabled = !isDeviceOffline;
+    removeBtn.disabled = !isOffline;
   }
 
-  loadTasksForDevice(serial);
+  // Offline 设备不切换中屏任务
+  if (!isOffline) {
+    loadTasksForDevice(serial);
+  }
+}
+
+/** Update selection ring on cards without re-rendering the whole tree */
+function updateCardSelection() {
+  document.querySelectorAll('.dev-card').forEach(el => {
+    const s = (el as HTMLElement).dataset.s;
+    if (s === selectedDevice) {
+      el.classList.add('ring-2', 'ring-blue-300');
+    } else {
+      el.classList.remove('ring-2', 'ring-blue-300', 'ring-slate-400');
+    }
+  });
 }
 
 /* ───── Add Device Dialog ───── */
@@ -354,15 +454,15 @@ async function submitAddDevice() {
     hideAddDeviceDialog();
     const tree = $("#device-tree")!;
     const displayName = name || address;
-    const initial = displayName.charAt(0).toUpperCase();
-    tree.innerHTML = `<div class="dev-card connecting-card">
-      <div class="dev-avatar connecting-avatar">
-        <span class="dev-initial">${initial}</span>
-        <div class="avatar-spinner"></div>
-      </div>
-      <div class="dev-info">
-        <div class="dev-name">${esc(displayName)}</div>
-        <div class="dev-sub">${esc(address)} · <span class="connecting-text">Connecting…</span></div>
+    tree.innerHTML = `<div class="dev-card device-card-ready border border-blue-100/50 rounded-lg p-2.5 animate-pulse">
+      <div class="flex items-start gap-3">
+        <div class="h-9 w-9 rounded-lg bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-400 shrink-0">
+          <span class="material-symbols-outlined text-xl">smartphone</span>
+        </div>
+        <div class="min-w-0 flex-1">
+          <h3 class="text-[10px] font-bold text-slate-700 truncate">${esc(displayName)}</h3>
+          <p class="mono-technical text-[9px] text-blue-500 mt-0.5 font-bold">Connecting…</p>
+        </div>
       </div>
     </div>`;
 
@@ -384,11 +484,8 @@ async function submitAddDevice() {
 async function removeSelectedDevice() {
   if (!selectedDevice) return;
   // Only allow removing offline devices
-  const card = document.querySelector(`.dev-card[data-s="${selectedDevice}"]`);
-  const isOffline = Array.from(card?.querySelectorAll('span') || []).some(
-    s => s.textContent?.trim() === 'OFFLINE'
-  );
-  if (!isOffline) return;
+  const card = document.querySelector(`.dev-card[data-s="${selectedDevice}"]`) as HTMLElement | null;
+  if (!card || card.dataset.state !== 'offline') return;
   try {
     await invoke("remove_device", { serial: selectedDevice });
     selectedDevice = null;
@@ -403,7 +500,6 @@ async function removeSelectedDevice() {
 
 /* ───── Task View (middle column) ───── */
 function loadTasksForDevice(serial: string) {
-  // 模拟根据 HWID 从服务端拉取任务列表
   const deviceTasks = getTasksForDevice(serial);
   // 合并到全局队列（去重）
   const seen = new Set(globalQueue.map(t => t.id));
@@ -413,8 +509,11 @@ function loadTasksForDevice(serial: string) {
       seen.add(t.id);
     }
   }
-  // 默认选中第一个 EXECUTING 任务，否则选第一个
-  activeTask = globalQueue.find(t => t.status === 'EXECUTING') ?? globalQueue[0] ?? null;
+  // 优先选中当前设备正在执行的任务，否则选第一个 EXECUTING，再否则选第一个
+  activeTask = globalQueue.find(t => t.assignedDevice === serial && t.status === 'EXECUTING')
+    ?? globalQueue.find(t => t.status === 'EXECUTING')
+    ?? globalQueue[0]
+    ?? null;
   activeCityIdx = 0;
   renderTaskView();
   loadChainForDevice(serial);
@@ -428,85 +527,129 @@ function renderTaskView() {
     return;
   }
   const city = task.cities[activeCityIdx];
-  const cityPinSvg = '<svg class="shrink-0 text-s400" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>';
+  // Find device executing this task
+  const execDevice = task.assignedDevice ? task.assignedDevice.substring(0, 16) : '';
 
   mid.innerHTML = `
     <!-- Task Header -->
-    <div class="flex items-center justify-between px-5 py-4 gap-3 border-b border-s100 shrink-0 rounded-t-xl">
-      <div class="flex items-center gap-4">
-        <div class="w-[52px] h-[52px] rounded-xl bg-gradient-to-br from-[#6366f1] to-[#4f46e5] flex items-center justify-center shrink-0 shadow-[0_4px_16px_rgba(99,102,241,.35)]">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="2"/><circle cx="6" cy="16" r="2"/><circle cx="18" cy="16" r="2"/><path d="M12 10v2l-4 3"/><path d="M12 12l4 3"/></svg>
+    <div class="bg-white rounded-md border border-[var(--panel-border)] shadow-sm p-3 mb-4 flex items-center justify-between shrink-0">
+      <div class="flex items-center space-x-4">
+        <div class="h-11 w-11 rounded-xl task-icon-glow text-white flex items-center justify-center">
+          <span class="material-symbols-outlined text-2xl fill-1">automation</span>
         </div>
         <div>
-          <h3 class="text-xl font-extrabold text-s900 m-0 leading-snug flex items-center gap-2.5 font-sans">
-            Task: <span class="text-s900 font-extrabold">${task.name}</span>
-            <span class="text-[10px] font-bold px-2.5 py-0.5 rounded-full border-1 border-green text-green tracking-wider uppercase">LIVE</span>
-          </h3>
-          <span class="text-[11px] text-s400 font-semibold uppercase tracking-[1.5px] mt-0.5 block">📍 ${task.cities.length} Cities &nbsp;|&nbsp; Hardware Monitoring Active</span>
+          <div class="flex items-center space-x-2">
+            <h2 class="text-sm font-black text-slate-800">${task.name}</h2>
+            <span class="px-1.5 py-0.5 bg-green-50 text-green-600 text-[8px] font-black rounded border border-green-100 uppercase tracking-tighter">Live</span>
+          </div>
+          <div class="flex flex-col mt-0.5">
+            <span class="text-[10px] font-bold text-blue-600 uppercase tracking-tight">Executing on: ${esc(execDevice)}</span>
+            <div class="flex items-center text-[9px] text-slate-400 font-medium mt-0.5">
+              <span class="material-symbols-outlined text-[12px] mr-1">location_on</span>${task.cities.length} CITIES
+              <span class="mx-2 text-slate-200">|</span>
+              <span class="uppercase tracking-tighter">Hardware Sync On</span>
+            </div>
+          </div>
         </div>
       </div>
-      <div class="flex gap-2 shrink-0">
-        <button class="inline-flex items-center gap-1.5 px-4 py-2 border-none rounded-lg bg-s100 text-s600 font-sans text-xs font-semibold cursor-pointer transition-all duration-150 hover:bg-s200 hover:text-s800">⏸ Pause</button>
-        <button class="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-red text-xs font-semibold cursor-pointer transition-all duration-150 border border-red bg-red-light hover:bg-red/20">⏹ Stop</button>
+      <div class="flex items-center space-x-1.5">
+        <button class="px-2.5 py-1.5 rounded-md border border-green-200 bg-green-50 text-[9px] font-black text-green-600 hover:bg-green-100 transition-all flex items-center gap-1.5 uppercase">
+          <span class="material-symbols-outlined text-sm fill-1">play_arrow</span> Start
+        </button>
+        <button class="px-2.5 py-1.5 rounded-md border border-amber-200 bg-amber-50 text-[9px] font-black text-amber-600 hover:bg-amber-100 transition-all flex items-center gap-1.5 uppercase">
+          <span class="material-symbols-outlined text-sm">pause</span> Pause
+        </button>
+        <button class="px-2.5 py-1.5 rounded-md border border-green-200 bg-green-50 text-[9px] font-black text-green-600 hover:bg-green-100 transition-all flex items-center gap-1.5 uppercase">
+          <span class="material-symbols-outlined text-sm">resume</span> Resume
+        </button>
+        <button class="px-2.5 py-1.5 rounded-md border border-blue-200 bg-blue-50 text-[9px] font-black text-blue-600 hover:bg-blue-100 transition-all flex items-center gap-1.5 uppercase">
+          <span class="material-symbols-outlined text-sm">replay</span> Restart
+        </button>
+        <button class="px-2.5 py-1.5 rounded-md border border-red-200 bg-red-50 text-[9px] font-black text-red-600 hover:bg-red-100 transition-all flex items-center gap-1.5 uppercase">
+          <span class="material-symbols-outlined text-sm">stop</span> Stop
+        </button>
       </div>
     </div>
 
-    <!-- City Tabs -->
-    <div class="flex gap-2.5 px-5 py-4 overflow-x-auto shrink-0 border-b border-s100">
+    <!-- City Cards -->
+    <div class="grid grid-cols-3 gap-3 mb-4 shrink-0">
       ${task.cities.map((c, i) => {
     const isActive = i === activeCityIdx;
-    const icon = cityPinSvg;
-    const statusEl = c.status === 'done'
-      ? '<span class="w-5 h-5 rounded-full bg-green text-white inline-flex items-center justify-center text-[11px] font-bold shrink-0">✓</span>'
+    const borderCls = isActive ? 'border-2 border-blue-500 shadow-md' : 'border border-slate-200';
+    const statusIcon = c.status === 'done'
+      ? '<span class="material-symbols-outlined text-green-500 text-[16px] fill-1">check_circle</span>'
       : c.status === 'active'
-        ? '<span class="w-3 h-3 rounded-full bg-blue shrink-0"></span>'
-        : '<svg class="shrink-0 text-s300" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>';
-    const progressBar = c.status === 'active'
-      ? `<div class="h-[4px] bg-s100 rounded-full overflow-hidden mt-2 mb-1.5"><div class="h-full bg-blue rounded-full transition-[width] duration-300" style="width:${c.progress}%"></div></div>`
-      : c.status === 'done'
-        ? `<div class="h-[4px] bg-green/20 rounded-full overflow-hidden mt-2 mb-1.5"><div class="h-full bg-green rounded-full" style="width:100%"></div></div>`
+        ? `<div class="h-1.5 w-1.5 rounded-full bg-blue-500"></div>`
+        : '<span class="material-symbols-outlined text-slate-300 text-[16px]">schedule</span>';
+    const nameWeight = isActive ? 'font-bold text-slate-900' : 'font-semibold text-slate-500';
+    const barBg = c.status === 'done' ? 'bg-green-50' : c.status === 'active' ? 'bg-slate-100' : 'bg-slate-50';
+    const barFill = c.status === 'done' ? 'bg-green-500' : c.status === 'active' ? 'bg-blue-500' : 'bg-slate-200';
+    const pct = c.status === 'done' ? 100 : c.progress;
+    const statsLabel = c.status === 'done'
+      ? '<span class="text-[9px] text-slate-400 font-bold uppercase">Completed</span>'
+      : c.status === 'active'
+        ? `<span class="text-[9px] text-slate-400 font-bold uppercase">${c.done}/${c.total} KWs</span>`
+        : '<span class="text-[9px] text-slate-400 font-bold uppercase">Pending</span>';
+    const pctLabel = c.status === 'done'
+      ? '<span class="text-[9px] font-black text-green-600">100%</span>'
+      : c.status === 'active'
+        ? `<span class="text-[9px] font-black text-blue-600">${c.progress}%</span>`
         : '';
-    const statsText = c.status === 'active'
-      ? `<div class="flex justify-between text-[11px] font-semibold"><span class="text-s500">${c.done}/${c.total} KWS</span><span class="text-blue font-bold">${c.progress}%</span></div>`
-      : c.status === 'done'
-        ? `<div class="flex justify-between text-[11px] font-semibold"><span class="text-s400 uppercase tracking-wide">Done</span><span class="text-green font-bold">${c.progress}%</span></div>`
-        : `<div class="text-[11px] font-semibold text-s400 uppercase tracking-wide mt-2">Pending</div>`;
     return `
-        <div class="flex-1 min-w-[160px] px-3.5 py-2.5 border-2 ${isActive ? 'border-blue bg-white shadow-[0_2px_12px_rgba(37,99,235,.1)]' : 'border-s200/60 bg-white/80'} rounded-sm cursor-pointer transition-all duration-[180ms] shrink-0 hover:border-s300 font-sans" onclick="window.__switchCity(${i})">
-          <div class="flex items-center justify-between mb-0.5">
-            <div class="flex items-center gap-1.5">${icon}<span class="text-[14px] font-bold ${isActive ? 'text-s900' : 'text-s700'}">${c.name}</span></div>
-            ${statusEl}
+        <div class="bg-white rounded-md ${borderCls} p-3 cursor-pointer ${!isActive ? 'hover:bg-slate-50' : ''} transition-all relative overflow-hidden" onclick="window.__switchCity(${i})">
+          <div class="flex items-center justify-between mb-2">
+            <div class="flex items-center space-x-2">
+              <div class="w-4 h-3 bg-slate-100 rounded"></div>
+              <span class="text-[11px] ${nameWeight}">${c.name}</span>
+            </div>
+            ${statusIcon}
           </div>
-          ${progressBar}
-          ${statsText}
+          <div class="w-full h-1.5 ${barBg} rounded-full overflow-hidden">
+            <div class="h-full ${barFill} rounded-full" style="width: ${pct}%"></div>
+          </div>
+          <div class="flex justify-between mt-1.5">
+            ${statsLabel}
+            ${pctLabel}
+          </div>
         </div>`;
   }).join('')}
     </div>
 
     <!-- Keywords Section -->
-    <div class="flex-1 overflow-y-auto px-5 py-4">
-      <div class="flex items-center gap-3 mb-5">
-        <span class="text-xs font-extrabold text-s500 uppercase tracking-[2px] font-sans">Keywords: ${city.name}</span>
-        <span class="inline-flex items-center justify-center px-2.5 py-0.5 rounded-md text-[11px] font-bold bg-s100 text-s500 border border-s200">${city.total}</span>
-        <div class="ml-auto">
-          <input type="text" placeholder="Filter..." class="px-3 py-1.5 border border-s200 rounded-lg text-xs font-sans text-s600 bg-white outline-none w-[140px] transition-colors duration-150 focus:border-blue placeholder:text-s300" id="kw-filter-input" oninput="window.__filterKw(this.value)" />
+    <div class="flex-1 bg-white rounded-md border border-[var(--panel-border)] shadow-sm overflow-hidden flex flex-col min-h-0">
+      <div class="px-4 py-2 bg-slate-50/50 border-b border-slate-100 flex items-center justify-between shrink-0">
+        <div class="flex items-center space-x-3">
+          <span class="text-[10px] font-black text-slate-500 uppercase tracking-widest">Keywords: ${city.name}</span>
+          <span class="px-1.5 py-0.5 bg-slate-200/50 text-slate-600 rounded text-[9px] font-black">${city.total} Total</span>
+        </div>
+        <div class="relative w-56">
+          <span class="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-sm">search</span>
+          <input class="w-full pl-9 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-blue-100 focus:border-blue-500 outline-none transition-all" placeholder="Filter by keyword..." type="text" id="kw-filter-input" oninput="window.__filterKw(this.value)" />
         </div>
       </div>
-      <div class="grid grid-cols-3 gap-2.5" id="kw-grid">
-        ${city.keywords.map(k => {
-    const dotEl = k.status === 'ok'
-      ? '<span class="w-5 h-5 rounded-full bg-green text-white inline-flex items-center justify-center shrink-0 text-[11px] font-bold">✓</span>'
-      : k.status === 'run'
-        ? '<span class="w-5 h-5 rounded-full bg-blue text-white inline-flex items-center justify-center shrink-0 text-[8px]">●</span>'
-        : '<span class="w-5 h-5 rounded-full bg-s200/60 text-s400 inline-flex items-center justify-center shrink-0 text-[9px] tracking-tighter">···</span>';
-    const itemCls = k.status === 'ok' ? 'bg-green/[.06] border-green/20'
-      : k.status === 'run' ? 'bg-blue/[.06] border-blue/20'
-        : 'bg-white border-s100';
-    const textCls = k.status === 'ok' ? 'text-s800 font-semibold'
-      : k.status === 'run' ? 'text-blue font-semibold'
-        : 'text-s500 font-medium';
-    return `<div class="flex items-center gap-2 px-3 py-2.5 border rounded-lg text-[13px] ${textCls} transition-all duration-150 hover:shadow-1 ${itemCls}">${dotEl} ${k.name}</div>`;
+      <div class="p-4 overflow-y-auto flex-1">
+        <div class="grid grid-cols-3 gap-3" id="kw-grid">
+          ${city.keywords.map(k => {
+    if (k.status === 'ok') {
+      return `<div class="kw-item flex items-center justify-between p-2.5 rounded-md bg-green-50/40 border border-green-100 transition-all hover:bg-green-50">
+        <div class="flex items-center min-w-0">
+          <span class="material-symbols-outlined text-green-500 text-[18px] mr-2 fill-1">check_circle</span>
+          <span class="text-[11px] font-semibold text-slate-700 truncate">${k.name}</span>
+        </div>
+      </div>`;
+    } else if (k.status === 'run') {
+      return `<div class="kw-item flex items-center p-2.5 rounded-md bg-blue-50 border border-blue-400 keyword-active ring-2 ring-blue-100">
+        <div class="h-2 w-2 rounded-full bg-blue-500 mr-2 animate-pulse"></div>
+        <span class="text-[11px] font-bold text-blue-700 truncate">${k.name}</span>
+      </div>`;
+    } else {
+      return `<div class="kw-item flex items-center p-2.5 rounded-md bg-slate-50 border border-slate-100 hover:border-slate-300 transition-all cursor-pointer">
+        <span class="material-symbols-outlined text-slate-300 text-[18px] mr-2">circle</span>
+        <span class="text-[11px] font-medium text-slate-500 truncate">${k.name}</span>
+      </div>`;
+    }
   }).join('')}
+        </div>
       </div>
     </div>
   `;
@@ -538,32 +681,80 @@ function renderTaskView() {
 };
 
 
-/* ───── Global Queue (right column) ───── */
+/* ───── Global Queue (right column, code.html style) ───── */
 function loadChainForDevice(_serial: string) {
   const cards = $("#chain-cards")!;
 
-  // Update queue count
   const queueSub = document.querySelector(".queue-sub");
   if (queueSub) queueSub.textContent = `${globalQueue.length} Active Tasks`;
 
   cards.innerHTML = globalQueue.map(q => {
-    const style = TASK_STATUS_STYLE[q.status];
     const isActive = q === activeTask;
-    const sub = q.assignedDevice ? `⚡ ${q.assignedDevice.substring(0, 12)}` : `${q.cities.reduce((s, c) => s + c.total, 0)} Keywords`;
-    return `
-    <div class="rounded-lg overflow-hidden bg-white border border-s100 border-l-4 shadow-1 transition-all duration-[180ms] cursor-pointer shrink-0 hover:shadow-2 hover:-translate-y-px ${isActive ? 'border-l-[5px] !bg-blue/[.06] shadow-2' : ''}" style="border-left-color:${style.color};background:${isActive ? 'rgba(37,99,235,.08)' : style.bg}" onclick="window.__switchTask('${q.id}')">
-      <div class="px-3.5 py-3 flex items-center justify-between gap-3 min-h-12">
-        <div>
-          <h4 class="text-[13px] font-bold text-s900 m-0 font-sans leading-snug">${q.name}</h4>
-          <small class="text-[10px] font-semibold uppercase tracking-wide text-s400 mt-0.5 block">${sub}</small>
+    const deviceSub = q.assignedDevice ? q.assignedDevice.substring(0, 14) : '';
+
+    if (q.status === 'EXECUTING') {
+      const kwTotal = q.cities.reduce((s, c) => s + c.total, 0);
+      const kwDone = q.cities.reduce((s, c) => s + c.done, 0);
+      const pct = kwTotal > 0 ? Math.round(kwDone / kwTotal * 100) : 0;
+      return `
+      <div class="executing-gradient border border-blue-200 rounded-lg p-3 shadow-sm transition-all hover:shadow-md cursor-pointer relative overflow-hidden ring-1 ring-blue-50 ${isActive ? 'ring-2 ring-blue-300' : ''}" onclick="window.__switchTask('${q.id}')">
+        <div class="flex justify-between items-start mb-1.5">
+          <h4 class="text-[11px] font-bold text-slate-800 truncate pr-2">${q.name}</h4>
+          <span class="px-1.5 py-0.5 bg-blue-500 text-white text-[7px] font-black rounded uppercase">Executing</span>
         </div>
-        <div class="text-right flex flex-col items-end gap-1 shrink-0">
-          <span class="text-base leading-none">${style.icon}</span>
-          <div class="text-[10px] font-extrabold tracking-wider uppercase mt-0.5" style="color:${style.color}">${q.status}</div>
+        <div class="flex flex-col mb-2">
+          <p class="mono-technical text-[8px] text-blue-600 font-bold uppercase mb-1">Device: ${esc(deviceSub)}</p>
+          <div class="flex items-center text-[9px] text-slate-500">
+            <span class="material-symbols-outlined text-[14px] mr-1 text-blue-500">bolt</span> ${kwDone}/${kwTotal} Keywords
+          </div>
         </div>
-      </div>
-    </div>`;
-  }).join("") + '<div class="p-5 text-center text-[11px] font-bold uppercase tracking-[2px] text-s300">End of Queue</div>';
+        <div class="w-full h-1 bg-blue-100 rounded-full overflow-hidden">
+          <div class="h-full bg-blue-500 rounded-full" style="width: ${pct}%"></div>
+        </div>
+      </div>`;
+    } else if (q.status === 'SCHEDULED') {
+      const kwTotal = q.cities.reduce((s, c) => s + c.total, 0);
+      return `
+      <div class="bg-white border border-slate-100 border-l-4 border-l-slate-400 rounded-lg p-3 transition-all hover:border-slate-300 cursor-pointer" onclick="window.__switchTask('${q.id}')">
+        <div class="flex justify-between items-start mb-1.5">
+          <h4 class="text-[11px] font-bold text-slate-600 truncate pr-2">${q.name}</h4>
+          <span class="px-1.5 py-0.5 bg-slate-100 text-slate-500 text-[7px] font-black rounded uppercase">Scheduled</span>
+        </div>
+        <p class="mono-technical text-[8px] text-slate-400 font-bold uppercase mb-1">Device: ${esc(deviceSub)}</p>
+        <p class="text-[9px] text-slate-400 font-bold uppercase">${kwTotal} Keywords • 09:00 PM</p>
+      </div>`;
+    } else if (q.status === 'SUCCESS') {
+      return `
+      <div class="bg-white border border-slate-100 border-l-4 border-l-green-500 rounded-lg p-3 opacity-80" onclick="window.__switchTask('${q.id}')">
+        <div class="flex justify-between items-start mb-1.5">
+          <h4 class="text-[11px] font-bold text-slate-500 truncate pr-2">${q.name}</h4>
+          <span class="px-1.5 py-0.5 bg-green-50 text-green-600 text-[7px] font-black rounded uppercase">Success</span>
+        </div>
+        <p class="mono-technical text-[8px] text-slate-400 font-bold uppercase mb-1">Device: ${esc(deviceSub)}</p>
+        <p class="text-[9px] text-slate-400 font-bold uppercase">Completed 12:40 PM</p>
+      </div>`;
+    } else if (q.status === 'ERROR') {
+      return `
+      <div class="bg-white border border-slate-100 border-l-4 border-l-red-500 rounded-lg p-3" onclick="window.__switchTask('${q.id}')">
+        <div class="flex justify-between items-start mb-1.5">
+          <h4 class="text-[11px] font-bold text-slate-700 truncate pr-2">${q.name}</h4>
+          <span class="px-1.5 py-0.5 bg-red-50 text-red-500 text-[7px] font-black rounded uppercase">Error</span>
+        </div>
+        <p class="mono-technical text-[8px] text-slate-400 font-bold uppercase mb-1">Device: ${esc(deviceSub)}</p>
+        <p class="text-[9px] text-red-500 font-bold uppercase">Timeout (20s) - Auto Retrying</p>
+      </div>`;
+    } else {
+      // Default / PENDING
+      return `
+      <div class="bg-white border border-slate-100 border-l-4 border-l-slate-300 rounded-lg p-3 transition-all hover:border-slate-300 cursor-pointer" onclick="window.__switchTask('${q.id}')">
+        <div class="flex justify-between items-start mb-1.5">
+          <h4 class="text-[11px] font-bold text-slate-600 truncate pr-2">${q.name}</h4>
+          <span class="px-1.5 py-0.5 bg-slate-100 text-slate-500 text-[7px] font-black rounded uppercase">${q.status}</span>
+        </div>
+        <p class="mono-technical text-[8px] text-slate-400 font-bold uppercase mb-1">Device: ${esc(deviceSub)}</p>
+      </div>`;
+    }
+  }).join("") + '<div class="p-4 border-t border-slate-100 bg-slate-50/50 text-center"><span class="text-[9px] text-slate-400 font-black uppercase tracking-[0.4em]">End of Queue</span></div>';
 }
 
 /* ───── Device Info Modal ───── */
@@ -574,17 +765,24 @@ async function showDeviceInfo(serial: string) {
   b.innerHTML = '<div class="text-center p-4.5"><span class="spinner"></span></div>';
   try {
     let i: DeviceProperties;
+    const mockP = MOCK_DEVICE_PROPS.find(p => p.serial === serial);
     try {
       i = await invoke("get_device_info", { serial });
+      // 用 mock 数据补充不可靠的字段
+      if (mockP) {
+        if (!i.brand || i.brand === 'unknown') i.brand = mockP.brand;
+        if (!i.model || i.model === 'unknown') i.model = mockP.model;
+        i.battery_level = mockP.battery_level;
+        i.battery_temperature = mockP.battery_temperature;
+      }
     } catch {
-      const mockP = MOCK_DEVICE_PROPS.find(p => p.serial === serial);
       if (!mockP) throw new Error('Device not found');
       i = mockP as DeviceProperties;
     }
     const typeLabel = i.device_type === "usb" ? "USB" : "WiFi";
     const typeIcon = i.device_type === "usb"
-      ? '<span class="material-icons-round text-base">usb</span>'
-      : '<span class="material-icons-round text-base">wifi</span>';
+      ? '<span class="material-symbols-outlined text-base">usb</span>'
+      : '<span class="material-symbols-outlined text-base">wifi</span>';
     const batteryPct = i.battery_level ?? 0;
     const batteryColor = batteryPct < 30 ? 'text-orange' : 'text-green';
     const tempVal = i.battery_temperature ?? 0;
@@ -594,7 +792,7 @@ async function showDeviceInfo(serial: string) {
       <!-- Device Header -->
       <div class="flex items-center gap-3 mb-5">
         <div class="w-12 h-12 rounded-lg bg-gradient-to-br from-blue to-blue-dark flex items-center justify-center shrink-0 shadow-[0_4px_12px_rgba(37,99,235,.3)]">
-          <span class="material-icons-round text-2xl text-white">smartphone</span>
+          <span class="material-symbols-outlined text-2xl text-white">smartphone</span>
         </div>
         <div>
           <div class="text-[15px] font-bold text-s900">${esc(i.brand)} ${esc(i.model)}</div>
@@ -787,45 +985,7 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // ── Panel Resizers ──
-  function initResizer(resizerId: string, targetCol: string, side: "left" | "right") {
-    const resizer = document.getElementById(resizerId);
-    const col = document.querySelector(targetCol) as HTMLElement;
-    if (!resizer || !col) return;
-
-    let startX = 0;
-    let startW = 0;
-
-    const onMouseMove = (e: MouseEvent) => {
-      e.preventDefault();
-      const dx = e.clientX - startX;
-      const newW = side === "left" ? startW + dx : startW - dx;
-      const clamped = Math.max(200, Math.min(500, newW));
-      col.style.width = `${clamped}px`;
-    };
-
-    const onMouseUp = () => {
-      resizer.classList.remove("dragging");
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("mouseup", onMouseUp);
-    };
-
-    resizer.addEventListener("mousedown", (e: MouseEvent) => {
-      e.preventDefault();
-      startX = e.clientX;
-      startW = col.getBoundingClientRect().width;
-      resizer.classList.add("dragging");
-      document.body.style.cursor = "col-resize";
-      document.body.style.userSelect = "none";
-      document.addEventListener("mousemove", onMouseMove);
-      document.addEventListener("mouseup", onMouseUp);
-    });
-  }
-
-  initResizer("resizer-left", "#col-left", "left");
-  initResizer("resizer-right", "#col-right", "right");
+  // Resizers removed — using fixed width layout per code.html
 
   // 监听后台 ADB 设备变更事件，自动刷新
   listen("devices-changed", () => {
