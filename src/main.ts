@@ -707,7 +707,7 @@ function renderTaskView() {
                       ? '<span class="text-[11px] text-slate-400 font-bold uppercase">已完成</span>'
                       : c.status === 'active'
                         ? `<span class="text-[11px] text-slate-400 font-bold uppercase">${c.done}/${c.total} 关键词</span>`
-                        : '<span class="text-[11px] text-slate-400 font-bold uppercase">等待中</span>';
+                        : '<span class="text-[11px] text-slate-400 font-bold uppercase">就绪</span>';
               const pctLabel =
                   c.status === 'done'
                       ? '<span class="text-[11px] font-black text-green-600">100%</span>'
@@ -1022,7 +1022,7 @@ function loadChainForDevice(_serial: string) {
           <div class="flex justify-between items-start mb-2">
             <h4 class="font-semibold text-xs text-slate-900 leading-tight truncate pr-2">${esc(q.name)}</h4>
             <div class="bg-slate-100 px-2 py-0.5 rounded-full shrink-0">
-              <span class="text-[11px] font-bold text-[#64748B]">等待中</span>
+              <span class="text-[11px] font-bold text-[#64748B]">就绪</span>
             </div>
           </div>
           ${statsRow}
