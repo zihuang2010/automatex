@@ -2,7 +2,7 @@
     "$schema": "https://schema.tauri.app/config/2",
     "productName": "AutomateX",
     "version": "0.1.0",
-    "identifier": "com.automatex.app",
+    "identifier": "com.ris0si0n.automatex",
     "build": {
         "beforeDevCommand": "npm run dev",
         "devUrl": "http://localhost:1420",
