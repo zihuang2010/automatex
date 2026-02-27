@@ -704,15 +704,15 @@ function renderTaskView() {
               const pct = c.status === 'done' ? 100 : c.progress;
               const statsLabel =
                   c.status === 'done'
-                      ? '<span class="text-[10px] text-slate-400 font-bold uppercase">已完成</span>'
+                      ? '<span class="text-[11px] text-slate-400 font-bold uppercase">已完成</span>'
                       : c.status === 'active'
-                        ? `<span class="text-[10px] text-slate-400 font-bold uppercase">${c.done}/${c.total} 关键词</span>`
-                        : '<span class="text-[10px] text-slate-400 font-bold uppercase">等待中</span>';
+                        ? `<span class="text-[11px] text-slate-400 font-bold uppercase">${c.done}/${c.total} 关键词</span>`
+                        : '<span class="text-[11px] text-slate-400 font-bold uppercase">等待中</span>';
               const pctLabel =
                   c.status === 'done'
-                      ? '<span class="text-[10px] font-black text-green-600">100%</span>'
+                      ? '<span class="text-[11px] font-black text-green-600">100%</span>'
                       : c.status === 'active'
-                        ? `<span class="text-[10px] font-black text-blue-600">${c.progress}%</span>`
+                        ? `<span class="text-[11px] font-black text-blue-600">${c.progress}%</span>`
                         : '';
               const cardBg =
                   c.status === 'done'
@@ -721,21 +721,21 @@ function renderTaskView() {
                         ? 'bg-blue-50/40'
                         : 'bg-slate-50/50';
               return `
-        <div class="${cardBg} rounded-md ${borderCls} p-2.5 cursor-pointer ${!isActive ? 'hover:bg-slate-50' : ''} transition-all relative overflow-hidden" style="width:180px;min-width:180px;flex-shrink:0" onclick="window.__switchCity(${i})">
-          <div class="flex items-center justify-between mb-1.5">
+        <div class="${cardBg} rounded-md ${borderCls} p-3 cursor-pointer ${!isActive ? 'hover:bg-slate-50' : ''} transition-all relative overflow-hidden" style="width:220px;min-width:220px;flex-shrink:0" onclick="window.__switchCity(${i})">
+          <div class="flex items-center justify-between mb-2">
             <div class="flex items-center space-x-2">
               <span class="material-symbols-outlined icon-sm text-blue-400">location_city</span>
-              <span class="text-[11px] ${nameWeight}">${c.name}</span>
+              <span class="text-[13px] ${nameWeight}">${c.name}</span>
             </div>
             ${statusIcon}
           </div>
-          <div class="text-[9px] text-slate-400 truncate mb-1.5" title="${c.poi}">
+          <div class="text-[10px] text-slate-400 truncate mb-2" title="${c.poi}">
             <span class="material-symbols-outlined icon-xs text-slate-300 align-middle mr-0.5">location_on</span>${c.poi}
           </div>
-          <div class="w-full h-1.5 ${barBg} rounded-full overflow-hidden">
+          <div class="w-full h-2 ${barBg} rounded-full overflow-hidden">
             <div class="h-full ${barFill} rounded-full" style="width: ${pct}%"></div>
           </div>
-          <div class="flex justify-between mt-1.5">
+          <div class="flex justify-between mt-2">
             ${statsLabel}
             ${pctLabel}
           </div>
@@ -774,7 +774,6 @@ function renderTaskView() {
       </div>`;
                   } else {
                       return `<div class="kw-item flex items-center p-2 rounded bg-slate-100/50 border border-slate-200 hover:border-slate-300 transition-all cursor-pointer">
-        <span class="material-symbols-outlined icon-sm text-slate-300 mr-1.5">circle</span>
         <span class="text-[12px] font-medium text-slate-500 truncate">${k.name}</span>
       </div>`;
                   }
