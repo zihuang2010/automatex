@@ -9,7 +9,12 @@ pub fn adb_path() -> &'static str {
     ADB.get_or_init(|| {
         if let Ok(exe) = std::env::current_exe() {
             if let Some(dir) = exe.parent() {
-                let sidecar = dir.join("adb");
+                // Windows 上查找 adb.exe，macOS/Linux 上查找 adb
+                let sidecar = if cfg!(windows) {
+                    dir.join("adb.exe")
+                } else {
+                    dir.join("adb")
+                };
                 if sidecar.exists() {
                     return sidecar.to_string_lossy().to_string();
                 }
@@ -17,6 +22,18 @@ pub fn adb_path() -> &'static str {
         }
         "adb".to_string() // 兜底：开发环境走系统 PATH
     })
+}
+
+/// 创建不弹出控制台窗口的 ADB Command（Windows 上设置 CREATE_NO_WINDOW）
+#[allow(unused_mut)]
+pub fn adb_command() -> std::process::Command {
+    let mut cmd = std::process::Command::new(adb_path());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    cmd
 }
 
 // ─── Data Types ─────────────────────────────────────────────────
@@ -45,20 +62,6 @@ pub struct ShellResult {
     pub success: bool,
     pub output: String,
     pub error: String,
-}
-
-/// 设备详细属性
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DeviceProperties {
-    pub serial: String,
-    pub model: String,
-    pub brand: String,
-    pub android_version: String,
-    pub sdk_version: String,
-    pub display_resolution: String,
-    pub device_type: String,
-    pub battery_level: i32,
-    pub battery_temperature: f64,
 }
 
 // ─── ADB Server 连接地址 ─────────────────────────────────────────
@@ -117,36 +120,28 @@ impl DeviceManager {
 
     /// 清空所有设备（断开所有 ADB 连接，包括自动发现的）
     pub fn clear_devices(&self) {
-        // 先从 ADB Server 获取当前所有连接的设备，逐个断开
+        // Phase 1: 不持锁执行 ADB 断开操作
         if let Ok(mut server) = std::panic::catch_unwind(|| ADBServer::new(adb_server_addr())) {
             if let Ok(devs) = server.devices() {
                 for dev in &devs {
                     let serial = dev.identifier.to_string();
-                    // 断开所有非 USB 设备（WiFi / mDNS / TLS transport）
-                    let _ = std::process::Command::new(adb_path())
-                        .args(["disconnect", &serial])
-                        .output();
+                    let _ = adb_command().args(["disconnect", &serial]).output();
                 }
             }
         }
-        // 兜底：执行 adb disconnect（无参数断开所有远程连接）
-        let _ = std::process::Command::new(adb_path())
-            .arg("disconnect")
-            .output();
+        let _ = adb_command().arg("disconnect").output();
 
-        // 清空手动列表
+        // Phase 2: 持锁清空手动列表（瞬时操作）
         self.devices.lock().unwrap().clear();
     }
 
     /// 移除设备（同时断开 WiFi 连接）
     pub fn remove_device_and_disconnect(&self, serial: &str) -> Result<(), String> {
-        // 先断开 WiFi 连接
+        // Phase 1: 不持锁执行 ADB 断开（可能阻塞）
         if serial.contains(':') {
-            let _ = std::process::Command::new(adb_path())
-                .args(["disconnect", serial])
-                .output();
+            let _ = adb_command().args(["disconnect", serial]).output();
         }
-        // 从手动列表中移除
+        // Phase 2: 持锁移除（瞬时操作）
         let mut devices = self.devices.lock().unwrap();
         devices.retain(|d| d.serial != serial && d.address.as_deref() != Some(serial));
         Ok(())
@@ -205,7 +200,7 @@ impl DeviceManager {
         let addr = parse_wifi_address(address)?;
         let addr_str = addr.to_string();
 
-        let mut child = std::process::Command::new(adb_path())
+        let mut child = adb_command()
             .args(["connect", &addr_str])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -261,7 +256,7 @@ fn parse_wifi_address(addr: &str) -> Result<std::net::SocketAddr, String> {
 
 /// 通过 adb CLI 执行 shell 命令（最可靠方式）
 fn adb_shell(serial: &str, command: &str) -> Result<String, String> {
-    let output = std::process::Command::new(adb_path())
+    let output = adb_command()
         .args(["-s", serial, "shell", command])
         .output()
         .map_err(|e| format!("执行 adb 失败 (确保 adb 已安装): {}", e))?;
@@ -276,7 +271,7 @@ fn adb_shell(serial: &str, command: &str) -> Result<String, String> {
 
 /// 通过 adb CLI 执行非 shell 命令
 fn adb_cmd(serial: &str, args: &[&str]) -> Result<String, String> {
-    let mut cmd = std::process::Command::new(adb_path());
+    let mut cmd = adb_command();
     cmd.args(["-s", serial]);
     cmd.args(args);
 

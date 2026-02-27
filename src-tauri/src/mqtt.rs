@@ -40,7 +40,8 @@ pub enum MqttStatus {
 pub struct MqttManager {
     client: Arc<Mutex<Option<AsyncClient>>>,
     status: Arc<Mutex<MqttStatus>>,
-    config: Arc<Mutex<Option<MqttConfig>>>,
+    /// 用于通知旧事件循环退出的 cancel sender
+    cancel_tx: Arc<Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
 }
 
 impl MqttManager {
@@ -48,7 +49,7 @@ impl MqttManager {
         Self {
             client: Arc::new(Mutex::new(None)),
             status: Arc::new(Mutex::new(MqttStatus::Disconnected)),
-            config: Arc::new(Mutex::new(None)),
+            cancel_tx: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -58,7 +59,7 @@ impl MqttManager {
         config: MqttConfig,
         app_handle: tauri::AppHandle,
     ) -> Result<String, String> {
-        // 如果已连接，先断开
+        // 如果已连接，先断开（会取消旧 task）
         self.disconnect().await.ok();
 
         *self.status.lock().await = MqttStatus::Connecting;
@@ -75,46 +76,60 @@ impl MqttManager {
         let (client, mut eventloop) = AsyncClient::new(opts, 100);
 
         *self.client.lock().await = Some(client);
-        *self.config.lock().await = Some(config);
 
         let status = self.status.clone();
 
-        // 启动事件循环
+        // 创建 cancel channel 用于通知事件循环退出
+        let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+        *self.cancel_tx.lock().await = Some(cancel_tx);
+
+        // 启动事件循环（可被 cancel 信号取消）
         tokio::spawn(async move {
             loop {
-                match eventloop.poll().await {
-                    Ok(event) => {
-                        match &event {
-                            Event::Incoming(Incoming::ConnAck(_)) => {
-                                *status.lock().await = MqttStatus::Connected;
-                                // 通知前端连接成功
-                                let _ = app_handle.emit("mqtt-status", "connected");
-                            }
-                            Event::Incoming(Incoming::Publish(publish)) => {
-                                let topic = publish.topic.clone();
-                                let payload = String::from_utf8_lossy(&publish.payload).to_string();
-                                // 推送消息到前端
-                                let _ = app_handle.emit(
-                                    "mqtt-message",
-                                    serde_json::json!({
-                                        "topic": topic,
-                                        "payload": payload,
-                                    }),
-                                );
-                            }
-                            Event::Incoming(Incoming::Disconnect) => {
-                                *status.lock().await = MqttStatus::Disconnected;
-                                let _ = app_handle.emit("mqtt-status", "disconnected");
-                            }
-                            _ => {}
+                tokio::select! {
+                    // 监听 cancel 信号
+                    _ = cancel_rx.changed() => {
+                        if *cancel_rx.borrow() {
+                            *status.lock().await = MqttStatus::Disconnected;
+                            break;
                         }
                     }
-                    Err(e) => {
-                        let err_msg = format!("{}", e);
-                        *status.lock().await = MqttStatus::Error(err_msg.clone());
-                        let _ = app_handle.emit("mqtt-status", format!("error:{}", err_msg));
-                        // 连接失败时退出循环
-                        break;
+                    // 正常处理 MQTT 事件
+                    result = eventloop.poll() => {
+                        match result {
+                            Ok(event) => {
+                                match &event {
+                                    Event::Incoming(Incoming::ConnAck(_)) => {
+                                        *status.lock().await = MqttStatus::Connected;
+                                        let _ = app_handle.emit("mqtt-status", "connected");
+                                    }
+                                    Event::Incoming(Incoming::Publish(publish)) => {
+                                        let topic = publish.topic.clone();
+                                        let payload =
+                                            String::from_utf8_lossy(&publish.payload).to_string();
+                                        let _ = app_handle.emit(
+                                            "mqtt-message",
+                                            serde_json::json!({
+                                                "topic": topic,
+                                                "payload": payload,
+                                            }),
+                                        );
+                                    }
+                                    Event::Incoming(Incoming::Disconnect) => {
+                                        *status.lock().await = MqttStatus::Disconnected;
+                                        let _ = app_handle.emit("mqtt-status", "disconnected");
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            Err(e) => {
+                                let err_msg = format!("{}", e);
+                                *status.lock().await = MqttStatus::Error(err_msg.clone());
+                                let _ = app_handle
+                                    .emit("mqtt-status", format!("error:{}", err_msg));
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -123,8 +138,13 @@ impl MqttManager {
         Ok("MQTT 连接中...".to_string())
     }
 
-    /// 断开连接
+    /// 断开连接（同时取消事件循环 task）
     pub async fn disconnect(&self) -> Result<String, String> {
+        // 先发送 cancel 信号，确保旧 task 退出
+        if let Some(tx) = self.cancel_tx.lock().await.take() {
+            let _ = tx.send(true);
+        }
+
         if let Some(client) = self.client.lock().await.take() {
             client
                 .disconnect()

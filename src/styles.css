@@ -79,12 +79,9 @@
     --ease-smooth: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* ─── CSS Variables ─── */
+/* ─── CSS Variables (补充 @theme 未定义但被引用的) ─── */
 :root {
-    --action-blue: #2563eb;
     --vibrant-green: #10b981;
-    --soft-orange: #f59e0b;
-    --refined-red: #ef4444;
     --deep-charcoal: #1e293b;
     --premium-bg: #f8fafc;
     --panel-border: rgba(226, 232, 240, 0.8);

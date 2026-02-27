@@ -2,7 +2,7 @@ mod connection;
 mod mqtt;
 mod storage;
 
-use connection::{DeviceManager, DeviceProperties, ShellResult};
+use connection::{DeviceManager, ShellResult};
 use mqtt::{MqttConfig, MqttManager, MqttStatus};
 use std::sync::Arc;
 use storage::DeviceRow;
@@ -82,29 +82,14 @@ fn execute_shell(
     state.manager.execute_shell(&serial, &command)
 }
 
-/// 获取设备详细信息（查 DB，瞬时返回）
+/// 获取设备详细信息（查 DB，直接返回 DeviceRow）
 #[tauri::command]
-fn get_device_info(
-    serial: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<DeviceProperties, String> {
-    // 仍保留此接口，从 DB 转换为 DeviceProperties
+fn get_device_info(serial: String, state: tauri::State<'_, AppState>) -> Result<DeviceRow, String> {
     let devices = state.db.load_all_devices();
-    let dev = devices
-        .iter()
+    devices
+        .into_iter()
         .find(|d| d.serial == serial)
-        .ok_or_else(|| format!("设备 {} 不存在", serial))?;
-    Ok(DeviceProperties {
-        serial: dev.hw_serial.clone(),
-        model: dev.model.clone(),
-        brand: dev.brand.clone(),
-        android_version: dev.android_version.clone(),
-        sdk_version: dev.sdk_version.clone(),
-        display_resolution: dev.display_resolution.clone(),
-        device_type: dev.device_type.clone(),
-        battery_level: dev.battery_level,
-        battery_temperature: dev.battery_temperature,
-    })
+        .ok_or_else(|| format!("设备 {} 不存在", serial))
 }
 
 /// 安装 APK
@@ -310,7 +295,7 @@ fn fetch_device_row(serial: &str, state: &str) -> DeviceRow {
     };
 
     // 批量 adb shell（1 次调用获取所有属性）
-    let raw = std::process::Command::new(connection::adb_path())
+    let raw = connection::adb_command()
         .args(["-s", serial, "shell", BATCH_PROPS_CMD])
         .output()
         .ok()
@@ -373,7 +358,7 @@ fn fetch_device_row(serial: &str, state: &str) -> DeviceRow {
 
 /// 仅刷新电量和温度
 fn refresh_battery(serial: &str, db: &storage::Database) -> bool {
-    let raw = std::process::Command::new(connection::adb_path())
+    let raw = connection::adb_command()
         .args(["-s", serial, "shell", "dumpsys battery"])
         .output()
         .ok()
@@ -393,99 +378,121 @@ fn refresh_battery(serial: &str, db: &storage::Database) -> bool {
     }
 }
 
-/// 解析 adb devices 输出，返回 (serial, state) 列表
-fn parse_adb_devices_output(stdout: &str) -> Vec<(String, String)> {
-    stdout
-        .lines()
-        .skip(1) // 跳过 "List of devices attached"
-        .filter_map(|line| {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                // ADB state: "device" → 我们用 "Device" (大写首字母)
-                let state = match parts[1] {
-                    "device" => "Device",
-                    "offline" => "Offline",
-                    "unauthorized" => "Unauthorized",
-                    other => other,
-                };
-                Some((parts[0].to_string(), state.to_string()))
-            } else {
-                None
-            }
-        })
-        .collect()
+/// 将 DeviceState 转为应用层状态字符串
+fn device_state_str(state: &adb_client::server::DeviceState) -> &'static str {
+    use adb_client::server::DeviceState;
+    match state {
+        DeviceState::Device => "Device",
+        DeviceState::Offline => "Offline",
+        DeviceState::Unauthorized => "Unauthorized",
+        _ => "Offline",
+    }
 }
 
-/// 启动后台设备监控线程
+/// 启动后台设备监控（使用 adb_client track_devices 推送模式）
 fn spawn_device_monitor(handle: tauri::AppHandle, db: Arc<storage::Database>) {
+    let db_track = Arc::clone(&db);
+    let handle_track = handle.clone();
+
+    // ── 线程 1: track_devices（设备上下线推送）──
     std::thread::spawn(move || {
-        let mut last_snapshot: Vec<String> = Vec::new();
-        let mut tick_count: u64 = 0;
-
         loop {
-            std::thread::sleep(std::time::Duration::from_secs(2));
-            tick_count += 1;
-            let mut changed = false;
+            // 使用 ADBServer::track_devices 维持 TCP 长连接
+            let addr = std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(127, 0, 0, 1), 5037);
 
-            // ═══ Phase 1: 设备上下线检测（每 2s）═══
-            let output = match std::process::Command::new(connection::adb_path())
-                .arg("devices")
-                .output()
-            {
-                Ok(o) => o,
-                Err(_) => continue,
-            };
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let current_devices = parse_adb_devices_output(&stdout);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut server = adb_client::server::ADBServer::new(addr);
 
-            // 构建快照用于比较
-            let mut current_snapshot: Vec<String> = current_devices
-                .iter()
-                .map(|(s, st)| format!("{}:{}", s, st))
-                .collect();
-            current_snapshot.sort();
+                // 用 Mutex 收集每批回调的设备列表
+                let batch: std::sync::Mutex<Vec<(String, String)>> =
+                    std::sync::Mutex::new(Vec::new());
+                let batch_changed = std::sync::atomic::AtomicBool::new(false);
 
-            if current_snapshot != last_snapshot {
-                last_snapshot = current_snapshot;
+                // track_devices 本身是阻塞 loop，回调在同一线程执行
+                // 每次 ADB 服务器推送一个事件时，回调会被调用多次（每台设备一次）
+                // 事件之间的分界是外层 length 读取（在 track_devices 内部处理）
+                // 由于我们无法精确区分批界，每个回调都做一次全量处理
+                let db_cb = Arc::clone(&db_track);
+                let handle_cb = handle_track.clone();
 
-                // 获取 DB 中已知的在线设备
-                let online_serials: Vec<&str> =
-                    current_devices.iter().map(|(s, _)| s.as_str()).collect();
+                server.track_devices(move |device| {
+                    let serial = device.identifier.clone();
+                    let state = device_state_str(&device.state);
 
-                // 将不在列表中的设备标记为 Offline
-                db.mark_offline_except(&online_serials);
-
-                // 处理每台在线设备
-                for (serial, state) in &current_devices {
-                    if !db.device_exists(serial)
-                        || (state == "Device" && db.needs_prop_refresh(serial))
+                    // 收集到 batch
                     {
-                        // 新设备 或 属性未初始化：立即获取全部属性
-                        let row = fetch_device_row(serial, state);
-                        db.upsert_device(&row);
-                    } else {
-                        // 已有设备：仅更新状态
-                        db.update_device_state(serial, state);
+                        let mut b = batch.lock().unwrap();
+                        // 如果同一 serial 已存在，更新状态
+                        if let Some(existing) = b.iter_mut().find(|(s, _)| s == &serial) {
+                            existing.1 = state.to_string();
+                        } else {
+                            b.push((serial.clone(), state.to_string()));
+                        }
+                        batch_changed.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
-                }
 
-                changed = true;
-            }
+                    // 处理当前已知的所有设备
+                    let devices: Vec<(String, String)> = batch.lock().unwrap().clone();
 
-            // ═══ Phase 2: 属性刷新（每 5 轮 = 10s）═══
-            if tick_count % 5 == 0 {
-                for (serial, state) in &current_devices {
-                    if state == "Device" {
-                        if refresh_battery(serial, &db) {
-                            changed = true;
+                    // 获取在线设备列表
+                    let online_serials: Vec<&str> = devices
+                        .iter()
+                        .filter(|(_, s)| s == "Device")
+                        .map(|(serial, _)| serial.as_str())
+                        .collect();
+
+                    // 将不在列表中的设备标记为 Offline
+                    db_cb.mark_offline_except(&online_serials);
+
+                    // 处理每台设备
+                    for (serial, state) in &devices {
+                        if !db_cb.device_exists(serial)
+                            || (state == "Device" && db_cb.needs_prop_refresh(serial))
+                        {
+                            // 新设备或属性未初始化：立即获取全部属性
+                            let row = fetch_device_row(serial, state);
+                            db_cb.upsert_device(&row);
+                        } else {
+                            // 已有设备：仅更新状态
+                            db_cb.update_device_state(serial, state);
                         }
                     }
+
+                    // 通知前端
+                    let _ = handle_cb.emit("devices-changed", ());
+                    Ok(())
+                })
+            }));
+
+            // track_devices 断开时（ADB Server 重启等），自动重连
+            if let Err(_) = result {
+                eprintln!("[monitor] track_devices panic, 5s 后重连...");
+            } else {
+                eprintln!("[monitor] track_devices 连接断开, 5s 后重连...");
+            }
+            std::thread::sleep(std::time::Duration::from_secs(5));
+        }
+    });
+
+    // ── 线程 2: 电池/温度定时刷新（每 10s）──
+    let db_battery = Arc::clone(&db);
+    let handle_battery = handle.clone();
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(10));
+
+            // 从 DB 中读取当前在线设备
+            let devices = db_battery.load_all_devices();
+            let mut changed = false;
+            for dev in &devices {
+                if dev.state == "Device" {
+                    if refresh_battery(&dev.serial, &db_battery) {
+                        changed = true;
+                    }
                 }
             }
-
-            // ═══ 通知前端 ═══
             if changed {
-                let _ = handle.emit("devices-changed", ());
+                let _ = handle_battery.emit("devices-changed", ());
             }
         }
     });

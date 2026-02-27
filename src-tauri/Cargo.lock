@@ -294,7 +294,6 @@ name = "automatex"
 version = "0.1.0"
 dependencies = [
  "adb_client",
- "log",
  "rumqttc",
  "rusqlite",
  "serde",

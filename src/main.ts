@@ -34,19 +34,6 @@ interface DeviceRow {
     updated_at: number;
 }
 
-/** 保留给 showDeviceInfo 弹窗使用 */
-interface DeviceProperties {
-    serial: string;
-    model: string;
-    brand: string;
-    android_version: string;
-    sdk_version: string;
-    display_resolution: string;
-    device_type: string;
-    battery_level: number;
-    battery_temperature: number;
-}
-
 let selectedDevice: string | null = null;
 let globalQueue: MockTask[] = [];
 let activeTask: MockTask | null = null;
@@ -148,10 +135,6 @@ async function refreshDevices() {
     try {
         const devs: DeviceRow[] = await invoke('list_devices');
 
-        // Update dev count badge
-        const devCount = $('#dev-count');
-        if (devCount) devCount.textContent = `共 ${devs.length} 台`;
-
         renderDeviceCards(devs);
 
         // 检查当前选中设备是否仍在列表中
@@ -166,8 +149,11 @@ async function refreshDevices() {
                 selectedDevice = null;
             }
         }
+
+        return devs;
     } catch (e) {
         tree.innerHTML = `<div class="empty-hint text-red">错误: ${e}</div>`;
+        return [];
     }
 }
 
@@ -355,6 +341,9 @@ function renderDeviceCards(devs: DeviceRow[]) {
         const hadDevices = body ? body.querySelectorAll('.dev-card').length > 0 : false;
         sectionState.set(label, { collapsed: el.classList.contains('collapsed'), hadDevices });
     });
+
+    // 新旧 HTML 对比，无变化时跳过 DOM 更新（避免无谓重绘和事件重绑）
+    if (tree.innerHTML === html) return;
 
     tree.innerHTML = html;
 
@@ -1071,7 +1060,7 @@ async function showDeviceInfo(serial: string) {
     m.style.display = 'flex';
     b.innerHTML = '<div class="text-center p-4.5"><span class="spinner"></span></div>';
     try {
-        const i: DeviceProperties = await invoke('get_device_info', { serial });
+        const i: DeviceRow = await invoke('get_device_info', { serial });
         const typeLabel = i.device_type === 'usb' ? 'USB' : 'WiFi';
         const typeIcon =
             i.device_type === 'usb'
@@ -1286,10 +1275,9 @@ window.addEventListener('DOMContentLoaded', () => {
 
     // 监听后台 ADB 设备变更事件，自动刷新
     listen('devices-changed', async () => {
-        // 先刷新设备列表
-        await refreshDevices();
+        // 刷新设备列表并获取结果
+        const devs = await refreshDevices();
         // 获取在线设备，释放离线设备上的任务
-        const devs: DeviceRow[] = await invoke('list_devices');
         const onlineSerials = new Set(devs.filter(d => d.state !== 'Offline').map(d => d.serial));
         const released = releaseTasksForOfflineDevices(onlineSerials);
         if (released > 0) {

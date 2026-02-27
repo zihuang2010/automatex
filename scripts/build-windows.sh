@@ -105,7 +105,11 @@ cd "$ROOT_DIR/src-tauri"
 # 设置 xwin 缓存路径，cargo-xwin 会自动使用已下载的 SDK
 export XWIN_CACHE_DIR="$XWIN_CACHE"
 
-cargo xwin build --release --target "$TARGET"
+# 关键: --features custom-protocol
+# Tauri 的 build.rs 中: dev = !has_feature("custom-protocol")
+# 不启用此 feature → dev=true → 二进制连接 devUrl (localhost:1420) 而非嵌入前端
+# 正规 `npx tauri build` 会自动添加此 feature，但 cargo xwin build 绕过 CLI 必须手动指定
+cargo xwin build --release --target "$TARGET" --features tauri/custom-protocol
 
 # ── 收集产物到 output/ ──
 info "收集产物..."
