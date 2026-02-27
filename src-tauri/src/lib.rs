@@ -43,10 +43,53 @@ fn remove_device(serial: String, state: tauri::State<'_, AppState>) -> Result<St
     Ok(format!("设备 {} 已移除", serial))
 }
 
-/// 列出所有设备
+/// 列出所有设备（ADB 扫描 + DB fallback）
 #[tauri::command]
 fn list_devices(state: tauri::State<'_, AppState>) -> Result<Vec<DeviceInfo>, String> {
-    state.manager.scan_adb_devices()
+    match state.manager.scan_adb_devices() {
+        Ok(devices) => {
+            // 扫描成功：将在线设备同步到数据库
+            for dev in &devices {
+                if dev.state != "Offline" {
+                    let device_type = if dev.device_type == "wifi" {
+                        connection::DeviceType::Wifi
+                    } else {
+                        connection::DeviceType::Usb
+                    };
+                    let address = if dev.device_type == "wifi" {
+                        Some(dev.serial.clone())
+                    } else {
+                        None
+                    };
+                    let entry = connection::DeviceEntry {
+                        serial: dev.serial.clone(),
+                        name: dev.name.clone(),
+                        device_type,
+                        address,
+                    };
+                    state.db.save_device(&entry);
+                }
+            }
+            Ok(devices)
+        }
+        Err(_) => {
+            // ADB Server 不可用：从数据库加载已保存的设备（全标记 Offline）
+            let saved = state.db.load_devices();
+            let devices: Vec<DeviceInfo> = saved
+                .into_iter()
+                .map(|entry| DeviceInfo {
+                    serial: entry.serial,
+                    name: entry.name,
+                    state: "Offline".to_string(),
+                    device_type: match entry.device_type {
+                        connection::DeviceType::Usb => "usb".to_string(),
+                        connection::DeviceType::Wifi => "wifi".to_string(),
+                    },
+                })
+                .collect();
+            Ok(devices)
+        }
+    }
 }
 
 /// 在指定设备上执行 Shell 命令

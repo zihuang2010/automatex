@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { type MockTask, getTasksForDevice, MOCK_DEVICES, MOCK_DEVICE_PROPS } from './mock-data';
+import { type MockTask, getTasksForDevice } from './mock-data';
 
 /* ===== Types ===== */
 interface DeviceInfo {
@@ -68,21 +68,11 @@ async function refreshDevices() {
     tree.innerHTML = '<div class="text-center p-5"><span class="spinner"></span></div>';
 
     try {
-        let devs: DeviceInfo[];
-
-        try {
-            devs = await invoke('list_devices');
-        } catch {
-            devs = MOCK_DEVICES as DeviceInfo[];
-        }
-
-        if (!devs.length) {
-            devs = MOCK_DEVICES as DeviceInfo[];
-        }
+        const devs: DeviceInfo[] = await invoke('list_devices');
 
         // Update dev count badge
         const devCount = $('#dev-count');
-        if (devCount) devCount.textContent = `${devs.length} Total`;
+        if (devCount) devCount.textContent = `${devs.length} 台`;
 
         if (!devs.length) {
             renderDeviceCards([], []);
@@ -90,22 +80,13 @@ async function refreshDevices() {
         }
 
         const propsPromises = devs.map(d => {
-            const mockP = MOCK_DEVICE_PROPS.find(p => p.serial === d.serial) ?? null;
-
             if (d.state === 'Offline') {
-                return Promise.resolve(mockP as DeviceProperties | null);
+                return Promise.resolve(null as DeviceProperties | null);
             }
 
-            return invoke<DeviceProperties>('get_device_info', { serial: d.serial })
-                .then(real => {
-                    // 用 mock 数据覆盖电池/温度（后端返回的是不可靠的默认值）
-                    if (mockP) {
-                        real.battery_level = mockP.battery_level;
-                        real.battery_temperature = mockP.battery_temperature;
-                    }
-                    return real;
-                })
-                .catch(() => mockP as DeviceProperties | null);
+            return invoke<DeviceProperties>('get_device_info', { serial: d.serial }).catch(
+                () => null as DeviceProperties | null,
+            );
         });
         const propsResults = await Promise.all(propsPromises);
 
@@ -116,19 +97,25 @@ async function refreshDevices() {
 
         renderDeviceCards(devs, propsResults);
 
+        // 检查当前选中设备是否仍在列表中
+        if (selectedDevice && !devs.some(d => d.serial === selectedDevice)) {
+            selectedDevice = null;
+        }
+
         if (!selectedDevice) {
-            const firstOnline = devs.find(d => d.state !== 'Offline');
-            if (firstOnline) selectDevice(firstOnline.serial);
+            // 只自动选中运行中的设备，就绪/离线设备不自动选中
+            const firstRunning = devs.find(d => d.state === 'device');
+            if (firstRunning) selectDevice(firstRunning.serial);
         }
     } catch (e) {
-        tree.innerHTML = `<div class="empty-hint text-red">Error: ${e}</div>`;
+        tree.innerHTML = `<div class="empty-hint text-red">错误: ${e}</div>`;
     }
 }
 
 function renderDeviceCards(devs: DeviceInfo[], propsResults: (DeviceProperties | null)[]) {
     const tree = $('#device-tree')!;
     const devCount = $('#dev-count');
-    if (devCount) devCount.textContent = `${devs.length} Total`;
+    if (devCount) devCount.textContent = `${devs.length} 台`;
 
     // Split devices: Running / Ready / Offline
     const executingSerials = new Set(
@@ -159,7 +146,7 @@ function renderDeviceCards(devs: DeviceInfo[], propsResults: (DeviceProperties |
         const temp = p?.battery_temperature ?? 0;
         const shortHwid = d.serial.length > 16 ? d.serial.substring(0, 16) + '…' : d.serial;
         const devTask = globalQueue.find(t => t.assignedDevice === d.serial);
-        const taskLabel = devTask ? devTask.name : 'Idle';
+        const taskLabel = devTask ? devTask.name : '空闲';
         const progress = devTask?.cities.find(c => c.status === 'active')?.progress ?? 0;
         const batteryIcon =
             battery > 80 ? 'battery_charging_80' : battery > 50 ? 'battery_5_bar' : 'battery_3_bar';
@@ -203,7 +190,8 @@ function renderDeviceCards(devs: DeviceInfo[], propsResults: (DeviceProperties |
         const displayName = getDeviceName(d, p);
         const battery = p?.battery_level ?? 0;
         const temp = p?.battery_temperature ?? 0;
-        const shortSn = d.serial.length > 14 ? d.serial.substring(0, 14) : d.serial;
+        const hwid = p?.serial && p.serial !== 'unknown' ? p.serial : d.serial;
+        const shortHwid = hwid.length > 16 ? hwid.substring(0, 16) + '…' : hwid;
         const batteryIcon =
             battery > 80 ? 'battery_full' : battery > 50 ? 'battery_5_bar' : 'battery_3_bar';
         const batteryColor =
@@ -211,15 +199,15 @@ function renderDeviceCards(devs: DeviceInfo[], propsResults: (DeviceProperties |
         const tempColor = temp > 40 ? 'text-orange-500' : 'text-slate-500';
         const isSel = d.serial === selectedDevice;
 
-        return `<div class="dev-card device-card-ready border border-blue-100/50 rounded-md p-2.5 transition-all hover:border-blue-200 cursor-pointer shadow-sm relative ${isSel ? 'ring-2 ring-blue-300' : ''}" data-s="${esc(d.serial)}" data-state="ready">
-      <div class="absolute top-2.5 right-2.5 px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[7px] font-black rounded border border-blue-100 uppercase tracking-tighter">Ready</div>
+        return `<div class="dev-card device-card-ready border rounded-md p-2.5 transition-all hover:border-blue-200 cursor-pointer relative ${isSel ? 'ring-2 ring-blue-200' : ''}" data-s="${esc(d.serial)}" data-state="ready">
+      <div class="absolute top-2.5 right-2.5 px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[10px] font-black rounded border border-blue-100 uppercase tracking-normal">就绪</div>
       <div class="flex items-start gap-3">
         <div class="h-9 w-9 rounded-lg bg-slate-50 border border-slate-100 flex items-center justify-center text-slate-400 shrink-0">
           <span class="material-symbols-outlined text-xl">smartphone</span>
         </div>
         <div class="min-w-0 flex-1">
           <h3 class="text-[10px] font-bold text-slate-700 truncate pr-8">${esc(displayName)}</h3>
-          <p class="mono-technical text-[9px] text-slate-500 mt-0.5 font-medium">${esc(shortSn)}</p>
+          <p class="mono-technical text-[9px] text-slate-500 mt-0.5 font-medium">${esc(shortHwid)}</p>
         </div>
       </div>
       <div class="mt-2.5 flex items-center gap-3 text-[9px] font-bold">
@@ -238,18 +226,19 @@ function renderDeviceCards(devs: DeviceInfo[], propsResults: (DeviceProperties |
         const displayName = getDeviceName(d, p);
         const battery = p?.battery_level ?? 0;
         const temp = p?.battery_temperature ?? 0;
-        const shortSn = d.serial.length > 14 ? d.serial.substring(0, 14) : d.serial;
+        const hwid = p?.serial && p.serial !== 'unknown' ? p.serial : d.serial;
+        const shortHwid = hwid.length > 16 ? hwid.substring(0, 16) + '…' : hwid;
         const isSel = d.serial === selectedDevice;
 
         return `<div class="dev-card device-card-offline border rounded-md p-2.5 cursor-pointer relative ${isSel ? 'ring-2 ring-slate-400' : ''}" data-s="${esc(d.serial)}" data-state="offline">
-      <div class="absolute top-2.5 right-2.5 px-1.5 py-0.5 bg-slate-200 text-slate-500 text-[7px] font-black rounded border border-slate-300 uppercase tracking-tighter">Offline</div>
+      <div class="absolute top-2.5 right-2.5 px-1.5 py-0.5 bg-slate-200 text-slate-500 text-[7px] font-black rounded border border-slate-300 uppercase tracking-tighter">离线</div>
       <div class="flex items-start gap-3">
         <div class="h-9 w-9 rounded-lg bg-slate-200 border border-slate-300 flex items-center justify-center text-slate-400 shrink-0">
           <span class="material-symbols-outlined text-xl">smartphone</span>
         </div>
         <div class="min-w-0 flex-1">
           <h3 class="text-[10px] font-bold text-slate-600 truncate pr-8">${esc(displayName)}</h3>
-          <p class="mono-technical text-[9px] text-slate-400 mt-0.5 font-medium">${esc(shortSn)}</p>
+          <p class="mono-technical text-[9px] text-slate-400 mt-0.5 font-medium">${esc(shortHwid)}</p>
         </div>
       </div>
       <div class="mt-2.5 flex items-center justify-between text-[9px] font-bold">
@@ -261,49 +250,41 @@ function renderDeviceCards(devs: DeviceInfo[], propsResults: (DeviceProperties |
             <span class="material-symbols-outlined icon-sm">device_thermostat</span>${temp}°C
           </span>
         </div>
-        <span class="text-slate-400 uppercase text-[8px]">2H AGO</span>
+        <span class="text-slate-400 uppercase text-[8px]">2小时前</span>
       </div>
     </div>`;
     };
 
+    const emptyBody =
+        '<div class="text-center text-[9px] text-slate-300 py-3 font-semibold uppercase tracking-wider">暂无设备</div>';
     let html = '';
 
-    // Running section
-    if (runningDevs.length) {
-        html += `<div class="dev-section">
+    // Running section (always show)
+    html += `<div class="dev-section">
       <div class="dev-section-header bg-[#eff6ff] px-3 py-1.5 flex items-center gap-2 sticky top-0 z-10 border-b border-blue-100" onclick="this.parentElement.classList.toggle('collapsed')">
         <span class="material-symbols-outlined section-arrow text-sm text-blue-400">expand_more</span>
-        <span class="text-[9px] font-black text-slate-500 uppercase tracking-widest">Running</span>
+        <span class="text-[10px] font-black text-slate-500 uppercase tracking-normal">运行中</span>
       </div>
-      <div class="dev-section-body p-2 space-y-1">${runningDevs.map(renderRunningCard).join('')}</div>
+      <div class="dev-section-body p-2 space-y-1">${runningDevs.length ? runningDevs.map(renderRunningCard).join('') : emptyBody}</div>
     </div>`;
-    }
 
-    // Ready section
-    if (readyDevs.length) {
-        html += `<div class="dev-section">
-      <div class="dev-section-header bg-[#f8fafc] px-3 py-1.5 flex items-center gap-2 sticky top-0 z-10 border-b border-slate-100 ${runningDevs.length ? 'mt-1' : ''}" onclick="this.parentElement.classList.toggle('collapsed')">
-        <span class="material-symbols-outlined section-arrow text-sm text-slate-400">expand_more</span>
-        <span class="text-[9px] font-black text-slate-500 uppercase tracking-widest">Ready</span>
-      </div>
-      <div class="dev-section-body p-2 space-y-1">${readyDevs.map(renderReadyCard).join('')}</div>
-    </div>`;
-    }
-
-    // Offline section
-    if (offlineDevs.length) {
-        html += `<div class="dev-section">
+    // Ready section (always show)
+    html += `<div class="dev-section">
       <div class="dev-section-header bg-[#f8fafc] px-3 py-1.5 flex items-center gap-2 sticky top-0 z-10 border-b border-slate-100 mt-1" onclick="this.parentElement.classList.toggle('collapsed')">
         <span class="material-symbols-outlined section-arrow text-sm text-slate-400">expand_more</span>
-        <span class="text-[9px] font-black text-slate-500 uppercase tracking-widest">Offline</span>
+        <span class="text-[10px] font-black text-slate-500 uppercase tracking-normal">就绪</span>
       </div>
-      <div class="dev-section-body p-2 space-y-1">${offlineDevs.map(renderOfflineCard).join('')}</div>
+      <div class="dev-section-body p-2 space-y-1">${readyDevs.length ? readyDevs.map(renderReadyCard).join('') : emptyBody}</div>
     </div>`;
-    }
 
-    if (!html) {
-        html = '<div class="empty-hint">No devices</div>';
-    }
+    // Offline section (always show)
+    html += `<div class="dev-section">
+      <div class="dev-section-header bg-[#f8fafc] px-3 py-1.5 flex items-center gap-2 sticky top-0 z-10 border-b border-slate-100 mt-1" onclick="this.parentElement.classList.toggle('collapsed')">
+        <span class="material-symbols-outlined section-arrow text-sm text-slate-400">expand_more</span>
+        <span class="text-[10px] font-black text-slate-500 uppercase tracking-normal">离线</span>
+      </div>
+      <div class="dev-section-body p-2 space-y-1">${offlineDevs.length ? offlineDevs.map(renderOfflineCard).join('') : emptyBody}</div>
+    </div>`;
 
     // Save collapsed state before re-render
     const collapsedSections = new Set<string>();
@@ -390,7 +371,7 @@ function selectDevice(serial: string) {
         // Reset middle pane
         const colMid = $('#col-mid')!;
         colMid.innerHTML =
-            '<div class="empty-hint" style="padding:40px;text-align:center">Select a device to view tasks</div>';
+            '<div class="empty-hint" style="padding:40px;text-align:center">选择任务以查看详情</div>';
         return;
     }
 
@@ -417,10 +398,17 @@ function selectDevice(serial: string) {
 function updateCardSelection() {
     document.querySelectorAll('.dev-card').forEach(el => {
         const s = (el as HTMLElement).dataset.s;
+        const state = (el as HTMLElement).dataset.state;
+        // 先移除所有可能的 ring 样式
+        el.classList.remove('ring-2', 'ring-1', 'ring-blue-300', 'ring-blue-200', 'ring-slate-400');
         if (s === selectedDevice) {
-            el.classList.add('ring-2', 'ring-blue-300');
-        } else {
-            el.classList.remove('ring-2', 'ring-blue-300', 'ring-slate-400');
+            if (state === 'offline') {
+                el.classList.add('ring-2', 'ring-slate-400');
+            } else if (state === 'ready') {
+                el.classList.add('ring-2', 'ring-blue-200');
+            } else {
+                el.classList.add('ring-2', 'ring-blue-300');
+            }
         }
     });
 }
@@ -461,7 +449,7 @@ async function submitAddDevice() {
 
     // Phase 1: 按钮进入 loading 态
     submitBtn.disabled = true;
-    submitBtn.innerHTML = '<span class="btn-spinner"></span> Connecting…';
+    submitBtn.innerHTML = '<span class="btn-spinner"></span> 连接中…';
     submitBtn.classList.add('connecting');
     errEl.style.display = 'none';
 
@@ -482,7 +470,7 @@ async function submitAddDevice() {
         </div>
         <div class="min-w-0 flex-1">
           <h3 class="text-[10px] font-bold text-slate-700 truncate">${esc(displayName)}</h3>
-          <p class="mono-technical text-[9px] text-blue-500 mt-0.5 font-bold">Connecting…</p>
+          <p class="mono-technical text-[9px] text-blue-500 mt-0.5 font-bold">连接中…</p>
         </div>
       </div>
     </div>`;
@@ -497,7 +485,7 @@ async function submitAddDevice() {
         errEl.style.display = 'block';
     } finally {
         submitBtn.disabled = false;
-        submitBtn.innerHTML = 'Connect';
+        submitBtn.innerHTML = '连接';
         submitBtn.classList.remove('connecting');
     }
 }
@@ -516,7 +504,7 @@ async function removeSelectedDevice() {
         if (removeBtn) removeBtn.disabled = true;
         await refreshDevices();
     } catch (e) {
-        console.error(`Remove failed: ${e}`);
+        console.error(`移除失败: ${e}`);
     }
 }
 
@@ -546,7 +534,7 @@ function renderTaskView() {
     const mid = document.getElementById('col-mid')!;
     const task = activeTask;
     if (!task) {
-        mid.innerHTML = '<div class="empty-hint">Select a task from the queue</div>';
+        mid.innerHTML = '<div class="empty-hint">从队列中选择任务查看详情</div>';
         return;
     }
     const city = task.cities[activeCityIdx];
@@ -563,39 +551,39 @@ function renderTaskView() {
         <div>
           <div class="flex items-center space-x-2">
             <h2 class="text-sm font-black text-slate-800">${task.name}</h2>
-            <span class="px-1.5 py-0.5 bg-green-50 text-green-600 text-[8px] font-black rounded border border-green-100 uppercase tracking-tighter">Live</span>
+            <span class="px-1.5 py-0.5 bg-green-50 text-green-600 text-[8px] font-black rounded border border-green-100 uppercase tracking-tighter">运行中</span>
           </div>
           <div class="flex flex-col mt-0.5">
-            <span class="text-[10px] font-bold text-blue-600 uppercase tracking-tight">Executing on: ${esc(execDevice)}</span>
+            <span class="text-[10px] font-bold text-blue-600 uppercase tracking-tight">正在执行设备: ${esc(execDevice)}</span>
             <div class="flex items-center text-[9px] text-slate-400 font-medium mt-0.5">
-              <span class="material-symbols-outlined text-[12px] mr-1">location_on</span>${task.cities.length} CITIES
+              <span class="material-symbols-outlined icon-xs text-[12px] mr-1">location_on</span>${task.cities.length} 个城市
               <span class="mx-2 text-slate-200">|</span>
-              <span class="uppercase tracking-tighter">Hardware Sync On</span>
+              <span class="uppercase tracking-tighter">硬件同步已开启</span>
             </div>
           </div>
         </div>
       </div>
       <div class="flex items-center space-x-1.5">
-        <button class="px-2.5 py-1.5 rounded-md border border-green-200 bg-green-50 text-[9px] font-black text-green-600 hover:bg-green-100 transition-all flex items-center gap-1.5 uppercase">
-          <span class="material-symbols-outlined text-sm fill-1">play_arrow</span> Start
+        <button class="px-2.5 py-1.5 rounded-md border border-green-200 bg-green-50 text-[10px] font-black text-green-600 hover:bg-green-100 transition-all flex items-center gap-1.5 uppercase">
+          <span class="material-symbols-outlined text-sm fill-1">play_arrow</span> 启动
         </button>
-        <button class="px-2.5 py-1.5 rounded-md border border-amber-200 bg-amber-50 text-[9px] font-black text-amber-600 hover:bg-amber-100 transition-all flex items-center gap-1.5 uppercase">
-          <span class="material-symbols-outlined text-sm">pause</span> Pause
+        <button class="px-2.5 py-1.5 rounded-md border border-amber-200 bg-amber-50 text-[10px] font-black text-amber-600 hover:bg-amber-100 transition-all flex items-center gap-1.5 uppercase">
+          <span class="material-symbols-outlined text-sm">pause</span> 暂停
         </button>
-        <button class="px-2.5 py-1.5 rounded-md border border-green-200 bg-green-50 text-[9px] font-black text-green-600 hover:bg-green-100 transition-all flex items-center gap-1.5 uppercase">
-          <span class="material-symbols-outlined text-sm">resume</span> Resume
+        <button class="px-2.5 py-1.5 rounded-md border border-green-200 bg-green-50 text-[10px] font-black text-green-600 hover:bg-green-100 transition-all flex items-center gap-1.5 uppercase">
+          <span class="material-symbols-outlined text-sm">resume</span> 继续
         </button>
-        <button class="px-2.5 py-1.5 rounded-md border border-blue-200 bg-blue-50 text-[9px] font-black text-blue-600 hover:bg-blue-100 transition-all flex items-center gap-1.5 uppercase">
-          <span class="material-symbols-outlined text-sm">replay</span> Restart
+        <button class="px-2.5 py-1.5 rounded-md border border-blue-200 bg-blue-50 text-[10px] font-black text-blue-600 hover:bg-blue-100 transition-all flex items-center gap-1.5 uppercase">
+          <span class="material-symbols-outlined text-sm">replay</span> 重跑
         </button>
-        <button class="px-2.5 py-1.5 rounded-md border border-red-200 bg-red-50 text-[9px] font-black text-red-600 hover:bg-red-100 transition-all flex items-center gap-1.5 uppercase">
-          <span class="material-symbols-outlined text-sm">stop</span> Stop
+        <button class="px-2.5 py-1.5 rounded-md border border-red-200 bg-red-50 text-[10px] font-black text-red-600 hover:bg-red-100 transition-all flex items-center gap-1.5 uppercase">
+          <span class="material-symbols-outlined text-sm">stop</span> 停止
         </button>
       </div>
     </div>
 
     <!-- City Cards -->
-    <div class="flex gap-2.5 mb-4 shrink-0 overflow-x-auto pb-1">
+    <div class="flex gap-2.5 mb-4 shrink-0 overflow-x-auto pb-1 scrollbar-hide">
       ${task.cities
           .map((c, i) => {
               const isActive = i === activeCityIdx;
@@ -626,10 +614,10 @@ function renderTaskView() {
               const pct = c.status === 'done' ? 100 : c.progress;
               const statsLabel =
                   c.status === 'done'
-                      ? '<span class="text-[9px] text-slate-400 font-bold uppercase">Completed</span>'
+                      ? '<span class="text-[9px] text-slate-400 font-bold uppercase">已完成</span>'
                       : c.status === 'active'
-                        ? `<span class="text-[9px] text-slate-400 font-bold uppercase">${c.done}/${c.total} KWs</span>`
-                        : '<span class="text-[9px] text-slate-400 font-bold uppercase">Pending</span>';
+                        ? `<span class="text-[9px] text-slate-400 font-bold uppercase">${c.done}/${c.total} 关键词</span>`
+                        : '<span class="text-[9px] text-slate-400 font-bold uppercase">等待中</span>';
               const pctLabel =
                   c.status === 'done'
                       ? '<span class="text-[9px] font-black text-green-600">100%</span>'
@@ -640,7 +628,7 @@ function renderTaskView() {
         <div class="bg-white rounded-md ${borderCls} p-2.5 cursor-pointer ${!isActive ? 'hover:bg-slate-50' : ''} transition-all relative overflow-hidden" style="width:180px;min-width:180px;flex-shrink:0" onclick="window.__switchCity(${i})">
           <div class="flex items-center justify-between mb-1.5">
             <div class="flex items-center space-x-2">
-              <div class="w-4 h-3 bg-slate-100 rounded"></div>
+              <span class="material-symbols-outlined icon-sm text-blue-400">location_city</span>
               <span class="text-[11px] ${nameWeight}">${c.name}</span>
             </div>
             ${statusIcon}
@@ -664,12 +652,12 @@ function renderTaskView() {
     <div class="flex-1 bg-white rounded-md border border-[var(--panel-border)] shadow-sm overflow-hidden flex flex-col min-h-0">
       <div class="px-4 py-2 bg-slate-50/50 border-b border-slate-100 flex items-center justify-between shrink-0">
         <div class="flex items-center space-x-3">
-          <span class="text-[10px] font-black text-slate-500 uppercase tracking-widest">Keywords: ${city.name}</span>
-          <span class="px-1.5 py-0.5 bg-slate-200/50 text-slate-600 rounded text-[9px] font-black">${city.total} Total</span>
+          <span class="text-[10px] font-black text-slate-500 uppercase tracking-tight">关键词: ${city.name}</span>
+          <span class="px-1.5 py-0.5 bg-slate-200/50 text-slate-600 rounded text-[9px] font-black">共 ${city.total} 个</span>
         </div>
         <div class="relative w-56">
           <span class="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-sm">search</span>
-          <input class="w-full pl-9 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-blue-100 focus:border-blue-500 outline-none transition-all" placeholder="Filter by keyword..." type="text" id="kw-filter-input" oninput="window.__filterKw(this.value)" />
+          <input class="w-full pl-9 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-blue-100 focus:border-blue-500 outline-none transition-all" placeholder="搜索关键词..." type="text" id="kw-filter-input" oninput="window.__filterKw(this.value)" />
         </div>
       </div>
       <div class="p-4 overflow-y-auto flex-1">
@@ -685,7 +673,7 @@ function renderTaskView() {
       </div>`;
                   } else if (k.status === 'run') {
                       return `<div class="kw-item flex items-center p-2 rounded-md bg-blue-50 border border-blue-400 keyword-active ring-2 ring-blue-100">
-        <div class="h-3 w-3 rounded-full bg-blue-500 mr-1.5 animate-pulse"></div>
+        <div class="h-2 w-2 rounded-full bg-blue-500 mr-1.5 animate-pulse"></div>
         <span class="text-[12px] font-bold text-blue-700 truncate">${k.name}</span>
       </div>`;
                   } else {
@@ -738,79 +726,77 @@ function loadChainForDevice(_serial: string) {
     const cards = $('#chain-cards')!;
 
     const queueSub = document.querySelector('.queue-sub');
-    if (queueSub) queueSub.textContent = `${globalQueue.length} Active Tasks`;
+    if (queueSub) queueSub.textContent = `${globalQueue.length} 个进行中任务`;
 
-    cards.innerHTML =
-        globalQueue
-            .map(q => {
-                const isActive = q === activeTask;
-                const deviceSub = q.assignedDevice ? q.assignedDevice.substring(0, 14) : '';
+    cards.innerHTML = globalQueue
+        .map(q => {
+            const isActive = q === activeTask;
+            const deviceSub = q.assignedDevice ? q.assignedDevice.substring(0, 14) : '';
 
-                if (q.status === 'EXECUTING') {
-                    const kwTotal = q.cities.reduce((s, c) => s + c.total, 0);
-                    const kwDone = q.cities.reduce((s, c) => s + c.done, 0);
-                    const pct = kwTotal > 0 ? Math.round((kwDone / kwTotal) * 100) : 0;
-                    return `
+            if (q.status === 'EXECUTING') {
+                const kwTotal = q.cities.reduce((s, c) => s + c.total, 0);
+                const kwDone = q.cities.reduce((s, c) => s + c.done, 0);
+                const pct = kwTotal > 0 ? Math.round((kwDone / kwTotal) * 100) : 0;
+                return `
       <div class="executing-gradient border border-blue-200 rounded-lg p-3 shadow-sm transition-all hover:shadow-md cursor-pointer relative overflow-hidden ring-1 ring-blue-50 ${isActive ? 'ring-2 ring-blue-300' : ''}" onclick="window.__switchTask('${q.id}')">
         <div class="flex justify-between items-start mb-1.5">
           <h4 class="text-[11px] font-bold text-slate-800 truncate pr-2">${q.name}</h4>
-          <span class="px-1.5 py-0.5 bg-blue-500 text-white text-[7px] font-black rounded uppercase">Executing</span>
+          <span class="px-1.5 py-0.5 bg-blue-500 text-white text-[7px] font-black rounded uppercase">执行中</span>
         </div>
         <div class="flex flex-col mb-2">
-          <p class="mono-technical text-[8px] text-blue-600 font-bold uppercase mb-1">Device: ${esc(deviceSub)}</p>
+          <p class="mono-technical text-[8px] text-blue-600 font-bold uppercase mb-1">设备: ${esc(deviceSub)}</p>
           <div class="flex items-center text-[9px] text-slate-500">
-            <span class="material-symbols-outlined text-[14px] mr-1 text-blue-500">bolt</span> ${kwDone}/${kwTotal} Keywords
+            <span class="material-symbols-outlined icon-xs text-[14px] mr-1 text-blue-500">bolt</span> ${kwDone}/${kwTotal} 关键词
           </div>
         </div>
         <div class="w-full h-1 bg-blue-100 rounded-full overflow-hidden">
           <div class="h-full bg-blue-500 rounded-full" style="width: ${pct}%"></div>
         </div>
       </div>`;
-                } else if (q.status === 'SCHEDULED') {
-                    const kwTotal = q.cities.reduce((s, c) => s + c.total, 0);
-                    return `
+            } else if (q.status === 'SCHEDULED') {
+                const kwTotal = q.cities.reduce((s, c) => s + c.total, 0);
+                return `
       <div class="bg-white border border-slate-100 border-l-4 border-l-slate-400 rounded-lg p-3 transition-all hover:border-slate-300 cursor-pointer" onclick="window.__switchTask('${q.id}')">
         <div class="flex justify-between items-start mb-1.5">
           <h4 class="text-[11px] font-bold text-slate-600 truncate pr-2">${q.name}</h4>
-          <span class="px-1.5 py-0.5 bg-slate-100 text-slate-500 text-[7px] font-black rounded uppercase">Scheduled</span>
+          <span class="px-1.5 py-0.5 bg-slate-100 text-slate-500 text-[7px] font-black rounded uppercase">已计划</span>
         </div>
-        <p class="mono-technical text-[8px] text-slate-400 font-bold uppercase mb-1">Device: ${esc(deviceSub)}</p>
-        <p class="text-[9px] text-slate-400 font-bold uppercase">${kwTotal} Keywords • 09:00 PM</p>
+        <p class="mono-technical text-[8px] text-slate-400 font-bold uppercase mb-1">设备: ${esc(deviceSub)}</p>
+        <p class="text-[9px] text-slate-400 font-bold uppercase">${kwTotal} 个关键词 • 21:00</p>
       </div>`;
-                } else if (q.status === 'SUCCESS') {
-                    return `
+            } else if (q.status === 'SUCCESS') {
+                return `
       <div class="bg-white border border-slate-100 border-l-4 border-l-green-500 rounded-lg p-3 opacity-80" onclick="window.__switchTask('${q.id}')">
         <div class="flex justify-between items-start mb-1.5">
           <h4 class="text-[11px] font-bold text-slate-500 truncate pr-2">${q.name}</h4>
-          <span class="px-1.5 py-0.5 bg-green-50 text-green-600 text-[7px] font-black rounded uppercase">Success</span>
+          <span class="px-1.5 py-0.5 bg-green-50 text-green-600 text-[7px] font-black rounded uppercase">成功</span>
         </div>
-        <p class="mono-technical text-[8px] text-slate-400 font-bold uppercase mb-1">Device: ${esc(deviceSub)}</p>
-        <p class="text-[9px] text-slate-400 font-bold uppercase">Completed 12:40 PM</p>
+        <p class="mono-technical text-[8px] text-slate-400 font-bold uppercase mb-1">设备: ${esc(deviceSub)}</p>
+        <p class="text-[9px] text-slate-400 font-bold uppercase">已于 12:40 PM 完成</p>
       </div>`;
-                } else if (q.status === 'ERROR') {
-                    return `
+            } else if (q.status === 'ERROR') {
+                return `
       <div class="bg-white border border-slate-100 border-l-4 border-l-red-500 rounded-lg p-3" onclick="window.__switchTask('${q.id}')">
         <div class="flex justify-between items-start mb-1.5">
           <h4 class="text-[11px] font-bold text-slate-700 truncate pr-2">${q.name}</h4>
-          <span class="px-1.5 py-0.5 bg-red-50 text-red-500 text-[7px] font-black rounded uppercase">Error</span>
+          <span class="px-1.5 py-0.5 bg-red-50 text-red-500 text-[7px] font-black rounded uppercase">错误</span>
         </div>
-        <p class="mono-technical text-[8px] text-slate-400 font-bold uppercase mb-1">Device: ${esc(deviceSub)}</p>
-        <p class="text-[9px] text-red-500 font-bold uppercase">Timeout (20s) - Auto Retrying</p>
+        <p class="mono-technical text-[8px] text-slate-400 font-bold uppercase mb-1">设备: ${esc(deviceSub)}</p>
+        <p class="text-[9px] text-red-500 font-bold uppercase">连接超时 (20s) - 自动重试中</p>
       </div>`;
-                } else {
-                    // Default / PENDING
-                    return `
+            } else {
+                // Default / PENDING
+                return `
       <div class="bg-white border border-slate-100 border-l-4 border-l-slate-300 rounded-lg p-3 transition-all hover:border-slate-300 cursor-pointer" onclick="window.__switchTask('${q.id}')">
         <div class="flex justify-between items-start mb-1.5">
           <h4 class="text-[11px] font-bold text-slate-600 truncate pr-2">${q.name}</h4>
           <span class="px-1.5 py-0.5 bg-slate-100 text-slate-500 text-[7px] font-black rounded uppercase">${q.status}</span>
         </div>
-        <p class="mono-technical text-[8px] text-slate-400 font-bold uppercase mb-1">Device: ${esc(deviceSub)}</p>
+        <p class="mono-technical text-[8px] text-slate-400 font-bold uppercase mb-1">设备: ${esc(deviceSub)}</p>
       </div>`;
-                }
-            })
-            .join('') +
-        '<div class="p-4 border-t border-slate-100 bg-slate-50/50 text-center"><span class="text-[9px] text-slate-400 font-black uppercase tracking-[0.4em]">End of Queue</span></div>';
+            }
+        })
+        .join('');
 }
 
 /* ───── Device Info Modal ───── */
@@ -820,21 +806,7 @@ async function showDeviceInfo(serial: string) {
     m.style.display = 'flex';
     b.innerHTML = '<div class="text-center p-4.5"><span class="spinner"></span></div>';
     try {
-        let i: DeviceProperties;
-        const mockP = MOCK_DEVICE_PROPS.find(p => p.serial === serial);
-        try {
-            i = await invoke('get_device_info', { serial });
-            // 用 mock 数据补充不可靠的字段
-            if (mockP) {
-                if (!i.brand || i.brand === 'unknown') i.brand = mockP.brand;
-                if (!i.model || i.model === 'unknown') i.model = mockP.model;
-                i.battery_level = mockP.battery_level;
-                i.battery_temperature = mockP.battery_temperature;
-            }
-        } catch {
-            if (!mockP) throw new Error('Device not found');
-            i = mockP as DeviceProperties;
-        }
+        const i: DeviceProperties = await invoke('get_device_info', { serial });
         const typeLabel = i.device_type === 'usb' ? 'USB' : 'WiFi';
         const typeIcon =
             i.device_type === 'usb'
@@ -864,11 +836,11 @@ async function showDeviceInfo(serial: string) {
       <!-- Stats Row -->
       <div class="flex gap-2 mb-5">
         <div class="flex-1 px-3 py-2.5 rounded-lg bg-s50 border border-s100 text-center">
-          <div class="text-[10px] font-bold text-s400 uppercase tracking-wider mb-1">Battery</div>
+          <div class="text-[10px] font-bold text-s400 uppercase tracking-wider mb-1">电量</div>
           <div class="text-[16px] font-bold ${batteryColor}">${batteryPct}%</div>
         </div>
         <div class="flex-1 px-3 py-2.5 rounded-lg bg-s50 border border-s100 text-center">
-          <div class="text-[10px] font-bold text-s400 uppercase tracking-wider mb-1">Temp</div>
+          <div class="text-[10px] font-bold text-s400 uppercase tracking-wider mb-1">温度</div>
           <div class="text-[16px] font-bold ${tempColor}">${tempVal}°C</div>
         </div>
         <div class="flex-1 px-3 py-2.5 rounded-lg bg-s50 border border-s100 text-center">
@@ -880,28 +852,28 @@ async function showDeviceInfo(serial: string) {
       <!-- Detail Rows -->
       <div class="flex flex-col gap-0 rounded-lg border border-s100 overflow-hidden">
         <div class="flex items-center justify-between px-3.5 py-2.5 bg-white border-b border-s100">
-          <span class="text-[11px] font-semibold text-s400 uppercase tracking-wide">Serial</span>
+          <span class="text-[11px] font-semibold text-s400 uppercase tracking-wide">序列号</span>
           <span class="text-[12px] font-mono font-medium text-s700">${esc(i.serial)}</span>
         </div>
         <div class="flex items-center justify-between px-3.5 py-2.5 bg-s50 border-b border-s100">
-          <span class="text-[11px] font-semibold text-s400 uppercase tracking-wide">Brand</span>
+          <span class="text-[11px] font-semibold text-s400 uppercase tracking-wide">品牌</span>
           <span class="text-[12px] font-medium text-s700">${esc(i.brand)}</span>
         </div>
         <div class="flex items-center justify-between px-3.5 py-2.5 bg-white border-b border-s100">
-          <span class="text-[11px] font-semibold text-s400 uppercase tracking-wide">Model</span>
+          <span class="text-[11px] font-semibold text-s400 uppercase tracking-wide">型号</span>
           <span class="text-[12px] font-medium text-s700">${esc(i.model)}</span>
         </div>
         <div class="flex items-center justify-between px-3.5 py-2.5 bg-s50 border-b border-s100">
-          <span class="text-[11px] font-semibold text-s400 uppercase tracking-wide">SDK Level</span>
+          <span class="text-[11px] font-semibold text-s400 uppercase tracking-wide">SDK 版本</span>
           <span class="text-[12px] font-mono font-medium text-s700">${esc(i.sdk_version)}</span>
         </div>
         <div class="flex items-center justify-between px-3.5 py-2.5 bg-white">
-          <span class="text-[11px] font-semibold text-s400 uppercase tracking-wide">Resolution</span>
+          <span class="text-[11px] font-semibold text-s400 uppercase tracking-wide">分辨率</span>
           <span class="text-[12px] font-mono font-medium text-s700">${esc(i.display_resolution)}</span>
         </div>
       </div>`;
     } catch (e) {
-        b.innerHTML = `<p class="text-red text-center py-4">Failed: ${e}</p>`;
+        b.innerHTML = `<p class="text-red text-center py-4">获取失败: ${e}</p>`;
     }
 }
 
@@ -1075,10 +1047,10 @@ function updateMqttStatusUI(status: string) {
         else if (status.startsWith('error')) dot.classList.add('error');
     }
     if (text) {
-        if (status === 'connected') text.textContent = 'Connected';
-        else if (status === 'connecting') text.textContent = 'Connecting...';
-        else if (status === 'disconnected') text.textContent = 'Disconnected';
-        else if (status.startsWith('error:')) text.textContent = `Error: ${status.slice(6)}`;
+        if (status === 'connected') text.textContent = '已连接';
+        else if (status === 'connecting') text.textContent = '连接中...';
+        else if (status === 'disconnected') text.textContent = '未连接';
+        else if (status.startsWith('error:')) text.textContent = `错误: ${status.slice(6)}`;
         else text.textContent = status;
     }
     if (btnConn) btnConn.disabled = status === 'connected' || status === 'connecting';
