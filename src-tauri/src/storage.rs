@@ -39,7 +39,7 @@ impl Database {
         conn.execute_batch("PRAGMA journal_mode=WAL;")
             .map_err(|e| format!("设置 WAL 失败: {}", e))?;
 
-        // 创建新的设备表（包含动态属性）
+        // 创建新的设备表（包含动态属性）+ 设置表
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS devices_v2 (
                 serial             TEXT PRIMARY KEY,
@@ -58,18 +58,30 @@ impl Database {
                 updated_at         INTEGER NOT NULL DEFAULT 0
             );
 
-            -- 迁移旧表数据（如果存在）
-            INSERT OR IGNORE INTO devices_v2 (serial, name, device_type, address, state)
-            SELECT serial, name, device_type, address, 'Offline'
-            FROM devices WHERE 1=1;
-
-            -- 创建设置表
             CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );",
         )
         .map_err(|e| format!("建表失败: {}", e))?;
+
+        // 迁移旧表数据（仅在旧 devices 表存在时执行）
+        let old_table_exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='devices'",
+                [],
+                |row| row.get::<_, i32>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+
+        if old_table_exists {
+            let _ = conn.execute_batch(
+                "INSERT OR IGNORE INTO devices_v2 (serial, name, device_type, address, state)
+                 SELECT serial, name, device_type, address, 'Offline'
+                 FROM devices;",
+            );
+        }
 
         Ok(Self {
             conn: Mutex::new(conn),
