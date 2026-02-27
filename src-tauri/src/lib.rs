@@ -2,16 +2,17 @@ mod connection;
 mod mqtt;
 mod storage;
 
-use connection::{DeviceInfo, DeviceManager, DeviceProperties, ShellResult};
+use connection::{DeviceManager, DeviceProperties, ShellResult};
 use mqtt::{MqttConfig, MqttManager, MqttStatus};
 use std::sync::Arc;
+use storage::DeviceRow;
 use tauri::{Emitter, Manager};
 
 // ─── State ─────────────────────────────────────────────────────
 
 struct AppState {
     manager: DeviceManager,
-    db: storage::Database,
+    db: Arc<storage::Database>,
     mqtt: Arc<MqttManager>,
 }
 
@@ -29,8 +30,30 @@ fn add_device(
     // 尝试通过 ADB 连接该 WiFi 设备
     let _ = state.manager.connect_wifi_via_adb(&address);
 
-    // 持久化到 SQLite
-    state.db.save_device(&entry);
+    // 写入新 DB
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    state.db.upsert_device(&DeviceRow {
+        serial: entry.serial.clone(),
+        hw_serial: entry.serial.clone(),
+        name: entry.name.clone(),
+        device_type: match entry.device_type {
+            connection::DeviceType::Usb => "usb".to_string(),
+            connection::DeviceType::Wifi => "wifi".to_string(),
+        },
+        address: entry.address.clone(),
+        state: "Offline".to_string(), // 后台线程会自动检测并更新为 Device
+        model: "unknown".to_string(),
+        brand: "unknown".to_string(),
+        android_version: "unknown".to_string(),
+        sdk_version: "unknown".to_string(),
+        display_resolution: "unknown".to_string(),
+        battery_level: 0,
+        battery_temperature: 0.0,
+        updated_at: now,
+    });
 
     Ok(format!("设备 {} 已添加", entry.serial))
 }
@@ -43,53 +66,10 @@ fn remove_device(serial: String, state: tauri::State<'_, AppState>) -> Result<St
     Ok(format!("设备 {} 已移除", serial))
 }
 
-/// 列出所有设备（ADB 扫描 + DB fallback）
+/// 列出所有设备（直接查 DB，瞬时返回）
 #[tauri::command]
-fn list_devices(state: tauri::State<'_, AppState>) -> Result<Vec<DeviceInfo>, String> {
-    match state.manager.scan_adb_devices() {
-        Ok(devices) => {
-            // 扫描成功：将在线设备同步到数据库
-            for dev in &devices {
-                if dev.state != "Offline" {
-                    let device_type = if dev.device_type == "wifi" {
-                        connection::DeviceType::Wifi
-                    } else {
-                        connection::DeviceType::Usb
-                    };
-                    let address = if dev.device_type == "wifi" {
-                        Some(dev.serial.clone())
-                    } else {
-                        None
-                    };
-                    let entry = connection::DeviceEntry {
-                        serial: dev.serial.clone(),
-                        name: dev.name.clone(),
-                        device_type,
-                        address,
-                    };
-                    state.db.save_device(&entry);
-                }
-            }
-            Ok(devices)
-        }
-        Err(_) => {
-            // ADB Server 不可用：从数据库加载已保存的设备（全标记 Offline）
-            let saved = state.db.load_devices();
-            let devices: Vec<DeviceInfo> = saved
-                .into_iter()
-                .map(|entry| DeviceInfo {
-                    serial: entry.serial,
-                    name: entry.name,
-                    state: "Offline".to_string(),
-                    device_type: match entry.device_type {
-                        connection::DeviceType::Usb => "usb".to_string(),
-                        connection::DeviceType::Wifi => "wifi".to_string(),
-                    },
-                })
-                .collect();
-            Ok(devices)
-        }
-    }
+fn list_devices(state: tauri::State<'_, AppState>) -> Result<Vec<DeviceRow>, String> {
+    Ok(state.db.load_all_devices())
 }
 
 /// 在指定设备上执行 Shell 命令
@@ -102,13 +82,29 @@ fn execute_shell(
     state.manager.execute_shell(&serial, &command)
 }
 
-/// 获取设备详细信息
+/// 获取设备详细信息（查 DB，瞬时返回）
 #[tauri::command]
 fn get_device_info(
     serial: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<DeviceProperties, String> {
-    state.manager.get_device_info(&serial)
+    // 仍保留此接口，从 DB 转换为 DeviceProperties
+    let devices = state.db.load_all_devices();
+    let dev = devices
+        .iter()
+        .find(|d| d.serial == serial)
+        .ok_or_else(|| format!("设备 {} 不存在", serial))?;
+    Ok(DeviceProperties {
+        serial: dev.hw_serial.clone(),
+        model: dev.model.clone(),
+        brand: dev.brand.clone(),
+        android_version: dev.android_version.clone(),
+        sdk_version: dev.sdk_version.clone(),
+        display_resolution: dev.display_resolution.clone(),
+        device_type: dev.device_type.clone(),
+        battery_level: dev.battery_level,
+        battery_temperature: dev.battery_temperature,
+    })
 }
 
 /// 安装 APK
@@ -276,6 +272,225 @@ async fn mqtt_status(state: tauri::State<'_, AppState>) -> Result<String, String
     }
 }
 
+// ─── 后台监控线程 ──────────────────────────────────────────────
+
+/// 批量获取设备属性的 shell 命令
+const BATCH_PROPS_CMD: &str = "echo \"__MODEL__=$(getprop ro.product.model)\" && \
+    echo \"__BRAND__=$(getprop ro.product.brand)\" && \
+    echo \"__ANDROID__=$(getprop ro.build.version.release)\" && \
+    echo \"__SDK__=$(getprop ro.build.version.sdk)\" && \
+    echo \"__SERIAL__=$(getprop ro.serialno)\" && \
+    wm size && \
+    dumpsys battery";
+
+/// 从批量输出中提取带标签的字段
+fn get_tagged_field(raw: &str, tag: &str) -> String {
+    raw.lines()
+        .find(|l| l.starts_with(tag))
+        .map(|l| l[tag.len()..].trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// 解析 dumpsys battery 中的字段
+fn parse_battery_field(raw: &str, field: &str) -> Option<i32> {
+    raw.lines()
+        .find(|l| l.trim().starts_with(&format!("{}: ", field)))
+        .and_then(|l| l.split(':').nth(1))
+        .and_then(|v| v.trim().parse().ok())
+}
+
+/// 获取设备完整属性并构建 DeviceRow
+fn fetch_device_row(serial: &str, state: &str) -> DeviceRow {
+    let device_type = if serial.contains(':') { "wifi" } else { "usb" };
+    let address = if device_type == "wifi" {
+        Some(serial.to_string())
+    } else {
+        None
+    };
+
+    // 批量 adb shell（1 次调用获取所有属性）
+    let raw = std::process::Command::new(connection::adb_path())
+        .args(["-s", serial, "shell", BATCH_PROPS_CMD])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+
+    let model = get_tagged_field(&raw, "__MODEL__=");
+    let brand = get_tagged_field(&raw, "__BRAND__=");
+    let android_version = get_tagged_field(&raw, "__ANDROID__=");
+    let sdk_version = get_tagged_field(&raw, "__SDK__=");
+    let hw_serial_raw = get_tagged_field(&raw, "__SERIAL__=");
+    let hw_serial = if hw_serial_raw == "unknown" {
+        serial.to_string()
+    } else {
+        hw_serial_raw
+    };
+
+    let display_resolution = raw
+        .lines()
+        .find(|l| l.contains("Physical size"))
+        .map(|l| l.trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let battery_level = parse_battery_field(&raw, "level").unwrap_or(0);
+    let battery_temp_raw = parse_battery_field(&raw, "temperature").unwrap_or(250);
+    let battery_temperature = battery_temp_raw as f64 / 10.0;
+
+    // 查找设备名称（优先用 brand + model）
+    let name = if brand != "unknown" && model != "unknown" {
+        format!("{} {}", brand, model)
+    } else if model != "unknown" {
+        model.clone()
+    } else {
+        serial.to_string()
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    DeviceRow {
+        serial: serial.to_string(),
+        hw_serial,
+        name,
+        device_type: device_type.to_string(),
+        address,
+        state: state.to_string(),
+        model,
+        brand,
+        android_version,
+        sdk_version,
+        display_resolution,
+        battery_level,
+        battery_temperature,
+        updated_at: now,
+    }
+}
+
+/// 仅刷新电量和温度
+fn refresh_battery(serial: &str, db: &storage::Database) -> bool {
+    let raw = std::process::Command::new(connection::adb_path())
+        .args(["-s", serial, "shell", "dumpsys battery"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+
+    let battery_level = parse_battery_field(&raw, "level").unwrap_or(-1);
+    let battery_temp_raw = parse_battery_field(&raw, "temperature").unwrap_or(-1);
+
+    if battery_level >= 0 && battery_temp_raw >= 0 {
+        let battery_temperature = battery_temp_raw as f64 / 10.0;
+        db.update_device_props(serial, battery_level, battery_temperature);
+        true
+    } else {
+        false
+    }
+}
+
+/// 解析 adb devices 输出，返回 (serial, state) 列表
+fn parse_adb_devices_output(stdout: &str) -> Vec<(String, String)> {
+    stdout
+        .lines()
+        .skip(1) // 跳过 "List of devices attached"
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                // ADB state: "device" → 我们用 "Device" (大写首字母)
+                let state = match parts[1] {
+                    "device" => "Device",
+                    "offline" => "Offline",
+                    "unauthorized" => "Unauthorized",
+                    other => other,
+                };
+                Some((parts[0].to_string(), state.to_string()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// 启动后台设备监控线程
+fn spawn_device_monitor(handle: tauri::AppHandle, db: Arc<storage::Database>) {
+    std::thread::spawn(move || {
+        let mut last_snapshot: Vec<String> = Vec::new();
+        let mut tick_count: u64 = 0;
+
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            tick_count += 1;
+            let mut changed = false;
+
+            // ═══ Phase 1: 设备上下线检测（每 2s）═══
+            let output = match std::process::Command::new(connection::adb_path())
+                .arg("devices")
+                .output()
+            {
+                Ok(o) => o,
+                Err(_) => continue,
+            };
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let current_devices = parse_adb_devices_output(&stdout);
+
+            // 构建快照用于比较
+            let mut current_snapshot: Vec<String> = current_devices
+                .iter()
+                .map(|(s, st)| format!("{}:{}", s, st))
+                .collect();
+            current_snapshot.sort();
+
+            if current_snapshot != last_snapshot {
+                last_snapshot = current_snapshot;
+
+                // 获取 DB 中已知的在线设备
+                let online_serials: Vec<&str> =
+                    current_devices.iter().map(|(s, _)| s.as_str()).collect();
+
+                // 将不在列表中的设备标记为 Offline
+                db.mark_offline_except(&online_serials);
+
+                // 处理每台在线设备
+                for (serial, state) in &current_devices {
+                    if !db.device_exists(serial)
+                        || (state == "Device" && db.needs_prop_refresh(serial))
+                    {
+                        // 新设备 或 属性未初始化：立即获取全部属性
+                        let row = fetch_device_row(serial, state);
+                        db.upsert_device(&row);
+                    } else {
+                        // 已有设备：仅更新状态
+                        db.update_device_state(serial, state);
+                    }
+                }
+
+                changed = true;
+            }
+
+            // ═══ Phase 2: 属性刷新（每 5 轮 = 10s）═══
+            if tick_count % 5 == 0 {
+                for (serial, state) in &current_devices {
+                    if state == "Device" {
+                        if refresh_battery(serial, &db) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+
+            // ═══ 通知前端 ═══
+            if changed {
+                let _ = handle.emit("devices-changed", ());
+            }
+        }
+    });
+}
+
 // ─── App Entry ─────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -289,53 +504,18 @@ pub fn run() {
                 .app_data_dir()
                 .map_err(|e| format!("获取数据目录失败: {}", e))?;
 
-            let db = storage::Database::init(&app_data_dir)
-                .map_err(|e| format!("数据库初始化失败: {}", e))?;
+            let db = Arc::new(
+                storage::Database::init(&app_data_dir)
+                    .map_err(|e| format!("数据库初始化失败: {}", e))?,
+            );
 
-            // 从 SQLite 加载已保存的设备
-            let saved = db.load_devices();
             let manager = DeviceManager::new();
-            if !saved.is_empty() {
-                manager.restore_devices(saved);
-                log::info!("已从 SQLite 恢复设备列表");
-            }
-
             let mqtt = Arc::new(MqttManager::new());
 
+            // 启动后台设备监控线程
+            spawn_device_monitor(app.handle().clone(), Arc::clone(&db));
+
             app.manage(AppState { manager, db, mqtt });
-
-            // 后台 ADB 设备监听线程：每 2 秒检测设备变化
-            let handle = app.handle().clone();
-            std::thread::spawn(move || {
-                let mut last_snapshot: Vec<String> = Vec::new();
-                loop {
-                    std::thread::sleep(std::time::Duration::from_secs(2));
-                    // 运行 adb devices 获取当前设备列表
-                    let output = match std::process::Command::new("adb").arg("devices").output() {
-                        Ok(o) => o,
-                        Err(_) => continue,
-                    };
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let mut current: Vec<String> = stdout
-                        .lines()
-                        .skip(1) // 跳过 "List of devices attached"
-                        .filter_map(|line| {
-                            let parts: Vec<&str> = line.split_whitespace().collect();
-                            if parts.len() >= 2 {
-                                Some(format!("{}:{}", parts[0], parts[1]))
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                    current.sort();
-
-                    if current != last_snapshot {
-                        last_snapshot = current;
-                        let _ = handle.emit("devices-changed", ());
-                    }
-                }
-            });
 
             Ok(())
         })

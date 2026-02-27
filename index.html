@@ -176,30 +176,8 @@
                 <h1 class="splash-name">AutomateX</h1>
                 <p class="splash-tagline tracking-tighter">设备自动化平台</p>
                 <div class="splash-time">--:--</div>
-                <div class="splash-spinner">
-                    <svg viewBox="0 0 50 50" width="28" height="28">
-                        <circle
-                            cx="25"
-                            cy="25"
-                            r="20"
-                            fill="none"
-                            stroke="rgba(99,102,241,0.1)"
-                            stroke-width="2"
-                        />
-                        <circle
-                            class="spinner-arc"
-                            cx="25"
-                            cy="25"
-                            r="20"
-                            fill="none"
-                            stroke="url(#sg1)"
-                            stroke-width="2"
-                            stroke-linecap="round"
-                            stroke-dasharray="70 126"
-                        />
-                    </svg>
-                </div>
-                <span class="splash-version">v2.5.1-EXEC</span>
+
+                <span class="splash-version">v1.0.2-STABLE</span>
             </div>
         </div>
 
@@ -214,11 +192,11 @@
                         <span class="material-symbols-outlined text-base fill-1">bolt</span>
                     </div>
                     <div class="flex items-baseline space-x-2">
-                        <h1 class="text-xs font-black tracking-tight text-slate-800 leading-none">
+                        <h1 class="text-sm font-black tracking-tight text-slate-800 leading-none">
                             AutomateX Workspace <span class="text-[var(--action-blue)]">PRO</span>
                         </h1>
                         <span
-                            class="text-[10px] text-slate-400 font-bold uppercase tracking-normal border-l border-slate-200 pl-2"
+                            class="text-[12px] text-slate-400 font-bold uppercase tracking-normal border-l border-slate-200 pl-2"
                             >企业客户端</span
                         >
                     </div>
@@ -235,42 +213,68 @@
 
             <!-- 三栏主体 -->
             <main class="flex-1 p-3 flex gap-3 overflow-hidden">
-                <!-- 左栏：设备管理 -->
+                <!-- 左栏：任务队列 -->
+                <aside
+                    class="w-[280px] bg-white rounded-md border border-[var(--panel-border)] shadow-sm flex flex-col h-full overflow-hidden shrink-0"
+                >
+                    <div
+                        class="p-3 border-b border-slate-100 bg-slate-50/30 flex justify-between items-center"
+                    >
+                        <div>
+                            <h2
+                                class="text-[13px] font-black text-slate-500 uppercase tracking-normal leading-none"
+                            >
+                                任务队列
+                            </h2>
+                            <p
+                                class="text-[10px] text-slate-400 font-bold mt-1 uppercase tracking-normal queue-sub"
+                            >
+                                0 个进行中任务
+                            </p>
+                        </div>
+                        <button class="material-symbols-outlined text-slate-400 text-base">
+                            filter_list
+                        </button>
+                    </div>
+                    <div class="flex-1 overflow-y-auto p-2.5 space-y-2" id="chain-cards">
+                        <div class="empty-hint">选择任务以查看详情</div>
+                    </div>
+                </aside>
+
+                <!-- 中栏：任务详情 -->
+                <section class="flex-1 flex flex-col h-full overflow-hidden min-w-0" id="col-mid">
+                    <div class="empty-hint" style="padding: 40px; text-align: center">
+                        选择任务以查看详情
+                    </div>
+                </section>
+
+                <!-- 右栏：设备管理 -->
                 <aside
                     class="w-[280px] bg-white rounded-md border border-[var(--panel-border)] shadow-sm flex flex-col h-full overflow-hidden shrink-0"
                 >
                     <div
                         class="p-3 border-b border-slate-100 flex justify-between items-center bg-slate-50/30"
                     >
-                        <h2 class="text-[11px] font-black text-slate-500 uppercase tracking-normal">
+                        <h2 class="text-[13px] font-black text-slate-500 uppercase tracking-normal">
                             设备管理
                         </h2>
                         <span
-                            class="text-[9px] font-bold text-slate-400 bg-slate-200/50 px-1.5 py-0.5 rounded"
+                            class="text-[11px] font-bold text-slate-400 bg-slate-200/50 px-1.5 py-0.5 rounded"
                             id="dev-count"
                             >共 0 台</span
                         >
                     </div>
                     <div class="flex-1 overflow-y-auto" id="device-tree">
-                        <div class="empty-hint">
-                            点击 <strong>WiFi</strong> 或 <strong>USB</strong> 添加设备
-                        </div>
+                        <div class="empty-hint">点击 <strong>WiFi</strong> 添加设备</div>
                     </div>
                     <div class="p-3 border-t border-slate-100 bg-white space-y-2">
-                        <div class="grid grid-cols-3 gap-1.5">
+                        <div class="grid grid-cols-2 gap-1.5">
                             <button
                                 class="flex flex-col items-center justify-center py-2 bg-white border border-slate-200 text-slate-500 hover:border-blue-500 hover:text-blue-600 rounded-lg transition-all text-[9px] font-black uppercase"
                                 id="btn-add-device"
                             >
                                 <span class="material-symbols-outlined text-base mb-0.5">wifi</span
                                 >WiFi连接
-                            </button>
-                            <button
-                                class="flex flex-col items-center justify-center py-2 bg-white border border-slate-200 text-slate-500 hover:border-blue-500 hover:text-blue-600 rounded-lg transition-all text-[9px] font-black uppercase"
-                                id="btn-scan-usb"
-                            >
-                                <span class="material-symbols-outlined text-base mb-0.5">usb</span
-                                >USB扫描
                             </button>
                             <button
                                 class="flex flex-col items-center justify-center py-2 bg-white border border-slate-200 text-slate-300 rounded-lg transition-all text-[9px] font-black uppercase disabled:opacity-50 disabled:cursor-not-allowed enabled:text-red-500 enabled:border-red-200 enabled:hover:bg-red-50 enabled:hover:border-red-400"
@@ -291,44 +295,9 @@
                             </button>
                             <span
                                 class="text-[8px] font-bold text-slate-400 uppercase tracking-widest"
-                                >v2.5.1-EXEC</span
+                                >v1.0.2-STABLE</span
                             >
                         </div>
-                    </div>
-                </aside>
-
-                <!-- 中栏：任务详情 -->
-                <section class="flex-1 flex flex-col h-full overflow-hidden min-w-0" id="col-mid">
-                    <div class="empty-hint" style="padding: 40px; text-align: center">
-                        选择任务以查看详情
-                    </div>
-                </section>
-
-                <!-- 右栏：全局队列 -->
-                <aside
-                    class="w-[280px] bg-white rounded-md border border-[var(--panel-border)] shadow-sm flex flex-col h-full overflow-hidden shrink-0"
-                >
-                    <div
-                        class="p-3 border-b border-slate-100 bg-slate-50/30 flex justify-between items-center"
-                    >
-                        <div>
-                            <h2
-                                class="text-[11px] font-black text-slate-500 uppercase tracking-normal leading-none"
-                            >
-                                任务队列
-                            </h2>
-                            <p
-                                class="text-[9px] text-slate-400 font-bold mt-1 uppercase tracking-normal queue-sub"
-                            >
-                                0 个进行中任务
-                            </p>
-                        </div>
-                        <button class="material-symbols-outlined text-slate-400 text-base">
-                            filter_list
-                        </button>
-                    </div>
-                    <div class="flex-1 overflow-y-auto p-2.5 space-y-2" id="chain-cards">
-                        <div class="empty-hint">选择任务以查看详情</div>
                     </div>
                 </aside>
             </main>

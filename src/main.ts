@@ -1,14 +1,40 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { type MockTask, getTasksForDevice } from './mock-data';
+import {
+    type MockTask,
+    getTasksForDevice,
+    getAssignedDeviceSerials,
+    releaseTasksForOfflineDevices,
+    startTask,
+    pauseTask,
+    resumeTask,
+    stopTask,
+    retryTask,
+    setTaskTickCallback,
+    startTaskExecution,
+    stopTaskExecution,
+} from './mock-data';
 
 /* ===== Types ===== */
-interface DeviceInfo {
+/** 设备行（与后端 DeviceRow 一一对应） */
+interface DeviceRow {
     serial: string;
+    hw_serial: string;
     name: string;
-    state: string;
     device_type: string;
+    address: string | null;
+    state: string;
+    model: string;
+    brand: string;
+    android_version: string;
+    sdk_version: string;
+    display_resolution: string;
+    battery_level: number;
+    battery_temperature: number;
+    updated_at: number;
 }
+
+/** 保留给 showDeviceInfo 弹窗使用 */
 interface DeviceProperties {
     serial: string;
     model: string;
@@ -26,17 +52,71 @@ let globalQueue: MockTask[] = [];
 let activeTask: MockTask | null = null;
 let activeCityIdx = 0;
 
+/** 将 unix 时间戳（秒）转为中文相对时间 */
+function timeAgo(unixSec: number): string {
+    const diff = Math.floor(Date.now() / 1000) - unixSec;
+    if (diff < 60) return '刚刚';
+    if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}小时前`;
+    return `${Math.floor(diff / 86400)}天前`;
+}
+
 const $ = (s: string) => document.querySelector(s) as HTMLElement | null;
 
-/** 获取设备显示名称，自动回退 unknown → d.name → serial */
-function getDeviceName(d: DeviceInfo, p: DeviceProperties | null): string {
-    if (p) {
-        const brand = p.brand && p.brand !== 'unknown' ? p.brand : '';
-        const model = p.model && p.model !== 'unknown' ? p.model : '';
-        const combined = `${brand} ${model}`.trim();
-        if (combined) return combined;
-    }
-    return d.name || d.serial;
+/** UI 内 Toast 提示（替代 alert，3 秒自动消失） */
+function showToast(msg: string, type: 'info' | 'warning' | 'error' = 'warning') {
+    const colorMap = {
+        // 降低背景饱和度 (bg-opacity-80)，加入磨砂质感和白色高光边框 (border-white/50)
+        info: 'bg-blue-50/80 backdrop-blur-md text-blue-700 border-white/50 shadow-md shadow-blue-900/5',
+        warning:
+            'bg-amber-50/80 backdrop-blur-md text-amber-800 border-white/50 shadow-md shadow-amber-900/5',
+        error: 'bg-red-50/80 backdrop-blur-md text-red-700 border-white/50 shadow-md shadow-red-900/5',
+    };
+
+    const iconMap = {
+        info: 'info',
+        warning: 'warning',
+        error: 'error',
+    };
+
+    const iconColorMap = {
+        info: 'text-blue-500',
+        warning: 'text-amber-600',
+        error: 'text-red-500',
+    };
+
+    const toast = document.createElement('div');
+
+    toast.className = `fixed top-6 left-1/2 -translate-x-1/2 z-[9999] px-6 py-3 rounded-full border ${colorMap[type]} text-xs font-medium shadow-md transition-all duration-300 opacity-0 -translate-y-4 flex items-center gap-2.5`;
+
+    toast.innerHTML = `<span class="material-symbols-outlined text-base ${iconColorMap[type]}">${iconMap[type]}</span><span>${msg}</span>`;
+    document.body.appendChild(toast);
+
+    // 【动画优化】使用双重 requestAnimationFrame 确保浏览器正确渲染过渡动画
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+            // 移除透明和向上的位移，回归正常位置
+            toast.classList.remove('opacity-0', '-translate-y-4');
+            toast.classList.add('opacity-100', 'translate-y-0');
+        });
+    });
+
+    // 3秒后退出动画
+    setTimeout(() => {
+        toast.classList.remove('opacity-100', 'translate-y-0');
+        toast.classList.add('opacity-0', '-translate-y-4'); // 向上滑动并消失
+
+        // 等待动画结束(300ms)后移除 DOM
+        setTimeout(() => toast.remove(), 300);
+    }, 3000);
+}
+
+/** 获取设备显示名称 */
+function getDeviceName(d: DeviceRow): string {
+    if (d.brand !== 'unknown' && d.model !== 'unknown') return `${d.brand} ${d.model}`;
+    if (d.model !== 'unknown') return d.model;
+    if (d.name && d.name !== d.serial) return d.name;
+    return d.serial;
 }
 
 /* ───── Splash ───── */
@@ -61,61 +141,40 @@ function splash() {
 }
 
 /* ───── Device List ───── */
-const devicePropsCache: Map<string, DeviceProperties> = new Map();
 
 async function refreshDevices() {
     const tree = $('#device-tree')!;
-    tree.innerHTML = '<div class="text-center p-5"><span class="spinner"></span></div>';
 
     try {
-        const devs: DeviceInfo[] = await invoke('list_devices');
+        const devs: DeviceRow[] = await invoke('list_devices');
 
         // Update dev count badge
         const devCount = $('#dev-count');
-        if (devCount) devCount.textContent = `${devs.length} 台`;
+        if (devCount) devCount.textContent = `共 ${devs.length} 台`;
 
-        if (!devs.length) {
-            renderDeviceCards([], []);
-            return;
-        }
-
-        const propsPromises = devs.map(d => {
-            if (d.state === 'Offline') {
-                return Promise.resolve(null as DeviceProperties | null);
-            }
-
-            return invoke<DeviceProperties>('get_device_info', { serial: d.serial }).catch(
-                () => null as DeviceProperties | null,
-            );
-        });
-        const propsResults = await Promise.all(propsPromises);
-
-        devicePropsCache.clear();
-        propsResults.forEach((p, i) => {
-            if (p) devicePropsCache.set(devs[i].serial, p);
-        });
-
-        renderDeviceCards(devs, propsResults);
+        renderDeviceCards(devs);
 
         // 检查当前选中设备是否仍在列表中
         if (selectedDevice && !devs.some(d => d.serial === selectedDevice)) {
             selectedDevice = null;
         }
 
-        if (!selectedDevice) {
-            // 只自动选中运行中的设备，就绪/离线设备不自动选中
-            const firstRunning = devs.find(d => d.state === 'device');
-            if (firstRunning) selectDevice(firstRunning.serial);
+        // 就绪设备不应有选中状态：若 selectedDevice 已无任务绑定则取消选中
+        if (selectedDevice && !getAssignedDeviceSerials().has(selectedDevice)) {
+            const selDev = devs.find(d => d.serial === selectedDevice);
+            if (selDev && selDev.state !== 'Offline') {
+                selectedDevice = null;
+            }
         }
     } catch (e) {
         tree.innerHTML = `<div class="empty-hint text-red">错误: ${e}</div>`;
     }
 }
 
-function renderDeviceCards(devs: DeviceInfo[], propsResults: (DeviceProperties | null)[]) {
+function renderDeviceCards(devs: DeviceRow[]) {
     const tree = $('#device-tree')!;
     const devCount = $('#dev-count');
-    if (devCount) devCount.textContent = `${devs.length} 台`;
+    if (devCount) devCount.textContent = `共 ${devs.length} 台`;
 
     // Split devices: Running / Ready / Offline
     const executingSerials = new Set(
@@ -124,30 +183,32 @@ function renderDeviceCards(devs: DeviceInfo[], propsResults: (DeviceProperties |
             .map(t => t.assignedDevice!),
     );
 
-    const runningDevs: { d: DeviceInfo; p: DeviceProperties | null }[] = [];
-    const readyDevs: { d: DeviceInfo; p: DeviceProperties | null }[] = [];
-    const offlineDevs: { d: DeviceInfo; p: DeviceProperties | null }[] = [];
+    const runningDevs: DeviceRow[] = [];
+    const readyDevs: DeviceRow[] = [];
+    const offlineDevs: DeviceRow[] = [];
 
-    devs.forEach((d, idx) => {
-        const p = propsResults[idx];
+    devs.forEach(d => {
         if (d.state === 'Offline') {
-            offlineDevs.push({ d, p });
+            offlineDevs.push(d);
         } else if (executingSerials.has(d.serial)) {
-            runningDevs.push({ d, p });
+            runningDevs.push(d);
         } else {
-            readyDevs.push({ d, p });
+            readyDevs.push(d);
         }
     });
 
-    const renderRunningCard = (item: { d: DeviceInfo; p: DeviceProperties | null }) => {
-        const { d, p } = item;
-        const displayName = getDeviceName(d, p);
-        const battery = p?.battery_level ?? 0;
-        const temp = p?.battery_temperature ?? 0;
-        const shortHwid = d.serial.length > 16 ? d.serial.substring(0, 16) + '…' : d.serial;
+    const renderRunningCard = (d: DeviceRow) => {
+        const displayName = getDeviceName(d);
+        const battery = d.battery_level;
+        const temp = d.battery_temperature;
+        const hwid = d.hw_serial || d.serial;
+        const shortHwid = hwid.length > 16 ? hwid.substring(0, 16) + '…' : hwid;
         const devTask = globalQueue.find(t => t.assignedDevice === d.serial);
         const taskLabel = devTask ? devTask.name : '空闲';
-        const progress = devTask?.cities.find(c => c.status === 'active')?.progress ?? 0;
+        // 总体进度（所有城市的关键词完成比例）
+        const kwTotal = devTask?.cities.reduce((s, c) => s + c.total, 0) ?? 0;
+        const kwDone = devTask?.cities.reduce((s, c) => s + c.done, 0) ?? 0;
+        const progress = kwTotal > 0 ? Math.round((kwDone / kwTotal) * 100) : 0;
         const batteryIcon =
             battery > 80 ? 'battery_charging_80' : battery > 50 ? 'battery_5_bar' : 'battery_3_bar';
         const isSel = d.serial === selectedDevice;
@@ -155,26 +216,26 @@ function renderDeviceCards(devs: DeviceInfo[], propsResults: (DeviceProperties |
         return `<div class="dev-card device-card-running border rounded-md p-2.5 transition-all hover:shadow-sm cursor-pointer ${isSel ? 'ring-2 ring-blue-300' : ''}" data-s="${esc(d.serial)}" data-state="running">
       <div class="flex items-start gap-3">
         <div class="h-9 w-9 rounded-lg bg-white border border-blue-100 flex items-center justify-center text-blue-500 shrink-0">
-          <span class="material-symbols-outlined text-xl">smartphone</span>
+          <span class="material-symbols-outlined text-xl fill-1">smartphone</span>
         </div>
         <div class="min-w-0 flex-1">
           <div class="flex justify-between items-center mb-0.5">
-            <h3 class="text-[10px] font-bold text-slate-900 truncate">${esc(displayName)}</h3>
+            <h3 class="text-[11px] font-bold text-slate-900 truncate">${esc(displayName)}</h3>
             <div class="pulsing-dot scale-90"></div>
           </div>
-          <p class="mono-technical text-[9px] text-slate-500 font-medium">${esc(shortHwid)}</p>
+          <p class="mono-technical text-[10px] text-slate-500 font-medium">${esc(shortHwid)}</p>
         </div>
       </div>
       <div class="mt-2.5">
         <div class="flex justify-between items-end mb-1">
-          <span class="text-[8px] font-bold text-blue-600 uppercase tracking-tight">${esc(taskLabel)}</span>
-          <span class="text-[9px] font-black text-blue-600">${progress}%</span>
+          <span class="text-[10px] font-bold text-blue-600 uppercase tracking-tight">${esc(taskLabel)}</span>
+          <span class="text-[10px] font-black text-blue-600">${progress}%</span>
         </div>
         <div class="w-full h-1 bg-white/80 rounded-full overflow-hidden">
           <div class="h-full bg-blue-500 rounded-full" style="width: ${progress}%"></div>
         </div>
       </div>
-      <div class="mt-2.5 flex items-center gap-3 text-[9px] font-bold">
+      <div class="mt-2.5 flex items-center gap-3 text-[10px] font-bold">
         <span class="flex items-center gap-1 text-blue-600">
           <span class="material-symbols-outlined icon-sm fill-1">${batteryIcon}</span>${battery}%
         </span>
@@ -185,12 +246,11 @@ function renderDeviceCards(devs: DeviceInfo[], propsResults: (DeviceProperties |
     </div>`;
     };
 
-    const renderReadyCard = (item: { d: DeviceInfo; p: DeviceProperties | null }) => {
-        const { d, p } = item;
-        const displayName = getDeviceName(d, p);
-        const battery = p?.battery_level ?? 0;
-        const temp = p?.battery_temperature ?? 0;
-        const hwid = p?.serial && p.serial !== 'unknown' ? p.serial : d.serial;
+    const renderReadyCard = (d: DeviceRow) => {
+        const displayName = getDeviceName(d);
+        const battery = d.battery_level;
+        const temp = d.battery_temperature;
+        const hwid = d.hw_serial || d.serial;
         const shortHwid = hwid.length > 16 ? hwid.substring(0, 16) + '…' : hwid;
         const batteryIcon =
             battery > 80 ? 'battery_full' : battery > 50 ? 'battery_5_bar' : 'battery_3_bar';
@@ -200,17 +260,17 @@ function renderDeviceCards(devs: DeviceInfo[], propsResults: (DeviceProperties |
         const isSel = d.serial === selectedDevice;
 
         return `<div class="dev-card device-card-ready border rounded-md p-2.5 transition-all hover:border-blue-200 cursor-pointer relative ${isSel ? 'ring-2 ring-blue-200' : ''}" data-s="${esc(d.serial)}" data-state="ready">
-      <div class="absolute top-2.5 right-2.5 px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[10px] font-black rounded border border-blue-100 uppercase tracking-normal">就绪</div>
+      <div class="absolute top-2.5 right-2.5 px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[12px] font-black rounded border border-blue-100 uppercase tracking-normal">就绪</div>
       <div class="flex items-start gap-3">
         <div class="h-9 w-9 rounded-lg bg-slate-50 border border-slate-100 flex items-center justify-center text-slate-400 shrink-0">
-          <span class="material-symbols-outlined text-xl">smartphone</span>
+          <span class="material-symbols-outlined text-xl fill-1">smartphone</span>
         </div>
         <div class="min-w-0 flex-1">
-          <h3 class="text-[10px] font-bold text-slate-700 truncate pr-8">${esc(displayName)}</h3>
-          <p class="mono-technical text-[9px] text-slate-500 mt-0.5 font-medium">${esc(shortHwid)}</p>
+          <h3 class="text-[11px] font-bold text-slate-700 truncate pr-8">${esc(displayName)}</h3>
+          <p class="mono-technical text-[10px] text-slate-500 mt-0.5 font-medium">${esc(shortHwid)}</p>
         </div>
       </div>
-      <div class="mt-2.5 flex items-center gap-3 text-[9px] font-bold">
+      <div class="mt-2.5 flex items-center gap-3 text-[10px] font-bold">
         <span class="flex items-center gap-1 ${batteryColor}">
           <span class="material-symbols-outlined icon-sm fill-1">${batteryIcon}</span>${battery}%
         </span>
@@ -221,27 +281,26 @@ function renderDeviceCards(devs: DeviceInfo[], propsResults: (DeviceProperties |
     </div>`;
     };
 
-    const renderOfflineCard = (item: { d: DeviceInfo; p: DeviceProperties | null }) => {
-        const { d, p } = item;
-        const displayName = getDeviceName(d, p);
-        const battery = p?.battery_level ?? 0;
-        const temp = p?.battery_temperature ?? 0;
-        const hwid = p?.serial && p.serial !== 'unknown' ? p.serial : d.serial;
+    const renderOfflineCard = (d: DeviceRow) => {
+        const displayName = getDeviceName(d);
+        const battery = d.battery_level;
+        const temp = d.battery_temperature;
+        const hwid = d.hw_serial || d.serial;
         const shortHwid = hwid.length > 16 ? hwid.substring(0, 16) + '…' : hwid;
         const isSel = d.serial === selectedDevice;
 
         return `<div class="dev-card device-card-offline border rounded-md p-2.5 cursor-pointer relative ${isSel ? 'ring-2 ring-slate-400' : ''}" data-s="${esc(d.serial)}" data-state="offline">
-      <div class="absolute top-2.5 right-2.5 px-1.5 py-0.5 bg-slate-200 text-slate-500 text-[7px] font-black rounded border border-slate-300 uppercase tracking-tighter">离线</div>
+      <div class="absolute top-2.5 right-2.5 px-1.5 py-0.5 bg-slate-200 text-slate-500 text-[10px] font-black rounded border border-slate-300 uppercase tracking-normal">离线</div>
       <div class="flex items-start gap-3">
         <div class="h-9 w-9 rounded-lg bg-slate-200 border border-slate-300 flex items-center justify-center text-slate-400 shrink-0">
-          <span class="material-symbols-outlined text-xl">smartphone</span>
+          <span class="material-symbols-outlined text-xl fill-1">smartphone</span>
         </div>
         <div class="min-w-0 flex-1">
-          <h3 class="text-[10px] font-bold text-slate-600 truncate pr-8">${esc(displayName)}</h3>
-          <p class="mono-technical text-[9px] text-slate-400 mt-0.5 font-medium">${esc(shortHwid)}</p>
+          <h3 class="text-[11px] font-bold text-slate-600 truncate pr-8">${esc(displayName)}</h3>
+          <p class="mono-technical text-[10px] text-slate-400 mt-0.5 font-medium">${esc(shortHwid)}</p>
         </div>
       </div>
-      <div class="mt-2.5 flex items-center justify-between text-[9px] font-bold">
+      <div class="mt-2.5 flex items-center justify-between text-[10px] font-bold">
         <div class="flex gap-3">
           <span class="flex items-center gap-1 text-slate-400">
             <span class="material-symbols-outlined icon-sm">battery_3_bar</span>${battery}%
@@ -250,7 +309,7 @@ function renderDeviceCards(devs: DeviceInfo[], propsResults: (DeviceProperties |
             <span class="material-symbols-outlined icon-sm">device_thermostat</span>${temp}°C
           </span>
         </div>
-        <span class="text-slate-400 uppercase text-[8px]">2小时前</span>
+        <span class="text-slate-400 uppercase text-[10px]">${timeAgo(d.updated_at)}</span>
       </div>
     </div>`;
     };
@@ -259,93 +318,79 @@ function renderDeviceCards(devs: DeviceInfo[], propsResults: (DeviceProperties |
         '<div class="text-center text-[9px] text-slate-300 py-3 font-semibold uppercase tracking-wider">暂无设备</div>';
     let html = '';
 
-    // Running section (always show)
-    html += `<div class="dev-section">
+    // Running section
+    html += `<div class="dev-section${runningDevs.length ? '' : ' collapsed'}">
       <div class="dev-section-header bg-[#eff6ff] px-3 py-1.5 flex items-center gap-2 sticky top-0 z-10 border-b border-blue-100" onclick="this.parentElement.classList.toggle('collapsed')">
         <span class="material-symbols-outlined section-arrow text-sm text-blue-400">expand_more</span>
-        <span class="text-[10px] font-black text-slate-500 uppercase tracking-normal">运行中</span>
+        <span class="text-[11px] font-black text-slate-500 uppercase tracking-normal">运行中</span>
       </div>
-      <div class="dev-section-body p-2 space-y-1">${runningDevs.length ? runningDevs.map(renderRunningCard).join('') : emptyBody}</div>
+      <div class="dev-section-body p-2 space-y-2">${runningDevs.length ? runningDevs.map(renderRunningCard).join('') : emptyBody}</div>
     </div>`;
 
-    // Ready section (always show)
-    html += `<div class="dev-section">
+    // Ready section
+    html += `<div class="dev-section${readyDevs.length ? '' : ' collapsed'}">
       <div class="dev-section-header bg-[#f8fafc] px-3 py-1.5 flex items-center gap-2 sticky top-0 z-10 border-b border-slate-100 mt-1" onclick="this.parentElement.classList.toggle('collapsed')">
         <span class="material-symbols-outlined section-arrow text-sm text-slate-400">expand_more</span>
-        <span class="text-[10px] font-black text-slate-500 uppercase tracking-normal">就绪</span>
+        <span class="text-[11px] font-black text-slate-500 uppercase tracking-normal">就绪</span>
       </div>
-      <div class="dev-section-body p-2 space-y-1">${readyDevs.length ? readyDevs.map(renderReadyCard).join('') : emptyBody}</div>
+      <div class="dev-section-body p-2 space-y-2">${readyDevs.length ? readyDevs.map(renderReadyCard).join('') : emptyBody}</div>
     </div>`;
 
-    // Offline section (always show)
-    html += `<div class="dev-section">
+    // Offline section
+    html += `<div class="dev-section${offlineDevs.length ? '' : ' collapsed'}">
       <div class="dev-section-header bg-[#f8fafc] px-3 py-1.5 flex items-center gap-2 sticky top-0 z-10 border-b border-slate-100 mt-1" onclick="this.parentElement.classList.toggle('collapsed')">
         <span class="material-symbols-outlined section-arrow text-sm text-slate-400">expand_more</span>
-        <span class="text-[10px] font-black text-slate-500 uppercase tracking-normal">离线</span>
+        <span class="text-[11px] font-black text-slate-500 uppercase tracking-normal">离线</span>
       </div>
-      <div class="dev-section-body p-2 space-y-1">${offlineDevs.length ? offlineDevs.map(renderOfflineCard).join('') : emptyBody}</div>
+      <div class="dev-section-body p-2 space-y-2">${offlineDevs.length ? offlineDevs.map(renderOfflineCard).join('') : emptyBody}</div>
     </div>`;
 
     // Save collapsed state before re-render
-    const collapsedSections = new Set<string>();
-    tree.querySelectorAll('.dev-section.collapsed').forEach(el => {
+    // 记录每个 section 的折叠状态 + 是否有设备内容
+    const sectionState = new Map<string, { collapsed: boolean; hadDevices: boolean }>();
+    tree.querySelectorAll('.dev-section').forEach(el => {
         const label = el.querySelector('.dev-section-header span:last-child')?.textContent?.trim();
-        if (label) collapsedSections.add(label);
+        if (!label) return;
+        const body = el.querySelector('.dev-section-body');
+        const hadDevices = body ? body.querySelectorAll('.dev-card').length > 0 : false;
+        sectionState.set(label, { collapsed: el.classList.contains('collapsed'), hadDevices });
     });
 
     tree.innerHTML = html;
 
-    // Restore collapsed state
+    // Restore user's manually toggled state
     tree.querySelectorAll('.dev-section').forEach(el => {
         const label = el.querySelector('.dev-section-header span:last-child')?.textContent?.trim();
-        if (label && collapsedSections.has(label)) {
+        if (!label) return;
+        const prev = sectionState.get(label);
+        if (!prev) return; // 首次渲染，使用默认状态
+        if (prev.collapsed && prev.hadDevices) {
+            // 用户手动折叠了有设备的分组 → 保持折叠
             el.classList.add('collapsed');
+        } else if (!prev.collapsed) {
+            // 之前是展开的（用户手动展开或有设备自动展开）→ 保持展开
+            el.classList.remove('collapsed');
         }
     });
 
-    // Bind events based on device state
-    let clickTimer: ReturnType<typeof setTimeout> | null = null;
+    // Bind events
     tree.querySelectorAll('.dev-card').forEach(el => {
         const s = (el as HTMLElement).dataset.s!;
         const state = (el as HTMLElement).dataset.state;
 
-        if (state === 'running') {
-            // Running: 单击选中 + 切换任务，双击查看设备信息
+        if (state === 'running' || state === 'offline') {
+            // 运行中/离线：单击选中，双击查看设备信息
             el.addEventListener('click', e => {
                 e.stopPropagation();
-                if (clickTimer) clearTimeout(clickTimer);
-                clickTimer = setTimeout(() => selectDevice(s), 200);
-            });
-            el.addEventListener('dblclick', e => {
-                e.stopPropagation();
-                if (clickTimer) {
-                    clearTimeout(clickTimer);
-                    clickTimer = null;
-                }
-                showDeviceInfo(s);
-            });
-        } else if (state === 'offline') {
-            // Offline: 单击选中（启用 Remove 按钮），双击查看设备信息
-            el.addEventListener('click', e => {
-                e.stopPropagation();
-                if (clickTimer) clearTimeout(clickTimer);
-                clickTimer = setTimeout(() => selectDevice(s), 200);
-            });
-            el.addEventListener('dblclick', e => {
-                e.stopPropagation();
-                if (clickTimer) {
-                    clearTimeout(clickTimer);
-                    clickTimer = null;
-                }
-                showDeviceInfo(s);
-            });
-        } else {
-            // Ready: 只有双击查看设备信息
-            el.addEventListener('dblclick', e => {
-                e.stopPropagation();
-                showDeviceInfo(s);
+                selectDevice(s);
             });
         }
+
+        // 所有状态：双击查看设备信息
+        el.addEventListener('dblclick', e => {
+            e.stopPropagation();
+            showDeviceInfo(s);
+        });
     });
 }
 
@@ -538,8 +583,67 @@ function renderTaskView() {
         return;
     }
     const city = task.cities[activeCityIdx];
-    // Find device executing this task
-    const execDevice = task.assignedDevice ? task.assignedDevice.substring(0, 16) : '';
+    const execDevice = task.assignedDevice ? resolveDeviceLabel(task.assignedDevice) : '';
+
+    // 状态徽章映射
+    const statusBadgeMap: Record<
+        string,
+        { bg: string; text: string; border: string; label: string }
+    > = {
+        WAITING: {
+            bg: 'bg-slate-50',
+            text: 'text-slate-500',
+            border: 'border-slate-200',
+            label: '等待中',
+        },
+        EXECUTING: {
+            bg: 'bg-green-50',
+            text: 'text-green-600',
+            border: 'border-green-100',
+            label: '运行中',
+        },
+        PAUSED: {
+            bg: 'bg-amber-50',
+            text: 'text-amber-600',
+            border: 'border-amber-100',
+            label: '已暂停',
+        },
+        SUCCESS: {
+            bg: 'bg-green-50',
+            text: 'text-green-600',
+            border: 'border-green-100',
+            label: '已完成',
+        },
+        ERROR: { bg: 'bg-red-50', text: 'text-red-600', border: 'border-red-100', label: '出错' },
+    };
+    const badge = statusBadgeMap[task.status] ?? statusBadgeMap['WAITING'];
+
+    // 设备信息行
+    const deviceLine = task.assignedDevice
+        ? `<span class="text-[10px] font-bold text-blue-600 uppercase tracking-tight">执行设备: ${esc(execDevice)}</span>`
+        : `<span class="text-[10px] font-bold text-slate-400 uppercase tracking-tight">未分配设备</span>`;
+
+    // 按钮：根据状态显示
+    const btnStart =
+        task.status === 'WAITING'
+            ? `<button onclick="window.__taskStart('${task.id}')" class="px-2.5 py-1.5 rounded-md border border-green-200 bg-green-50 text-[11px] font-black text-green-600 hover:bg-green-100 transition-all flex items-center gap-1.5 uppercase"><span class="material-symbols-outlined text-sm fill-1">play_arrow</span> 启动</button>`
+            : '';
+    const btnPause =
+        task.status === 'EXECUTING'
+            ? `<button onclick="window.__taskPause('${task.id}')" class="px-2.5 py-1.5 rounded-md border border-amber-200 bg-amber-50 text-[11px] font-black text-amber-600 hover:bg-amber-100 transition-all flex items-center gap-1.5 uppercase"><span class="material-symbols-outlined text-sm">pause</span> 暂停</button>`
+            : '';
+    const btnResume =
+        task.status === 'PAUSED' || task.status === 'ERROR'
+            ? `<button onclick="window.__taskResume('${task.id}')" class="px-2.5 py-1.5 rounded-md border border-green-200 bg-green-50 text-[11px] font-black text-green-600 hover:bg-green-100 transition-all flex items-center gap-1.5 uppercase"><span class="material-symbols-outlined text-sm">resume</span> 继续</button>`
+            : '';
+    const btnRetry =
+        task.status === 'ERROR' || task.status === 'SUCCESS'
+            ? `<button onclick="window.__taskRetry('${task.id}')" class="px-2.5 py-1.5 rounded-md border border-blue-200 bg-blue-50 text-[11px] font-black text-blue-600 hover:bg-blue-100 transition-all flex items-center gap-1.5 uppercase"><span class="material-symbols-outlined text-sm">replay</span> 重跑</button>`
+            : '';
+    const btnStop =
+        task.status === 'EXECUTING' || task.status === 'PAUSED'
+            ? `<button onclick="window.__taskStop('${task.id}')" class="px-2.5 py-1.5 rounded-md border border-red-200 bg-red-50 text-[11px] font-black text-red-600 hover:bg-red-100 transition-all flex items-center gap-1.5 uppercase"><span class="material-symbols-outlined text-sm">stop</span> 停止</button>`
+            : '';
 
     mid.innerHTML = `
     <!-- Task Header -->
@@ -551,34 +655,20 @@ function renderTaskView() {
         <div>
           <div class="flex items-center space-x-2">
             <h2 class="text-sm font-black text-slate-800">${task.name}</h2>
-            <span class="px-1.5 py-0.5 bg-green-50 text-green-600 text-[8px] font-black rounded border border-green-100 uppercase tracking-tighter">运行中</span>
+            <span class="px-1.5 py-0.5 ${badge.bg} ${badge.text} text-[10px] font-black rounded border ${badge.border} uppercase tracking-tighter">${badge.label}</span>
           </div>
           <div class="flex flex-col mt-0.5">
-            <span class="text-[10px] font-bold text-blue-600 uppercase tracking-tight">正在执行设备: ${esc(execDevice)}</span>
-            <div class="flex items-center text-[9px] text-slate-400 font-medium mt-0.5">
-              <span class="material-symbols-outlined icon-xs text-[12px] mr-1">location_on</span>${task.cities.length} 个城市
+            ${deviceLine}
+            <div class="flex items-center text-[10px] text-slate-400 font-medium mt-0.5">
+              <span class="material-symbols-outlined icon-xs text-[10px] mr-1">location_on</span>${task.cities.length} 个城市
               <span class="mx-2 text-slate-200">|</span>
-              <span class="uppercase tracking-tighter">硬件同步已开启</span>
+              <span class="uppercase tracking-tighter">${task.cities.reduce((s, c) => s + c.total, 0)} 个关键词</span>
             </div>
           </div>
         </div>
       </div>
       <div class="flex items-center space-x-1.5">
-        <button class="px-2.5 py-1.5 rounded-md border border-green-200 bg-green-50 text-[10px] font-black text-green-600 hover:bg-green-100 transition-all flex items-center gap-1.5 uppercase">
-          <span class="material-symbols-outlined text-sm fill-1">play_arrow</span> 启动
-        </button>
-        <button class="px-2.5 py-1.5 rounded-md border border-amber-200 bg-amber-50 text-[10px] font-black text-amber-600 hover:bg-amber-100 transition-all flex items-center gap-1.5 uppercase">
-          <span class="material-symbols-outlined text-sm">pause</span> 暂停
-        </button>
-        <button class="px-2.5 py-1.5 rounded-md border border-green-200 bg-green-50 text-[10px] font-black text-green-600 hover:bg-green-100 transition-all flex items-center gap-1.5 uppercase">
-          <span class="material-symbols-outlined text-sm">resume</span> 继续
-        </button>
-        <button class="px-2.5 py-1.5 rounded-md border border-blue-200 bg-blue-50 text-[10px] font-black text-blue-600 hover:bg-blue-100 transition-all flex items-center gap-1.5 uppercase">
-          <span class="material-symbols-outlined text-sm">replay</span> 重跑
-        </button>
-        <button class="px-2.5 py-1.5 rounded-md border border-red-200 bg-red-50 text-[10px] font-black text-red-600 hover:bg-red-100 transition-all flex items-center gap-1.5 uppercase">
-          <span class="material-symbols-outlined text-sm">stop</span> 停止
-        </button>
+        ${btnStart}${btnPause}${btnResume}${btnRetry}${btnStop}
       </div>
     </div>
 
@@ -614,18 +704,24 @@ function renderTaskView() {
               const pct = c.status === 'done' ? 100 : c.progress;
               const statsLabel =
                   c.status === 'done'
-                      ? '<span class="text-[9px] text-slate-400 font-bold uppercase">已完成</span>'
+                      ? '<span class="text-[10px] text-slate-400 font-bold uppercase">已完成</span>'
                       : c.status === 'active'
-                        ? `<span class="text-[9px] text-slate-400 font-bold uppercase">${c.done}/${c.total} 关键词</span>`
-                        : '<span class="text-[9px] text-slate-400 font-bold uppercase">等待中</span>';
+                        ? `<span class="text-[10px] text-slate-400 font-bold uppercase">${c.done}/${c.total} 关键词</span>`
+                        : '<span class="text-[10px] text-slate-400 font-bold uppercase">等待中</span>';
               const pctLabel =
                   c.status === 'done'
-                      ? '<span class="text-[9px] font-black text-green-600">100%</span>'
+                      ? '<span class="text-[10px] font-black text-green-600">100%</span>'
                       : c.status === 'active'
-                        ? `<span class="text-[9px] font-black text-blue-600">${c.progress}%</span>`
+                        ? `<span class="text-[10px] font-black text-blue-600">${c.progress}%</span>`
                         : '';
+              const cardBg =
+                  c.status === 'done'
+                      ? 'bg-green-50/50'
+                      : c.status === 'active'
+                        ? 'bg-blue-50/40'
+                        : 'bg-slate-50/50';
               return `
-        <div class="bg-white rounded-md ${borderCls} p-2.5 cursor-pointer ${!isActive ? 'hover:bg-slate-50' : ''} transition-all relative overflow-hidden" style="width:180px;min-width:180px;flex-shrink:0" onclick="window.__switchCity(${i})">
+        <div class="${cardBg} rounded-md ${borderCls} p-2.5 cursor-pointer ${!isActive ? 'hover:bg-slate-50' : ''} transition-all relative overflow-hidden" style="width:180px;min-width:180px;flex-shrink:0" onclick="window.__switchCity(${i})">
           <div class="flex items-center justify-between mb-1.5">
             <div class="flex items-center space-x-2">
               <span class="material-symbols-outlined icon-sm text-blue-400">location_city</span>
@@ -633,7 +729,7 @@ function renderTaskView() {
             </div>
             ${statusIcon}
           </div>
-          <div class="text-[8px] text-slate-400 truncate mb-1.5" title="${c.poi}">
+          <div class="text-[9px] text-slate-400 truncate mb-1.5" title="${c.poi}">
             <span class="material-symbols-outlined icon-xs text-slate-300 align-middle mr-0.5">location_on</span>${c.poi}
           </div>
           <div class="w-full h-1.5 ${barBg} rounded-full overflow-hidden">
@@ -652,8 +748,8 @@ function renderTaskView() {
     <div class="flex-1 bg-white rounded-md border border-[var(--panel-border)] shadow-sm overflow-hidden flex flex-col min-h-0">
       <div class="px-4 py-2 bg-slate-50/50 border-b border-slate-100 flex items-center justify-between shrink-0">
         <div class="flex items-center space-x-3">
-          <span class="text-[10px] font-black text-slate-500 uppercase tracking-tight">关键词: ${city.name}</span>
-          <span class="px-1.5 py-0.5 bg-slate-200/50 text-slate-600 rounded text-[9px] font-black">共 ${city.total} 个</span>
+          <span class="text-[11px] font-black text-slate-500 uppercase tracking-tight">${city.name} ｜ 关键词 </span>
+          <span class="px-1.5 py-0.5 bg-slate-200/50 text-slate-600 rounded text-[10px] font-black">共 ${city.total} 个</span>
         </div>
         <div class="relative w-56">
           <span class="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-sm">search</span>
@@ -665,19 +761,19 @@ function renderTaskView() {
           ${city.keywords
               .map(k => {
                   if (k.status === 'ok') {
-                      return `<div class="kw-item flex items-center justify-between p-2 rounded-md bg-green-50/40 border border-green-100 transition-all hover:bg-green-50">
+                      return `<div class="kw-item flex items-center justify-between p-2 rounded bg-green-100/50 border border-green-200 transition-all hover:bg-green-100">
         <div class="flex items-center min-w-0">
           <span class="material-symbols-outlined icon-sm text-green-500 mr-1.5 fill-1">check_circle</span>
           <span class="text-[12px] font-semibold text-slate-700 truncate">${k.name}</span>
         </div>
       </div>`;
                   } else if (k.status === 'run') {
-                      return `<div class="kw-item flex items-center p-2 rounded-md bg-blue-50 border border-blue-400 keyword-active ring-2 ring-blue-100">
+                      return `<div class="kw-item flex items-center p-2 rounded bg-blue-100/50 border border-blue-400 keyword-active ring-2 ring-blue-100">
         <div class="h-2 w-2 rounded-full bg-blue-500 mr-1.5 animate-pulse"></div>
         <span class="text-[12px] font-bold text-blue-700 truncate">${k.name}</span>
       </div>`;
                   } else {
-                      return `<div class="kw-item flex items-center p-2 rounded-md bg-slate-50 border border-slate-100 hover:border-slate-300 transition-all cursor-pointer">
+                      return `<div class="kw-item flex items-center p-2 rounded bg-slate-100/50 border border-slate-200 hover:border-slate-300 transition-all cursor-pointer">
         <span class="material-symbols-outlined icon-sm text-slate-300 mr-1.5">circle</span>
         <span class="text-[12px] font-medium text-slate-500 truncate">${k.name}</span>
       </div>`;
@@ -691,16 +787,20 @@ function renderTaskView() {
 }
 
 /* ───── Global onclick handlers (Tauri WebView compatible) ───── */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 (window as any).__switchTask = (taskId: string) => {
     const task = globalQueue.find(t => t.id === taskId);
     if (!task || task === activeTask) return;
     activeTask = task;
     activeCityIdx = 0;
+    // 切换任务时清除设备选中状态
+    selectedDevice = null;
+    updateCardSelection();
     renderTaskView();
-    // Refresh queue to update active highlight
-    if (selectedDevice) loadChainForDevice(selectedDevice);
+    loadChainForDevice('');
 };
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 (window as any).__switchCity = (idx: number) => {
     if (idx === activeCityIdx) return;
     activeCityIdx = idx;
@@ -713,6 +813,7 @@ function renderTaskView() {
     }
 };
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 (window as any).__filterKw = (val: string) => {
     const q = val.toLowerCase();
     document.querySelectorAll('#kw-grid .kw-item').forEach(el => {
@@ -721,79 +822,244 @@ function renderTaskView() {
     });
 };
 
+/** 获取就绪设备列表（在线、未被任务占用） */
+function getReadySerials(): string[] {
+    const assigned = getAssignedDeviceSerials();
+    const readyCards = document.querySelectorAll('.dev-card[data-state="ready"]');
+    const serials: string[] = [];
+    readyCards.forEach(el => {
+        const s = (el as HTMLElement).dataset.s;
+        if (s && !assigned.has(s)) serials.push(s);
+    });
+    return serials;
+}
+
+/** 从 DB 查询设备列表构建 propsMap（供 mock-data 任务分配使用） */
+async function buildPropsMap(): Promise<Map<string, { battery_level: number }>> {
+    const devs: DeviceRow[] = await invoke('list_devices');
+    const m = new Map<string, { battery_level: number }>();
+    for (const d of devs) {
+        m.set(d.serial, { battery_level: d.battery_level });
+    }
+    return m;
+}
+
+/** 任务操作后统一刷新（查 DB + 渲染，DB 查询 <1ms） */
+async function afterTaskAction() {
+    await refreshDevices();
+    renderTaskView();
+    loadChainForDevice(selectedDevice ?? '');
+}
+
+// 注册执行引擎的 tick 回调（每 1.5 秒关键词推进时触发 UI 刷新）
+setTaskTickCallback(() => {
+    refreshDevices(); // 刷新设备卡片中的进度条
+    renderTaskView();
+    loadChainForDevice(selectedDevice ?? '');
+});
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(window as any).__taskStart = async (taskId: string) => {
+    const readySerials = getReadySerials();
+    if (!readySerials.length) {
+        showToast('当前没有就绪的设备，请先连接设备');
+        return;
+    }
+    const propsMap = await buildPropsMap();
+    const result = startTask(taskId, readySerials, propsMap);
+    if (!result.ok) {
+        showToast(result.error ?? '启动失败');
+        return;
+    }
+    if (result.serial) selectedDevice = result.serial;
+    startTaskExecution(taskId);
+    await afterTaskAction();
+};
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(window as any).__taskPause = async (taskId: string) => {
+    stopTaskExecution(taskId);
+    const result = pauseTask(taskId);
+    if (!result.ok) {
+        showToast(result.error ?? '暂停失败');
+        return;
+    }
+    await afterTaskAction();
+};
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(window as any).__taskResume = async (taskId: string) => {
+    const readySerials = getReadySerials();
+    const propsMap = await buildPropsMap();
+    const result = resumeTask(taskId, readySerials, propsMap);
+    if (!result.ok) {
+        showToast(result.error ?? '继续失败');
+        return;
+    }
+    if (result.serial) selectedDevice = result.serial;
+    startTaskExecution(taskId);
+    await afterTaskAction();
+};
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(window as any).__taskStop = async (taskId: string) => {
+    stopTaskExecution(taskId);
+    const result = stopTask(taskId);
+    if (!result.ok) {
+        showToast(result.error ?? '停止失败');
+        return;
+    }
+    selectedDevice = null;
+    await afterTaskAction();
+};
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(window as any).__taskRetry = async (taskId: string) => {
+    const readySerials = getReadySerials();
+    const propsMap = await buildPropsMap();
+    const result = retryTask(taskId, readySerials, propsMap);
+    if (!result.ok) {
+        showToast(result.error ?? '重跑失败');
+        return;
+    }
+    if (result.serial) selectedDevice = result.serial;
+    startTaskExecution(taskId);
+    await afterTaskAction();
+};
+
 /* ───── Global Queue (right column, code.html style) ───── */
+/** 从 DOM 设备卡片中解析 hw_serial（避免显示 IP 地址） */
+function resolveDeviceLabel(serial: string): string {
+    const card = document.querySelector(`.dev-card[data-s="${serial}"]`);
+    if (card) {
+        const hwid = card.querySelector('.mono-technical')?.textContent?.trim();
+        if (hwid) return hwid;
+    }
+    return serial.substring(0, 14);
+}
+
 function loadChainForDevice(_serial: string) {
     const cards = $('#chain-cards')!;
 
     const queueSub = document.querySelector('.queue-sub');
-    if (queueSub) queueSub.textContent = `${globalQueue.length} 个进行中任务`;
+    const executingCount = globalQueue.filter(t => t.status === 'EXECUTING').length;
+    if (queueSub)
+        queueSub.textContent = `${executingCount} 个执行中 · 共 ${globalQueue.length} 个任务`;
 
     cards.innerHTML = globalQueue
         .map(q => {
             const isActive = q === activeTask;
-            const deviceSub = q.assignedDevice ? q.assignedDevice.substring(0, 14) : '';
+            const deviceSub = q.assignedDevice ? resolveDeviceLabel(q.assignedDevice) : '';
+            const kwTotal = q.cities.reduce((s, c) => s + c.total, 0);
+            const cityCount = q.cities.length;
+            const ring = isActive ? 'ring-2 ring-blue-200' : '';
+
+            // 城市 + 关键词统计行
+            const statsRow = `
+        <div class="flex gap-4 text-slate-500">
+          <div class="flex items-center gap-1">
+            <span class="material-symbols-outlined icon-xs text-[14px]">domain</span>
+            <span class="text-[10px] font-medium">${cityCount} 城市</span>
+          </div>
+          <div class="flex items-center gap-1">
+            <span class="material-symbols-outlined icon-xs text-[14px]">sell</span>
+            <span class="text-[10px] font-medium">${kwTotal} 关键词</span>
+          </div>
+        </div>`;
 
             if (q.status === 'EXECUTING') {
-                const kwTotal = q.cities.reduce((s, c) => s + c.total, 0);
                 const kwDone = q.cities.reduce((s, c) => s + c.done, 0);
                 const pct = kwTotal > 0 ? Math.round((kwDone / kwTotal) * 100) : 0;
                 return `
-      <div class="executing-gradient border border-blue-200 rounded-lg p-3 shadow-sm transition-all hover:shadow-md cursor-pointer relative overflow-hidden ring-1 ring-blue-50 ${isActive ? 'ring-2 ring-blue-300' : ''}" onclick="window.__switchTask('${q.id}')">
-        <div class="flex justify-between items-start mb-1.5">
-          <h4 class="text-[11px] font-bold text-slate-800 truncate pr-2">${q.name}</h4>
-          <span class="px-1.5 py-0.5 bg-blue-500 text-white text-[7px] font-black rounded uppercase">执行中</span>
-        </div>
-        <div class="flex flex-col mb-2">
-          <p class="mono-technical text-[8px] text-blue-600 font-bold uppercase mb-1">设备: ${esc(deviceSub)}</p>
-          <div class="flex items-center text-[9px] text-slate-500">
-            <span class="material-symbols-outlined icon-xs text-[14px] mr-1 text-blue-500">bolt</span> ${kwDone}/${kwTotal} 关键词
+      <div class="bg-blue-50/40 border border-blue-100 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer transition-all hover:shadow-md ${ring}" onclick="window.__switchTask('${q.id}')">
+        <div class="w-1 self-stretch bg-[#2563EB]"></div>
+        <div class="flex-1 p-3 flex flex-col">
+          <div class="flex justify-between items-start mb-2">
+            <h4 class="font-semibold text-xs text-slate-900 leading-tight truncate pr-2">${esc(q.name)}</h4>
+            <div class="flex items-center gap-1.5 bg-slate-100 px-2 py-0.5 rounded-full shrink-0">
+              <span class="w-1.5 h-1.5 bg-[#2563EB] rounded-full animate-pulse"></span>
+              <span class="text-[10px] font-bold text-[#2563EB]">执行中</span>
+            </div>
+          </div>
+          ${statsRow}
+          <div class="flex justify-between items-center mt-2">
+            <span class="text-[10px] font-semibold text-slate-500">当前进度</span>
+            <span class="text-[10px] font-bold text-[#2563EB]">${pct}%</span>
+          </div>
+          <div class="absolute bottom-0 left-1 right-0 h-[2px] bg-slate-100 overflow-hidden">
+            <div class="h-full bg-[#2563EB]" style="width: ${pct}%"></div>
           </div>
         </div>
-        <div class="w-full h-1 bg-blue-100 rounded-full overflow-hidden">
-          <div class="h-full bg-blue-500 rounded-full" style="width: ${pct}%"></div>
+      </div>`;
+            } else if (q.status === 'PAUSED') {
+                const kwDone = q.cities.reduce((s, c) => s + c.done, 0);
+                const pct = kwTotal > 0 ? Math.round((kwDone / kwTotal) * 100) : 0;
+                return `
+      <div class="bg-amber-50/40 border border-amber-100 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer transition-all hover:shadow-md ${ring}" onclick="window.__switchTask('${q.id}')">
+        <div class="w-1 self-stretch bg-amber-400"></div>
+        <div class="flex-1 p-3 flex flex-col">
+          <div class="flex justify-between items-start mb-2">
+            <h4 class="font-semibold text-xs text-slate-900 leading-tight truncate pr-2">${esc(q.name)}</h4>
+            <div class="bg-slate-100 px-2 py-0.5 rounded-full shrink-0">
+              <span class="text-[10px] font-bold text-amber-600">已暂停</span>
+            </div>
+          </div>
+          <p class="mono-technical text-[10px] text-amber-600 font-medium mb-2">设备: ${esc(deviceSub)}</p>
+          ${statsRow}
+          <div class="mt-auto flex justify-between items-center mb-1 mt-3">
+            <span class="text-[10px] font-medium text-slate-400">暂停于</span>
+            <span class="text-[10px] font-bold text-amber-600">${pct}%</span>
+          </div>
+          <div class="absolute bottom-0 left-1 right-0 h-[2px] bg-slate-100 overflow-hidden">
+            <div class="h-full bg-amber-400" style="width: ${pct}%"></div>
+          </div>
         </div>
       </div>`;
-            } else if (q.status === 'SCHEDULED') {
-                const kwTotal = q.cities.reduce((s, c) => s + c.total, 0);
+            } else if (q.status === 'WAITING' || q.status === 'SCHEDULED') {
                 return `
-      <div class="bg-white border border-slate-100 border-l-4 border-l-slate-400 rounded-lg p-3 transition-all hover:border-slate-300 cursor-pointer" onclick="window.__switchTask('${q.id}')">
-        <div class="flex justify-between items-start mb-1.5">
-          <h4 class="text-[11px] font-bold text-slate-600 truncate pr-2">${q.name}</h4>
-          <span class="px-1.5 py-0.5 bg-slate-100 text-slate-500 text-[7px] font-black rounded uppercase">已计划</span>
+      <div class="bg-slate-50/60 border border-slate-200 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer transition-all hover:shadow-md ${ring}" onclick="window.__switchTask('${q.id}')">
+        <div class="w-1 self-stretch bg-[#64748B]"></div>
+        <div class="flex-1 p-3">
+          <div class="flex justify-between items-start mb-2">
+            <h4 class="font-semibold text-xs text-slate-900 leading-tight truncate pr-2">${esc(q.name)}</h4>
+            <div class="bg-slate-100 px-2 py-0.5 rounded-full shrink-0">
+              <span class="text-[11px] font-bold text-[#64748B]">等待中</span>
+            </div>
+          </div>
+          ${statsRow}
         </div>
-        <p class="mono-technical text-[8px] text-slate-400 font-bold uppercase mb-1">设备: ${esc(deviceSub)}</p>
-        <p class="text-[9px] text-slate-400 font-bold uppercase">${kwTotal} 个关键词 • 21:00</p>
       </div>`;
             } else if (q.status === 'SUCCESS') {
                 return `
-      <div class="bg-white border border-slate-100 border-l-4 border-l-green-500 rounded-lg p-3 opacity-80" onclick="window.__switchTask('${q.id}')">
-        <div class="flex justify-between items-start mb-1.5">
-          <h4 class="text-[11px] font-bold text-slate-500 truncate pr-2">${q.name}</h4>
-          <span class="px-1.5 py-0.5 bg-green-50 text-green-600 text-[7px] font-black rounded uppercase">成功</span>
+      <div class="bg-green-50/40 border border-green-100 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer opacity-80 transition-all hover:opacity-100 ${ring}" onclick="window.__switchTask('${q.id}')">
+        <div class="w-1 self-stretch bg-[#10B981]"></div>
+        <div class="flex-1 p-3">
+          <div class="flex justify-between items-start mb-2">
+            <h4 class="font-semibold text-xs text-slate-900 leading-tight truncate pr-2">${esc(q.name)}</h4>
+            <div class="bg-slate-100 px-2 py-0.5 rounded-full shrink-0">
+              <span class="text-[10px] font-bold text-[#10B981]">已完成</span>
+            </div>
+          </div>
+          ${statsRow}
         </div>
-        <p class="mono-technical text-[8px] text-slate-400 font-bold uppercase mb-1">设备: ${esc(deviceSub)}</p>
-        <p class="text-[9px] text-slate-400 font-bold uppercase">已于 12:40 PM 完成</p>
       </div>`;
             } else if (q.status === 'ERROR') {
                 return `
-      <div class="bg-white border border-slate-100 border-l-4 border-l-red-500 rounded-lg p-3" onclick="window.__switchTask('${q.id}')">
-        <div class="flex justify-between items-start mb-1.5">
-          <h4 class="text-[11px] font-bold text-slate-700 truncate pr-2">${q.name}</h4>
-          <span class="px-1.5 py-0.5 bg-red-50 text-red-500 text-[7px] font-black rounded uppercase">错误</span>
+      <div class="bg-red-50/40 border border-red-100 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer transition-all hover:shadow-md ${ring}" onclick="window.__switchTask('${q.id}')">
+        <div class="w-1 self-stretch bg-red-500"></div>
+        <div class="flex-1 p-3">
+          <div class="flex justify-between items-start mb-2">
+            <h4 class="font-semibold text-sm text-slate-900 leading-tight truncate pr-2">${esc(q.name)}</h4>
+            <div class="bg-slate-100 px-2 py-0.5 rounded-full shrink-0">
+              <span class="text-[10px] font-bold text-red-500">出错</span>
+            </div>
+          </div>
+          <p class="mono-technical text-[10px] text-slate-400 font-medium mb-2">设备: ${esc(deviceSub)}</p>
+          <p class="text-[10px] text-red-500 font-medium">执行异常 · 等待操作</p>
         </div>
-        <p class="mono-technical text-[8px] text-slate-400 font-bold uppercase mb-1">设备: ${esc(deviceSub)}</p>
-        <p class="text-[9px] text-red-500 font-bold uppercase">连接超时 (20s) - 自动重试中</p>
       </div>`;
             } else {
-                // Default / PENDING
-                return `
-      <div class="bg-white border border-slate-100 border-l-4 border-l-slate-300 rounded-lg p-3 transition-all hover:border-slate-300 cursor-pointer" onclick="window.__switchTask('${q.id}')">
-        <div class="flex justify-between items-start mb-1.5">
-          <h4 class="text-[11px] font-bold text-slate-600 truncate pr-2">${q.name}</h4>
-          <span class="px-1.5 py-0.5 bg-slate-100 text-slate-500 text-[7px] font-black rounded uppercase">${q.status}</span>
-        </div>
-        <p class="mono-technical text-[8px] text-slate-400 font-bold uppercase mb-1">设备: ${esc(deviceSub)}</p>
-      </div>`;
+                return '';
             }
         })
         .join('');
@@ -879,9 +1145,11 @@ async function showDeviceInfo(serial: string) {
 
 /* ───── Utility ───── */
 function esc(t: string) {
-    const d = document.createElement('div');
-    d.textContent = t;
-    return d.innerHTML;
+    return t
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
 }
 
 /** 等待浏览器完成一帧渲染（双 rAF 保证 paint 完成） */
@@ -895,17 +1163,13 @@ window.addEventListener('DOMContentLoaded', () => {
 
     // 初始化全局任务队列
     globalQueue = getTasksForDevice('*');
+    // 默认选中第一个任务
+    if (globalQueue.length > 0 && !activeTask) {
+        activeTask = globalQueue[0];
+        activeCityIdx = 0;
+        renderTaskView();
+    }
     loadChainForDevice('');
-    // Scan USB button
-    $('#btn-scan-usb')?.addEventListener('click', async () => {
-        const btn = $('#btn-scan-usb') as HTMLButtonElement;
-        btn.disabled = true;
-        try {
-            await refreshDevices();
-        } finally {
-            btn.disabled = false;
-        }
-    });
 
     // Search toggle
     $('#btn-search-dev')?.addEventListener('click', () => {
@@ -963,14 +1227,14 @@ window.addEventListener('DOMContentLoaded', () => {
             ($('#set-mqtt-client-id') as HTMLInputElement).value = settings.mqtt_client_id || '';
             ($('#set-mqtt-username') as HTMLInputElement).value = settings.mqtt_username || '';
             ($('#set-mqtt-password') as HTMLInputElement).value = settings.mqtt_password || '';
-        } catch (_) {
+        } catch {
             /* ignore */
         }
         // Check MQTT status
         try {
             const s = await invoke<string>('mqtt_status');
             updateMqttStatusUI(s);
-        } catch (_) {
+        } catch {
             /* ignore */
         }
         settingsOverlay.style.display = 'flex';
@@ -1022,8 +1286,17 @@ window.addEventListener('DOMContentLoaded', () => {
     // Resizers removed — using fixed width layout per code.html
 
     // 监听后台 ADB 设备变更事件，自动刷新
-    listen('devices-changed', () => {
-        refreshDevices();
+    listen('devices-changed', async () => {
+        // 先刷新设备列表
+        await refreshDevices();
+        // 获取在线设备，释放离线设备上的任务
+        const devs: DeviceRow[] = await invoke('list_devices');
+        const onlineSerials = new Set(devs.filter(d => d.state !== 'Offline').map(d => d.serial));
+        const released = releaseTasksForOfflineDevices(onlineSerials);
+        if (released > 0) {
+            renderTaskView();
+            loadChainForDevice(selectedDevice ?? '');
+        }
     });
 
     // 监听 MQTT 状态事件

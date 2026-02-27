@@ -207,10 +207,6 @@
     box-shadow: 0 0 20px rgba(37, 99, 235, 0.15);
 }
 
-.executing-gradient {
-    background: linear-gradient(135deg, #f8fbff 0%, #ffffff 100%);
-}
-
 /* ─── Device Card States ─── */
 .device-card-running {
     background-color: #f0f7ff;
@@ -727,6 +723,7 @@
 .splash-time {
     @apply text-5xl font-extralight tracking-[8px] mt-4 font-sans opacity-0;
     color: rgba(71, 85, 105, 0.4);
+    font-weight: 700;
     animation: s-fade-in 0.8s var(--ease-smooth) 0.8s both;
 }
 

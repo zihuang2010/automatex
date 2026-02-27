@@ -1,7 +1,23 @@
 use adb_client::server::ADBServer;
 use serde::{Deserialize, Serialize};
 use std::net::{Ipv4Addr, SocketAddrV4};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
+
+/// 获取内嵌 adb 的路径（Tauri sidecar，与可执行文件同目录）
+pub fn adb_path() -> &'static str {
+    static ADB: OnceLock<String> = OnceLock::new();
+    ADB.get_or_init(|| {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                let sidecar = dir.join("adb");
+                if sidecar.exists() {
+                    return sidecar.to_string_lossy().to_string();
+                }
+            }
+        }
+        "adb".to_string() // 兜底：开发环境走系统 PATH
+    })
+}
 
 // ─── Data Types ─────────────────────────────────────────────────
 
@@ -21,15 +37,6 @@ pub struct DeviceEntry {
     pub device_type: DeviceType,
     /// WiFi 设备的连接地址（USB 设备为 None）
     pub address: Option<String>,
-}
-
-/// 返回给前端的设备信息
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct DeviceInfo {
-    pub serial: String,
-    pub name: String,
-    pub state: String,
-    pub device_type: String,
 }
 
 /// Shell 命令执行结果
@@ -76,12 +83,6 @@ impl DeviceManager {
         }
     }
 
-    /// 从持久化数据恢复设备列表
-    pub fn restore_devices(&self, entries: Vec<DeviceEntry>) {
-        let mut devices = self.devices.lock().unwrap();
-        *devices = entries;
-    }
-
     /// 添加 WiFi 设备
     pub fn add_wifi_device(&self, address: &str, name: &str) -> Result<DeviceEntry, String> {
         let addr = parse_wifi_address(address)?;
@@ -114,11 +115,6 @@ impl DeviceManager {
         Ok(entry)
     }
 
-    /// 获取所有设备列表
-    pub fn get_devices(&self) -> Vec<DeviceEntry> {
-        self.devices.lock().unwrap().clone()
-    }
-
     /// 清空所有设备（断开所有 ADB 连接，包括自动发现的）
     pub fn clear_devices(&self) {
         // 先从 ADB Server 获取当前所有连接的设备，逐个断开
@@ -127,14 +123,16 @@ impl DeviceManager {
                 for dev in &devs {
                     let serial = dev.identifier.to_string();
                     // 断开所有非 USB 设备（WiFi / mDNS / TLS transport）
-                    let _ = std::process::Command::new("adb")
+                    let _ = std::process::Command::new(adb_path())
                         .args(["disconnect", &serial])
                         .output();
                 }
             }
         }
         // 兜底：执行 adb disconnect（无参数断开所有远程连接）
-        let _ = std::process::Command::new("adb").arg("disconnect").output();
+        let _ = std::process::Command::new(adb_path())
+            .arg("disconnect")
+            .output();
 
         // 清空手动列表
         self.devices.lock().unwrap().clear();
@@ -144,7 +142,7 @@ impl DeviceManager {
     pub fn remove_device_and_disconnect(&self, serial: &str) -> Result<(), String> {
         // 先断开 WiFi 连接
         if serial.contains(':') {
-            let _ = std::process::Command::new("adb")
+            let _ = std::process::Command::new(adb_path())
                 .args(["disconnect", serial])
                 .output();
         }
@@ -152,106 +150,6 @@ impl DeviceManager {
         let mut devices = self.devices.lock().unwrap();
         devices.retain(|d| d.serial != serial && d.address.as_deref() != Some(serial));
         Ok(())
-    }
-
-    /// 通过 ADB Server 扫描所有连接的设备（USB + WiFi），自动去重
-    pub fn scan_adb_devices(&self) -> Result<Vec<DeviceInfo>, String> {
-        let mut server = ADBServer::new(adb_server_addr());
-
-        let adb_devices = server
-            .devices()
-            .map_err(|e| format!("ADB Server 连接失败 (确保 adb 已安装并运行): {}", e))?;
-
-        let manual_devices = self.devices.lock().unwrap();
-
-        // 第一步：收集所有 ADB 设备信息，并查询硬件序列号用于去重
-        struct RawDevice {
-            serial: String,
-            state: String,
-            device_type: String,
-            hw_serial: Option<String>, // ro.serialno 用于去重
-        }
-
-        let mut raw_devices: Vec<RawDevice> = Vec::new();
-        for dev in &adb_devices {
-            let serial = dev.identifier.to_string();
-            let state = format!("{:?}", dev.state);
-            let device_type = if serial.contains(':') {
-                "wifi".to_string()
-            } else {
-                "usb".to_string()
-            };
-
-            // 尝试获取硬件序列号用于去重
-            let hw_serial = adb_shell(&serial, "getprop ro.serialno")
-                .ok()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty());
-
-            raw_devices.push(RawDevice {
-                serial,
-                state,
-                device_type,
-                hw_serial,
-            });
-        }
-
-        // 第二步：按硬件序列号去重，同一物理设备只保留一个条目
-        let mut result: Vec<DeviceInfo> = Vec::new();
-        let mut seen_hw_serials: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-
-        // 优先处理 WiFi 设备（如果在手动列表中有记录）
-        let mut wifi_first: Vec<&RawDevice> = raw_devices.iter().collect();
-        wifi_first.sort_by_key(|d| if d.device_type == "wifi" { 0 } else { 1 });
-
-        for dev in wifi_first {
-            // 如果有硬件序列号且已处理过，跳过（同一物理设备）
-            if let Some(ref hw) = dev.hw_serial {
-                if !seen_hw_serials.insert(hw.clone()) {
-                    continue; // 重复设备，跳过
-                }
-            }
-
-            // 在手动列表中查找名称
-            let name = manual_devices
-                .iter()
-                .find(|d| d.serial == dev.serial || d.address.as_deref() == Some(&dev.serial))
-                .map(|d| d.name.clone())
-                .unwrap_or_else(|| dev.serial.clone());
-
-            result.push(DeviceInfo {
-                serial: dev.serial.clone(),
-                name,
-                state: dev.state.clone(),
-                device_type: dev.device_type.clone(),
-            });
-        }
-
-        // 第三步：添加手动录入但 ADB Server 未发现的设备（标记为 Offline）
-        for entry in manual_devices.iter() {
-            let already = result.iter().any(|d| {
-                d.serial == entry.serial
-                    || entry
-                        .address
-                        .as_deref()
-                        .map(|a| d.serial == a)
-                        .unwrap_or(false)
-            });
-            if !already {
-                result.push(DeviceInfo {
-                    serial: entry.serial.clone(),
-                    name: entry.name.clone(),
-                    state: "Offline".to_string(),
-                    device_type: match entry.device_type {
-                        DeviceType::Usb => "usb".to_string(),
-                        DeviceType::Wifi => "wifi".to_string(),
-                    },
-                });
-            }
-        }
-
-        Ok(result)
     }
 
     /// 在设备上执行 shell 命令
@@ -268,39 +166,6 @@ impl DeviceManager {
                 error: e,
             },
         }
-    }
-
-    /// 获取设备详细信息（通过 adb CLI 直接调用）
-    pub fn get_device_info(&self, serial: &str) -> Result<DeviceProperties, String> {
-        let device_type = if serial.contains(':') { "wifi" } else { "usb" };
-
-        let model =
-            adb_shell(serial, "getprop ro.product.model").unwrap_or_else(|_| "unknown".into());
-        let brand =
-            adb_shell(serial, "getprop ro.product.brand").unwrap_or_else(|_| "unknown".into());
-        let android_version = adb_shell(serial, "getprop ro.build.version.release")
-            .unwrap_or_else(|_| "unknown".into());
-        let sdk_version =
-            adb_shell(serial, "getprop ro.build.version.sdk").unwrap_or_else(|_| "unknown".into());
-        let display_resolution = adb_shell(serial, "wm size").unwrap_or_else(|_| "unknown".into());
-
-        // 获取电池信息
-        let battery_dump = adb_shell(serial, "dumpsys battery").unwrap_or_default();
-        let battery_level = parse_battery_field(&battery_dump, "level").unwrap_or(0);
-        let battery_temp_raw = parse_battery_field(&battery_dump, "temperature").unwrap_or(250);
-        let battery_temperature = battery_temp_raw as f64 / 10.0;
-
-        Ok(DeviceProperties {
-            serial: serial.to_string(),
-            model: model.trim().to_string(),
-            brand: brand.trim().to_string(),
-            android_version: android_version.trim().to_string(),
-            sdk_version: sdk_version.trim().to_string(),
-            display_resolution: display_resolution.trim().to_string(),
-            device_type: device_type.to_string(),
-            battery_level,
-            battery_temperature,
-        })
     }
 
     /// 安装 APK
@@ -340,10 +205,37 @@ impl DeviceManager {
         let addr = parse_wifi_address(address)?;
         let addr_str = addr.to_string();
 
-        let output = std::process::Command::new("adb")
+        let mut child = std::process::Command::new(adb_path())
             .args(["connect", &addr_str])
-            .output()
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
             .map_err(|e| format!("执行 adb connect 失败: {}", e))?;
+
+        // 5 秒超时
+        let timeout = std::time::Duration::from_secs(5);
+        let start = std::time::Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) => {
+                    if start.elapsed() > timeout {
+                        let _ = child.kill();
+                        return Err(format!(
+                            "WiFi 连接超时 ({}s): {}",
+                            timeout.as_secs(),
+                            addr_str
+                        ));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                Err(e) => return Err(format!("等待 adb connect 失败: {}", e)),
+            }
+        }
+
+        let output = child
+            .wait_with_output()
+            .map_err(|e| format!("读取 adb connect 输出失败: {}", e))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         if output.status.success() && !stdout.contains("failed") {
@@ -369,7 +261,7 @@ fn parse_wifi_address(addr: &str) -> Result<std::net::SocketAddr, String> {
 
 /// 通过 adb CLI 执行 shell 命令（最可靠方式）
 fn adb_shell(serial: &str, command: &str) -> Result<String, String> {
-    let output = std::process::Command::new("adb")
+    let output = std::process::Command::new(adb_path())
         .args(["-s", serial, "shell", command])
         .output()
         .map_err(|e| format!("执行 adb 失败 (确保 adb 已安装): {}", e))?;
@@ -384,7 +276,7 @@ fn adb_shell(serial: &str, command: &str) -> Result<String, String> {
 
 /// 通过 adb CLI 执行非 shell 命令
 fn adb_cmd(serial: &str, args: &[&str]) -> Result<String, String> {
-    let mut cmd = std::process::Command::new("adb");
+    let mut cmd = std::process::Command::new(adb_path());
     cmd.args(["-s", serial]);
     cmd.args(args);
 
@@ -397,18 +289,4 @@ fn adb_cmd(serial: &str, args: &[&str]) -> Result<String, String> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(format!("执行失败: {}", stderr.trim()))
     }
-}
-
-/// 从 `dumpsys battery` 输出中解析指定字段的整数值
-fn parse_battery_field(dump: &str, field: &str) -> Option<i32> {
-    for line in dump.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix(field) {
-            let rest = rest.trim_start();
-            if let Some(val) = rest.strip_prefix(':') {
-                return val.trim().parse::<i32>().ok();
-            }
-        }
-    }
-    None
 }
