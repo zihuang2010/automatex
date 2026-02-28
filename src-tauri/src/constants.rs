@@ -55,6 +55,18 @@ pub mod timing {
     pub const WIFI_CONNECT_TIMEOUT_SECS: u64 = 5;
     /// MQTT keep-alive 间隔
     pub const MQTT_KEEP_ALIVE_SECS: u64 = 30;
+    /// ADB shell/cmd 命令超时（防止永久阻塞）
+    pub const ADB_COMMAND_TIMEOUT_SECS: u64 = 30;
+    /// 设备列表缓存 TTL（毫秒）
+    pub const DEVICE_CACHE_TTL_MS: u64 = 3000;
+}
+
+/// 并发限制
+pub mod limits {
+    /// 设备属性获取最大并发线程数
+    pub const MAX_PROP_FETCH_THREADS: usize = 4;
+    /// 电池刷新最大并发线程数
+    pub const MAX_BATTERY_REFRESH_THREADS: usize = 8;
 }
 
 /// 允许保存的设置键白名单

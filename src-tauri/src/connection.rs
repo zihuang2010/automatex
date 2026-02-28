@@ -7,14 +7,13 @@ pub fn adb_path() -> &'static str {
     ADB.get_or_init(|| {
         if let Ok(exe) = std::env::current_exe() {
             if let Some(dir) = exe.parent() {
-                // Windows 上查找 adb.exe，macOS/Linux 上查找 adb
                 let sidecar = if cfg!(windows) { dir.join("adb.exe") } else { dir.join("adb") };
                 if sidecar.exists() {
                     return sidecar.to_string_lossy().to_string();
                 }
             }
         }
-        "adb".to_string() // 兜底：开发环境走系统 PATH
+        "adb".to_string()
     })
 }
 
@@ -25,14 +24,13 @@ pub fn adb_command() -> std::process::Command {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        cmd.creation_flags(0x08000000);
     }
     cmd
 }
 
 // ─── Data Types ─────────────────────────────────────────────────
 
-/// 设备连接类型
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum DeviceType {
@@ -40,17 +38,14 @@ pub enum DeviceType {
     Wifi,
 }
 
-/// 持久化的设备条目
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceEntry {
     pub serial: String,
     pub name: String,
     pub device_type: DeviceType,
-    /// WiFi 设备的连接地址（USB 设备为 None）
     pub address: Option<String>,
 }
 
-/// Shell 命令执行结果
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ShellResult {
     pub success: bool,
@@ -60,7 +55,6 @@ pub struct ShellResult {
 
 // ─── Device Manager ─────────────────────────────────────────────
 
-/// ADB 操作管理器（无状态，设备列表由 DB 统一管理）
 pub struct DeviceManager;
 
 impl DeviceManager {
@@ -68,12 +62,10 @@ impl DeviceManager {
         Self
     }
 
-    /// 构建 WiFi 设备条目（不再维护内存列表，设备持久化由调用方负责）
     pub fn build_wifi_entry(address: &str, name: &str) -> Result<DeviceEntry, String> {
         let addr = parse_wifi_address(address)?;
         let normalized = addr.to_string();
         let entry_name = if name.is_empty() { normalized.clone() } else { name.to_string() };
-
         Ok(DeviceEntry {
             serial: normalized.clone(),
             name: entry_name,
@@ -82,14 +74,12 @@ impl DeviceManager {
         })
     }
 
-    /// 断开 WiFi 设备的 ADB 连接
     pub fn disconnect_wifi(serial: &str) {
         if serial.contains(':') {
             let _ = adb_command().args(["disconnect", serial]).output();
         }
     }
 
-    /// 在设备上执行 shell 命令
     pub fn execute_shell(&self, serial: &str, command: &str) -> ShellResult {
         match adb_shell(serial, command) {
             Ok(output) => ShellResult {
@@ -101,17 +91,14 @@ impl DeviceManager {
         }
     }
 
-    /// 安装 APK
     pub fn install_apk(&self, serial: &str, apk_path: &str) -> Result<String, String> {
         adb_cmd(serial, &["install", apk_path]).map(|_| format!("APK 安装成功: {}", apk_path))
     }
 
-    /// 重启设备
     pub fn reboot_device(&self, serial: &str) -> Result<String, String> {
         adb_cmd(serial, &["reboot"]).map(|_| "设备正在重启...".to_string())
     }
 
-    /// 推送文件到设备
     pub fn push_file(
         &self,
         serial: &str,
@@ -122,7 +109,6 @@ impl DeviceManager {
             .map(|_| format!("文件已推送: {} -> {}", local_path, remote_path))
     }
 
-    /// 从设备拉取文件
     pub fn pull_file(
         &self,
         serial: &str,
@@ -133,7 +119,6 @@ impl DeviceManager {
             .map(|_| format!("文件已拉取: {} -> {}", remote_path, local_path))
     }
 
-    /// 通过 adb connect 连接 WiFi 设备
     pub fn connect_wifi_via_adb(&self, address: &str) -> Result<String, String> {
         let addr = parse_wifi_address(address)?;
         let addr_str = addr.to_string();
@@ -168,7 +153,6 @@ impl DeviceManager {
 
         let output =
             child.wait_with_output().map_err(|e| format!("读取 adb connect 输出失败: {}", e))?;
-
         let stdout = String::from_utf8_lossy(&output.stdout);
         if output.status.success() && !stdout.contains("failed") {
             Ok(format!("WiFi 设备已连接: {}", addr_str))
@@ -180,18 +164,47 @@ impl DeviceManager {
 
 // ─── Helpers ───────────────────────────────────────────────────
 
-/// 解析 WiFi 地址，不含端口时默认 5555
 fn parse_wifi_address(addr: &str) -> Result<std::net::SocketAddr, String> {
     let full = if addr.contains(':') { addr.to_string() } else { format!("{}:5555", addr) };
     full.parse::<std::net::SocketAddr>().map_err(|e| format!("地址格式错误 '{}': {}", addr, e))
 }
 
-/// 通过 adb CLI 执行 shell 命令（最可靠方式）
-fn adb_shell(serial: &str, command: &str) -> Result<String, String> {
-    let output = adb_command()
-        .args(["-s", serial, "shell", command])
-        .output()
+/// FIX #4: 带超时的 ADB 命令执行（防止进程永久阻塞）
+fn run_adb_timed(
+    cmd: &mut std::process::Command,
+    timeout_secs: u64,
+) -> Result<std::process::Output, String> {
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|e| format!("执行 adb 失败 (确保 adb 已安装): {}", e))?;
+
+    let timeout = std::time::Duration::from_secs(timeout_secs);
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                return child.wait_with_output().map_err(|e| format!("读取输出失败: {}", e));
+            },
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    return Err(format!("ADB 命令超时 ({}s)", timeout_secs));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            },
+            Err(e) => return Err(format!("等待命令失败: {}", e)),
+        }
+    }
+}
+
+/// 通过 adb CLI 执行 shell 命令（带超时保护）
+fn adb_shell(serial: &str, command: &str) -> Result<String, String> {
+    let output = run_adb_timed(
+        adb_command().args(["-s", serial, "shell", command]),
+        crate::constants::timing::ADB_COMMAND_TIMEOUT_SECS,
+    )?;
 
     if output.status.success() {
         String::from_utf8(output.stdout).map_err(|e| format!("输出解码失败: {}", e))
@@ -201,13 +214,13 @@ fn adb_shell(serial: &str, command: &str) -> Result<String, String> {
     }
 }
 
-/// 通过 adb CLI 执行非 shell 命令
+/// 通过 adb CLI 执行非 shell 命令（带超时保护）
 fn adb_cmd(serial: &str, args: &[&str]) -> Result<String, String> {
     let mut cmd = adb_command();
     cmd.args(["-s", serial]);
     cmd.args(args);
 
-    let output = cmd.output().map_err(|e| format!("执行 adb 失败: {}", e))?;
+    let output = run_adb_timed(&mut cmd, crate::constants::timing::ADB_COMMAND_TIMEOUT_SECS)?;
 
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);

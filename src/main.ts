@@ -4,16 +4,8 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { Task } from './types';
 import { DeviceState } from './constants';
-import {
-    setGlobalQueue,
-    setActiveTask,
-    setActiveCityIdx,
-    globalQueue,
-    activeTask,
-    selectedDevice,
-} from './state';
+import { setActiveTask, setActiveCityIdx, globalQueue, activeTask, selectedDevice } from './state';
 import { $ } from './utils';
 import {
     refreshDevices,
@@ -28,12 +20,7 @@ import {
     setTaskViewCallbacks,
 } from './task-view';
 import { loadChainForDevice } from './queue';
-import {
-    registerTaskActions,
-    releaseTasksForOfflineDevices,
-    setRefreshCallbacks,
-    cleanupAllTimers,
-} from './task-engine';
+import { registerTaskActions, setRefreshCallbacks, initEngine } from './task-engine';
 import {
     showAddDeviceDialog,
     hideAddDeviceDialog,
@@ -94,11 +81,10 @@ window.addEventListener('DOMContentLoaded', () => {
     registerViewActions();
     registerTaskActions();
 
-    // ── Step 4: 初始化全局任务队列（从后端加载）──
-    invoke<Task[]>('list_tasks')
+    // ── Step 4: 初始化后端引擎（加载任务 + 监听事件）──
+    initEngine()
         .then(tasks => {
-            console.log('[AutomateX] 加载任务成功:', tasks.length, '个');
-            setGlobalQueue(tasks);
+            console.log('[AutomateX] 引擎初始化成功:', tasks.length, '个任务');
             if (globalQueue.length > 0 && !activeTask) {
                 setActiveTask(globalQueue[0]);
                 setActiveCityIdx(0);
@@ -107,7 +93,7 @@ window.addEventListener('DOMContentLoaded', () => {
             loadChainForDevice('');
         })
         .catch(e => {
-            console.error('[AutomateX] 加载任务失败:', e);
+            console.error('[AutomateX] 引擎初始化失败:', e);
         });
 
     // ── Step 5: UI 事件绑定 ──
@@ -157,21 +143,19 @@ window.addEventListener('DOMContentLoaded', () => {
     // Settings
     initSettings();
 
-    // ── Step 6: 监听后台事件（带 debounce 防抖）──
+    // ── Step 6: 监听后台设备事件 ──
     let devicesChangedTimer: ReturnType<typeof setTimeout> | null = null;
     listen('devices-changed', () => {
         if (devicesChangedTimer) clearTimeout(devicesChangedTimer);
         devicesChangedTimer = setTimeout(async () => {
             devicesChangedTimer = null;
             const devs = await refreshDevices();
-            const onlineSerials = new Set(
-                devs.filter(d => d.state !== DeviceState.OFFLINE).map(d => d.serial),
-            );
-            const released = releaseTasksForOfflineDevices(onlineSerials);
-            if (released > 0) {
-                renderTaskView();
-                loadChainForDevice(selectedDevice ?? '');
-            }
+            // 设备离线处理现在由后端引擎负责
+            // 只需通知引擎当前在线设备列表
+            const onlineSerials = devs
+                .filter(d => d.state !== DeviceState.OFFLINE)
+                .map(d => d.serial);
+            invoke('engine_release_offline', { onlineSerials }).catch(() => {});
         }, 300);
     });
 
@@ -181,7 +165,4 @@ window.addEventListener('DOMContentLoaded', () => {
 
     // Auto-refresh after splash
     setTimeout(refreshDevices, 2400);
-
-    // ── Step 7: 页面卸载时清理定时器 ──
-    window.addEventListener('beforeunload', cleanupAllTimers);
 });

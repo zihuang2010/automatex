@@ -2,43 +2,49 @@ mod connection;
 pub mod constants;
 mod mqtt;
 mod storage;
+mod task_engine;
 mod task_provider;
 
-use connection::{DeviceManager, ShellResult};
+use connection::DeviceManager;
+use connection::ShellResult;
 use mqtt::{MqttConfig, MqttManager, MqttStatus};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use storage::{DailyStatRow, DailySummary, DeviceRow, TaskRunStats};
+use task_engine::TaskEngine;
 use task_provider::Task;
 use tauri::{Emitter, Manager};
 
 // ─── State ─────────────────────────────────────────────────────
 
 struct AppState {
-    manager: DeviceManager,
     db: Arc<storage::Database>,
     mqtt: Arc<MqttManager>,
+    engine: Arc<TaskEngine>,
 }
+
+// FIX #1: 全局线程计数器（限制并发属性获取线程数）
+static PROP_FETCH_THREADS: AtomicUsize = AtomicUsize::new(0);
 
 // ─── Tauri Commands ────────────────────────────────────────────
 
-/// 添加 WiFi 设备（IP:Port）
+/// FIX #3: 添加设备（async，ADB 连接放 spawn_blocking）
 #[tauri::command]
-fn add_device(
+async fn add_device(
     address: String,
     name: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
-    // 先检查 DB 中是否已存在
     if state.db.device_exists(&address) {
         return Err(format!("设备 {} 已存在", address));
     }
-
     let entry = DeviceManager::build_wifi_entry(&address, &name)?;
 
-    // 尝试通过 ADB 连接该 WiFi 设备
-    let _ = state.manager.connect_wifi_via_adb(&address);
+    // ADB 连接操作放入阻塞线程池
+    let addr = address.clone();
+    let _ =
+        tokio::task::spawn_blocking(move || DeviceManager::new().connect_wifi_via_adb(&addr)).await;
 
-    // 写入 DB
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -66,7 +72,7 @@ fn add_device(
     Ok(format!("设备 {} 已添加", entry.serial))
 }
 
-/// 移除设备（同时断开 WiFi 连接）
+/// 移除设备
 #[tauri::command]
 fn remove_device(serial: String, state: tauri::State<'_, AppState>) -> Result<String, String> {
     DeviceManager::disconnect_wifi(&serial);
@@ -74,69 +80,72 @@ fn remove_device(serial: String, state: tauri::State<'_, AppState>) -> Result<St
     Ok(format!("设备 {} 已移除", serial))
 }
 
-/// 列出所有设备（直接查 DB，瞬时返回）
+/// 列出所有设备
 #[tauri::command]
 fn list_devices(state: tauri::State<'_, AppState>) -> Result<Vec<DeviceRow>, String> {
     Ok(state.db.load_all_devices())
 }
 
-/// 在指定设备上执行 Shell 命令
+/// FIX #3: 远程 Shell（async + spawn_blocking）
 #[tauri::command]
-fn execute_shell(
-    serial: String,
-    command: String,
-    state: tauri::State<'_, AppState>,
-) -> ShellResult {
-    state.manager.execute_shell(&serial, &command)
+async fn execute_shell(serial: String, command: String) -> Result<ShellResult, String> {
+    tokio::task::spawn_blocking(move || DeviceManager::new().execute_shell(&serial, &command))
+        .await
+        .map_err(|e| format!("执行失败: {}", e))
 }
 
-/// 获取设备详细信息（按 serial 直接查 DB）
+/// 获取设备详细信息
 #[tauri::command]
 fn get_device_info(serial: String, state: tauri::State<'_, AppState>) -> Result<DeviceRow, String> {
     state.db.get_device_by_serial(&serial).ok_or_else(|| format!("设备 {} 不存在", serial))
 }
 
-/// 安装 APK
+/// FIX #3: 安装 APK（async + spawn_blocking）
 #[tauri::command]
-fn install_apk(
-    serial: String,
-    apk_path: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<String, String> {
-    state.manager.install_apk(&serial, &apk_path)
+async fn install_apk(serial: String, apk_path: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || DeviceManager::new().install_apk(&serial, &apk_path))
+        .await
+        .map_err(|e| format!("执行失败: {}", e))?
 }
 
-/// 重启设备
+/// FIX #3: 重启设备（async + spawn_blocking）
 #[tauri::command]
-fn reboot_device(serial: String, state: tauri::State<'_, AppState>) -> Result<String, String> {
-    state.manager.reboot_device(&serial)
+async fn reboot_device(serial: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || DeviceManager::new().reboot_device(&serial))
+        .await
+        .map_err(|e| format!("执行失败: {}", e))?
 }
 
-/// 推送文件到设备
+/// FIX #3: 推送文件（async + spawn_blocking）
 #[tauri::command]
-fn push_file(
+async fn push_file(
     serial: String,
     local_path: String,
     remote_path: String,
-    state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
-    state.manager.push_file(&serial, &local_path, &remote_path)
+    tokio::task::spawn_blocking(move || {
+        DeviceManager::new().push_file(&serial, &local_path, &remote_path)
+    })
+    .await
+    .map_err(|e| format!("执行失败: {}", e))?
 }
 
-/// 从设备拉取文件
+/// FIX #3: 拉取文件（async + spawn_blocking）
 #[tauri::command]
-fn pull_file(
+async fn pull_file(
     serial: String,
     remote_path: String,
     local_path: String,
-    state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
-    state.manager.pull_file(&serial, &remote_path, &local_path)
+    tokio::task::spawn_blocking(move || {
+        DeviceManager::new().pull_file(&serial, &remote_path, &local_path)
+    })
+    .await
+    .map_err(|e| format!("执行失败: {}", e))?
 }
 
 // ─── Settings Commands ─────────────────────────────────────────
 
-/// 获取设置
 #[tauri::command]
 fn get_settings(state: tauri::State<'_, AppState>) -> serde_json::Value {
     let mqtt_host = state.db.get_setting("mqtt_host").unwrap_or_default();
@@ -157,7 +166,6 @@ fn get_settings(state: tauri::State<'_, AppState>) -> serde_json::Value {
     })
 }
 
-/// 保存设置（白名单校验，仅允许已知 key）
 #[tauri::command]
 fn save_settings(
     settings: serde_json::Value,
@@ -177,7 +185,6 @@ fn save_settings(
 
 // ─── MQTT Commands ─────────────────────────────────────────────
 
-/// 连接 MQTT
 #[tauri::command]
 async fn mqtt_connect(
     app: tauri::AppHandle,
@@ -191,19 +198,15 @@ async fn mqtt_connect(
         .unwrap_or_else(|| format!("automatex-{}", std::process::id()));
     let username = state.db.get_setting("mqtt_username").filter(|s| !s.is_empty());
     let password = state.db.get_setting("mqtt_password").filter(|s| !s.is_empty());
-
     let config = MqttConfig { broker_host: host, broker_port: port, client_id, username, password };
-
     state.mqtt.connect(config, app).await
 }
 
-/// 断开 MQTT
 #[tauri::command]
 async fn mqtt_disconnect(state: tauri::State<'_, AppState>) -> Result<String, String> {
     state.mqtt.disconnect().await
 }
 
-/// 订阅 MQTT 主题
 #[tauri::command]
 async fn mqtt_subscribe(
     topic: String,
@@ -212,7 +215,6 @@ async fn mqtt_subscribe(
     state.mqtt.subscribe(&topic).await
 }
 
-/// 发布 MQTT 消息
 #[tauri::command]
 async fn mqtt_publish(
     topic: String,
@@ -222,7 +224,6 @@ async fn mqtt_publish(
     state.mqtt.publish(&topic, &payload).await
 }
 
-/// 获取 MQTT 状态
 #[tauri::command]
 async fn mqtt_status(state: tauri::State<'_, AppState>) -> Result<String, String> {
     let status = state.mqtt.get_status().await;
@@ -236,55 +237,17 @@ async fn mqtt_status(state: tauri::State<'_, AppState>) -> Result<String, String
 
 // ─── Task Commands ─────────────────────────────────────────────
 
-/// 获取任务列表（从 Mock JSON 加载 + DB 进度合并，纯读操作）
 #[tauri::command]
 fn list_tasks(state: tauri::State<'_, AppState>) -> Vec<Task> {
     task_provider::load_tasks(&state.db)
 }
 
-/// 获取单个任务详情（#4: 单任务加载，避免全量查询）
 #[tauri::command]
 fn get_task_detail(task_id: String, state: tauri::State<'_, AppState>) -> Result<Task, String> {
     task_provider::load_task_by_id(&state.db, &task_id)
         .ok_or_else(|| format!("任务 {} 不存在", task_id))
 }
 
-/// 记录关键词完成
-#[tauri::command]
-fn record_keyword_complete(
-    task_id: String,
-    city_name: String,
-    keyword_name: String,
-    device_serial: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<String, String> {
-    state.db.record_keyword_done(&task_id, &city_name, &keyword_name, &device_serial);
-    Ok("ok".to_string())
-}
-
-/// 开始任务执行记录
-#[tauri::command]
-fn start_task_run(
-    task_id: String,
-    device_serial: String,
-    state: tauri::State<'_, AppState>,
-) -> i64 {
-    state.db.start_task_run(&task_id, &device_serial)
-}
-
-/// 结束任务执行记录
-#[tauri::command]
-fn finish_task_run(
-    task_id: String,
-    started_at: i64,
-    status: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<String, String> {
-    state.db.finish_task_run(&task_id, started_at, &status);
-    Ok("ok".to_string())
-}
-
-/// 查询按天统计
 #[tauri::command]
 fn get_daily_stats(
     device_serial: String,
@@ -294,51 +257,28 @@ fn get_daily_stats(
     state.db.query_daily_stats(&device_serial, &run_date)
 }
 
-/// 查询某天汇总
 #[tauri::command]
 fn get_daily_summary(run_date: String, state: tauri::State<'_, AppState>) -> DailySummary {
     state.db.query_daily_summary(&run_date)
 }
 
-/// 查询任务执行统计（最近执行时间 + 今日执行次数）
 #[tauri::command]
 fn get_task_run_stats(task_id: String, state: tauri::State<'_, AppState>) -> TaskRunStats {
     state.db.query_task_run_stats(&task_id)
 }
 
-/// 清除任务进度（重跑）
 #[tauri::command]
 fn clear_task_progress(
     task_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
     state.db.clear_task_progress(&task_id);
-    state.db.delete_task_state(&task_id); // #1: 同时重置状态
-    Ok("ok".to_string())
-}
-
-/// #1: 保存任务运行时状态
-#[tauri::command]
-fn save_task_state(
-    task_id: String,
-    status: String,
-    assigned_device: Option<String>,
-    state: tauri::State<'_, AppState>,
-) -> Result<String, String> {
-    state.db.save_task_state(&task_id, &status, assigned_device.as_deref());
-    Ok("ok".to_string())
-}
-
-/// #1: 删除任务运行时状态（重置为 WAITING）
-#[tauri::command]
-fn delete_task_state(task_id: String, state: tauri::State<'_, AppState>) -> Result<String, String> {
     state.db.delete_task_state(&task_id);
     Ok("ok".to_string())
 }
 
 // ─── 后台监控线程 ──────────────────────────────────────────────
 
-/// 批量获取设备属性的 shell 命令
 const BATCH_PROPS_CMD: &str = "echo \"__MODEL__=$(getprop ro.product.model)\" && \
     echo \"__BRAND__=$(getprop ro.product.brand)\" && \
     echo \"__ANDROID__=$(getprop ro.build.version.release)\" && \
@@ -347,7 +287,6 @@ const BATCH_PROPS_CMD: &str = "echo \"__MODEL__=$(getprop ro.product.model)\" &&
     wm size && \
     dumpsys battery";
 
-/// 从批量输出中提取带标签的字段
 fn get_tagged_field(raw: &str, tag: &str) -> String {
     raw.lines()
         .find(|l| l.starts_with(tag))
@@ -356,7 +295,6 @@ fn get_tagged_field(raw: &str, tag: &str) -> String {
         .unwrap_or_else(|| constants::device_state::UNKNOWN.to_string())
 }
 
-/// 解析 dumpsys battery 中的字段
 fn parse_battery_field(raw: &str, field: &str) -> Option<i32> {
     raw.lines()
         .find(|l| l.trim().starts_with(&format!("{}: ", field)))
@@ -364,12 +302,10 @@ fn parse_battery_field(raw: &str, field: &str) -> Option<i32> {
         .and_then(|v| v.trim().parse().ok())
 }
 
-/// 获取设备完整属性并构建 DeviceRow
 fn fetch_device_row(serial: &str, state: &str) -> DeviceRow {
     let device_type = if serial.contains(':') { "wifi" } else { "usb" };
     let address = if device_type == "wifi" { Some(serial.to_string()) } else { None };
 
-    // 批量 adb shell（1 次调用获取所有属性）
     let raw = connection::adb_command()
         .args(["-s", serial, "shell", BATCH_PROPS_CMD])
         .output()
@@ -399,7 +335,6 @@ fn fetch_device_row(serial: &str, state: &str) -> DeviceRow {
     let battery_temp_raw = parse_battery_field(&raw, "temperature").unwrap_or(250);
     let battery_temperature = battery_temp_raw as f64 / 10.0;
 
-    // 查找设备名称（优先用 brand + model）
     let name =
         if brand != constants::device_state::UNKNOWN && model != constants::device_state::UNKNOWN {
             format!("{} {}", brand, model)
@@ -432,7 +367,6 @@ fn fetch_device_row(serial: &str, state: &str) -> DeviceRow {
     }
 }
 
-/// 仅刷新电量和温度
 fn refresh_battery(serial: &str, db: &storage::Database) -> bool {
     let raw = connection::adb_command()
         .args(["-s", serial, "shell", "dumpsys battery"])
@@ -454,7 +388,6 @@ fn refresh_battery(serial: &str, db: &storage::Database) -> bool {
     }
 }
 
-/// 将 DeviceState 转为应用层状态字符串
 fn device_state_str(state: &adb_client::server::DeviceState) -> &'static str {
     use adb_client::server::DeviceState;
     match state {
@@ -465,23 +398,21 @@ fn device_state_str(state: &adb_client::server::DeviceState) -> &'static str {
     }
 }
 
-/// 启动后台设备监控（使用 adb_client track_devices 推送模式）
+/// 启动后台设备监控
 fn spawn_device_monitor(handle: tauri::AppHandle, db: Arc<storage::Database>) {
     let db_track = Arc::clone(&db);
     let handle_track = handle.clone();
 
-    // ── 线程 1: track_devices（设备上下线推送）──
+    // ── 线程 1: track_devices ──
     std::thread::spawn(move || {
         loop {
             let addr = std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(127, 0, 0, 1), 5037);
-
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut server = adb_client::server::ADBServer::new(addr);
-
                 let db_cb = Arc::clone(&db_track);
                 let handle_cb = handle_track.clone();
 
-                // 缓存 devices() 结果，300ms TTL，避免每次回调都建立新 TCP 连接
+                // FIX #7: 缓存 TTL 从 300ms → 3s
                 let devices_cache: std::sync::Mutex<(std::time::Instant, Vec<String>)> =
                     std::sync::Mutex::new((
                         std::time::Instant::now() - std::time::Duration::from_secs(1),
@@ -492,10 +423,13 @@ fn spawn_device_monitor(handle: tauri::AppHandle, db: Arc<storage::Database>) {
                     let serial = device.identifier.clone();
                     let state = device_state_str(&device.state);
 
-                    // 带缓存的 devices() 查询
                     let online_serials = {
                         let mut cache = devices_cache.lock().unwrap();
-                        if cache.0.elapsed() > std::time::Duration::from_millis(300) {
+                        if cache.0.elapsed()
+                            > std::time::Duration::from_millis(
+                                constants::timing::DEVICE_CACHE_TTL_MS,
+                            )
+                        {
                             let fresh_addr = std::net::SocketAddrV4::new(
                                 std::net::Ipv4Addr::new(127, 0, 0, 1),
                                 5037,
@@ -515,35 +449,38 @@ fn spawn_device_monitor(handle: tauri::AppHandle, db: Arc<storage::Database>) {
                         cache.1.clone()
                     };
 
-                    // 将不在当前在线列表中的设备标记为 Offline
                     let online_refs: Vec<&str> =
                         online_serials.iter().map(|s: &String| s.as_str()).collect();
                     db_cb.mark_offline_except(&online_refs);
 
-                    // 处理当前事件的设备
                     if !db_cb.device_exists(&serial)
                         || (state == "Device" && db_cb.needs_prop_refresh(&serial))
                     {
-                        // 新设备或属性未初始化：在子线程中获取全部属性
-                        let db_inner = Arc::clone(&db_cb);
-                        let handle_inner = handle_cb.clone();
-                        std::thread::spawn(move || {
-                            let row = fetch_device_row(&serial, state);
-                            db_inner.upsert_device(&row);
-                            let _ = handle_inner.emit("devices-changed", ());
-                        });
+                        // FIX #1: 限制并发线程数
+                        let current = PROP_FETCH_THREADS.load(Ordering::Relaxed);
+                        if current < constants::limits::MAX_PROP_FETCH_THREADS {
+                            PROP_FETCH_THREADS.fetch_add(1, Ordering::Relaxed);
+                            let db_inner = Arc::clone(&db_cb);
+                            let handle_inner = handle_cb.clone();
+                            std::thread::spawn(move || {
+                                let row = fetch_device_row(&serial, state);
+                                db_inner.upsert_device(&row);
+                                let _ = handle_inner.emit("devices-changed", ());
+                                PROP_FETCH_THREADS.fetch_sub(1, Ordering::Relaxed);
+                            });
+                        } else {
+                            // 超过线程限制：仅更新状态，跳过属性获取
+                            db_cb.update_device_state(&serial, state);
+                        }
                     } else {
-                        // 已有设备：仅更新状态
                         db_cb.update_device_state(&serial, state);
                     }
 
-                    // 通知前端
                     let _ = handle_cb.emit("devices-changed", ());
                     Ok(())
                 })
             }));
 
-            // track_devices 断开时（ADB Server 重启等），自动重连
             if let Err(_) = result {
                 eprintln!(
                     "[monitor] track_devices panic, {}s 后重连...",
@@ -561,7 +498,7 @@ fn spawn_device_monitor(handle: tauri::AppHandle, db: Arc<storage::Database>) {
         }
     });
 
-    // ── 线程 2: 电池/温度定时刷新（并行化）──
+    // ── 线程 2: 电池/温度定时刷新 ──
     let db_battery = Arc::clone(&db);
     let handle_battery = handle.clone();
     std::thread::spawn(move || {
@@ -570,7 +507,6 @@ fn spawn_device_monitor(handle: tauri::AppHandle, db: Arc<storage::Database>) {
                 constants::timing::BATTERY_REFRESH_INTERVAL_SECS,
             ));
 
-            // 从 DB 中读取当前在线设备
             let devices = db_battery.load_all_devices();
             let online_devices: Vec<&DeviceRow> =
                 devices.iter().filter(|dev| dev.state == "Device").collect();
@@ -579,26 +515,99 @@ fn spawn_device_monitor(handle: tauri::AppHandle, db: Arc<storage::Database>) {
                 continue;
             }
 
-            // 使用 std::thread::scope 并行刷新所有在线设备的电池信息
+            // FIX #9: 限制电池刷新并发线程数
+            let max_threads =
+                constants::limits::MAX_BATTERY_REFRESH_THREADS.min(online_devices.len());
             let changed = std::sync::atomic::AtomicBool::new(false);
-            std::thread::scope(|s| {
-                for dev in &online_devices {
-                    let serial = &dev.serial;
-                    let db_ref = &db_battery;
-                    let changed_ref = &changed;
-                    s.spawn(move || {
-                        if refresh_battery(serial, db_ref) {
-                            changed_ref.store(true, std::sync::atomic::Ordering::Relaxed);
-                        }
-                    });
-                }
-            });
 
-            if changed.load(std::sync::atomic::Ordering::Relaxed) {
+            // 分批处理，每批最多 max_threads 个
+            for chunk in online_devices.chunks(max_threads) {
+                std::thread::scope(|s| {
+                    for dev in chunk {
+                        let serial = &dev.serial;
+                        let db_ref = &db_battery;
+                        let changed_ref = &changed;
+                        s.spawn(move || {
+                            if refresh_battery(serial, db_ref) {
+                                changed_ref.store(true, Ordering::Relaxed);
+                            }
+                        });
+                    }
+                });
+            }
+
+            if changed.load(Ordering::Relaxed) {
                 let _ = handle_battery.emit("devices-changed", ());
             }
         }
     });
+}
+
+// ─── Engine Commands ───────────────────────────────────────────
+
+#[tauri::command]
+async fn engine_get_tasks(state: tauri::State<'_, AppState>) -> Result<Vec<Task>, String> {
+    Ok(state.engine.get_tasks().await)
+}
+
+#[tauri::command]
+async fn engine_start_task(
+    task_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    state.engine.start_task(&task_id).await?;
+    Ok("ok".into())
+}
+
+#[tauri::command]
+async fn engine_pause_task(
+    task_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    state.engine.pause_task(&task_id).await?;
+    Ok("ok".into())
+}
+
+#[tauri::command]
+async fn engine_resume_task(
+    task_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    state.engine.resume_task(&task_id).await?;
+    Ok("ok".into())
+}
+
+#[tauri::command]
+async fn engine_stop_task(
+    task_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    state.engine.stop_task(&task_id).await?;
+    Ok("ok".into())
+}
+
+#[tauri::command]
+async fn engine_retry_task(
+    task_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    state.engine.retry_task(&task_id).await?;
+    Ok("ok".into())
+}
+
+#[tauri::command]
+async fn engine_get_ready_serials(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    Ok(state.engine.get_ready_serials().await)
+}
+
+#[tauri::command]
+async fn engine_release_offline(
+    online_serials: Vec<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<u32, String> {
+    Ok(state.engine.release_offline_devices(&online_serials).await)
 }
 
 // ─── App Entry ─────────────────────────────────────────────────
@@ -608,7 +617,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            // 初始化 SQLite 数据库
             let app_data_dir =
                 app.path().app_data_dir().map_err(|e| format!("获取数据目录失败: {}", e))?;
 
@@ -617,19 +625,22 @@ pub fn run() {
                     .map_err(|e| format!("数据库初始化失败: {}", e))?,
             );
 
-            // 启动时同步任务缓存到 DB（仅执行一次）
             task_provider::sync_task_cache(&db);
 
-            let manager = DeviceManager::new();
-            let mqtt = Arc::new(MqttManager::new());
+            // 清理上次异常退出的孤儿 run 记录
+            db.cleanup_orphan_runs();
 
-            // 启动后台设备监控线程
+            let mqtt = Arc::new(MqttManager::new());
+            let engine = TaskEngine::new(Arc::clone(&db), app.handle().clone());
+
             spawn_device_monitor(app.handle().clone(), Arc::clone(&db));
 
-            app.manage(AppState { manager, db, mqtt });
+            app.manage(AppState { db, mqtt, engine });
 
             Ok(())
         })
+        // FIX #12: 移除旧的 record_keyword_complete, start_task_run,
+        // finish_task_run, save_task_state, delete_task_state 命令
         .invoke_handler(tauri::generate_handler![
             add_device,
             remove_device,
@@ -649,15 +660,18 @@ pub fn run() {
             mqtt_status,
             list_tasks,
             get_task_detail,
-            record_keyword_complete,
-            start_task_run,
-            finish_task_run,
             get_daily_stats,
             get_daily_summary,
             clear_task_progress,
             get_task_run_stats,
-            save_task_state,
-            delete_task_state,
+            engine_get_tasks,
+            engine_start_task,
+            engine_pause_task,
+            engine_resume_task,
+            engine_stop_task,
+            engine_retry_task,
+            engine_get_ready_serials,
+            engine_release_offline,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

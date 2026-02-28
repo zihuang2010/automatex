@@ -34,14 +34,14 @@ pub struct Task {
 
 // ─── Mock 定义格式 ──────────────────────────────────────────────
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct MockTaskDef {
     id: String,
     name: String,
     cities: Vec<MockCityDef>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct MockCityDef {
     name: String,
     poi: String,
@@ -169,8 +169,13 @@ fn build_task(db: &Database, def: MockTaskDef) -> Task {
     Task { id: def.id, name: def.name, status: final_status, assigned_device, cities }
 }
 
-/// 从嵌入资源读取 Mock 任务定义
+/// 从嵌入资源读取 Mock 任务定义（OnceLock 缓存，只解析一次）
 fn load_mock_definitions() -> Vec<MockTaskDef> {
-    let json = include_str!("../resources/mock_tasks.json");
-    serde_json::from_str(json).unwrap_or_default()
+    use std::sync::OnceLock;
+    static DEFS: OnceLock<Vec<MockTaskDef>> = OnceLock::new();
+    DEFS.get_or_init(|| {
+        let json = include_str!("../resources/mock_tasks.json");
+        serde_json::from_str(json).unwrap_or_default()
+    })
+    .clone()
 }

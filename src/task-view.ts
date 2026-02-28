@@ -135,7 +135,7 @@ export async function renderTaskView() {
     const kwInfoHtml = `
     <div class="flex items-center gap-1.5">
       <span class="material-symbols-outlined icon-sm text-blue-400 fill-1">sell</span>
-      <span class="text-[11px] font-black text-slate-400 uppercase tracking-tight">关键词</span>
+      <span class="text-[11px] font-black text-slate-500 uppercase tracking-tight">关键词</span>
       <span class="px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded text-[10px] font-bold">${city.done}/${city.total}</span>
     </div>
     <div class="relative">

@@ -37,11 +37,12 @@ pub enum MqttStatus {
 }
 
 /// MQTT 客户端管理器
+/// FIX #8: 新增 loop_handle 用于等待事件循环退出
 pub struct MqttManager {
     client: Arc<Mutex<Option<AsyncClient>>>,
     status: Arc<Mutex<MqttStatus>>,
-    /// 用于通知旧事件循环退出的 cancel sender
     cancel_tx: Arc<Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
+    loop_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl MqttManager {
@@ -50,16 +51,15 @@ impl MqttManager {
             client: Arc::new(Mutex::new(None)),
             status: Arc::new(Mutex::new(MqttStatus::Disconnected)),
             cancel_tx: Arc::new(Mutex::new(None)),
+            loop_handle: Arc::new(Mutex::new(None)),
         }
     }
 
-    /// 连接 MQTT Broker
     pub async fn connect(
         &self,
         config: MqttConfig,
         app_handle: tauri::AppHandle,
     ) -> Result<String, String> {
-        // 如果已连接，先断开（会取消旧 task）
         self.disconnect().await.ok();
 
         *self.status.lock().await = MqttStatus::Connecting;
@@ -74,27 +74,22 @@ impl MqttManager {
         }
 
         let (client, mut eventloop) = AsyncClient::new(opts, 100);
-
         *self.client.lock().await = Some(client);
 
         let status = self.status.clone();
-
-        // 创建 cancel channel 用于通知事件循环退出
         let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
         *self.cancel_tx.lock().await = Some(cancel_tx);
 
-        // 启动事件循环（可被 cancel 信号取消）
-        tokio::spawn(async move {
+        // FIX #8: 保存 JoinHandle，disconnect 时可以等待退出
+        let handle = tokio::spawn(async move {
             loop {
                 tokio::select! {
-                    // 监听 cancel 信号
                     _ = cancel_rx.changed() => {
                         if *cancel_rx.borrow() {
                             *status.lock().await = MqttStatus::Disconnected;
                             break;
                         }
                     }
-                    // 正常处理 MQTT 事件
                     result = eventloop.poll() => {
                         match result {
                             Ok(event) => {
@@ -134,17 +129,20 @@ impl MqttManager {
                 }
             }
         });
+        *self.loop_handle.lock().await = Some(handle);
 
         Ok("MQTT 连接中...".to_string())
     }
 
-    /// 断开连接（同时取消事件循环 task）
+    /// FIX #8: 先 cancel → 等待事件循环退出 → 再 disconnect
     pub async fn disconnect(&self) -> Result<String, String> {
-        // 先发送 cancel 信号，确保旧 task 退出
         if let Some(tx) = self.cancel_tx.lock().await.take() {
             let _ = tx.send(true);
         }
-
+        // 等待事件循环任务退出（最多 2s）
+        if let Some(handle) = self.loop_handle.lock().await.take() {
+            let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        }
         if let Some(client) = self.client.lock().await.take() {
             client.disconnect().await.map_err(|e| format!("断开失败: {}", e))?;
         }
@@ -152,7 +150,6 @@ impl MqttManager {
         Ok("MQTT 已断开".to_string())
     }
 
-    /// 订阅主题
     pub async fn subscribe(&self, topic: &str) -> Result<String, String> {
         let guard = self.client.lock().await;
         let client = guard.as_ref().ok_or("MQTT 未连接".to_string())?;
@@ -160,7 +157,6 @@ impl MqttManager {
         Ok(format!("已订阅: {}", topic))
     }
 
-    /// 发布消息
     pub async fn publish(&self, topic: &str, payload: &str) -> Result<String, String> {
         let guard = self.client.lock().await;
         let client = guard.as_ref().ok_or("MQTT 未连接".to_string())?;
@@ -171,7 +167,6 @@ impl MqttManager {
         Ok(format!("已发布到: {}", topic))
     }
 
-    /// 获取连接状态
     pub async fn get_status(&self) -> MqttStatus {
         self.status.lock().await.clone()
     }

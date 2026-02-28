@@ -303,6 +303,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-opener",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

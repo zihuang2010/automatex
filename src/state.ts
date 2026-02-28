@@ -1,16 +1,10 @@
 import { Task, DeviceRow } from './types';
 import { TaskStatus, DeviceState } from './constants';
 
-/* ===== Global Application State ===== */
-
 export let selectedDevice: string | null = null;
 export let globalQueue: Task[] = [];
 export let activeTask: Task | null = null;
 export let activeCityIdx = 0;
-
-// 执行引擎：每个任务的 interval timer + run started_at
-export const taskTimers = new Map<string, ReturnType<typeof setInterval>>();
-export const taskRunStarted = new Map<string, number>();
 
 /* ===== State Mutation Functions ===== */
 

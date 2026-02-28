@@ -713,7 +713,7 @@
 /* ── 时钟 ── */
 .splash-time {
     @apply text-5xl font-extralight tracking-[8px] mt-4 font-sans opacity-0;
-    color: rgba(71, 85, 105, 0.4);
+    color: #6366f1;
     font-weight: 700;
     animation: s-fade-in 0.8s var(--ease-smooth) 0.8s both;
 }
