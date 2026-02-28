@@ -1,1 +1,4 @@
 npx lint-staged
+
+# Rust 格式化检查
+cd src-tauri && cargo fmt --check

@@ -1,11 +1,13 @@
 mod connection;
 mod mqtt;
 mod storage;
+mod task_provider;
 
 use connection::{DeviceManager, ShellResult};
 use mqtt::{MqttConfig, MqttManager, MqttStatus};
 use std::sync::Arc;
-use storage::DeviceRow;
+use storage::{DailyStatRow, DailySummary, DeviceRow};
+use task_provider::Task;
 use tauri::{Emitter, Manager};
 
 // ─── State ─────────────────────────────────────────────────────
@@ -136,10 +138,7 @@ fn pull_file(
 #[tauri::command]
 fn get_settings(state: tauri::State<'_, AppState>) -> serde_json::Value {
     let mqtt_host = state.db.get_setting("mqtt_host").unwrap_or_default();
-    let mqtt_port = state
-        .db
-        .get_setting("mqtt_port")
-        .unwrap_or_else(|| "1883".to_string());
+    let mqtt_port = state.db.get_setting("mqtt_port").unwrap_or_else(|| "1883".to_string());
     let mqtt_client_id = state
         .db
         .get_setting("mqtt_client_id")
@@ -179,35 +178,16 @@ async fn mqtt_connect(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
-    let host = state
-        .db
-        .get_setting("mqtt_host")
-        .unwrap_or_else(|| "127.0.0.1".to_string());
-    let port: u16 = state
-        .db
-        .get_setting("mqtt_port")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1883);
+    let host = state.db.get_setting("mqtt_host").unwrap_or_else(|| "127.0.0.1".to_string());
+    let port: u16 = state.db.get_setting("mqtt_port").and_then(|s| s.parse().ok()).unwrap_or(1883);
     let client_id = state
         .db
         .get_setting("mqtt_client_id")
         .unwrap_or_else(|| format!("automatex-{}", std::process::id()));
-    let username = state
-        .db
-        .get_setting("mqtt_username")
-        .filter(|s| !s.is_empty());
-    let password = state
-        .db
-        .get_setting("mqtt_password")
-        .filter(|s| !s.is_empty());
+    let username = state.db.get_setting("mqtt_username").filter(|s| !s.is_empty());
+    let password = state.db.get_setting("mqtt_password").filter(|s| !s.is_empty());
 
-    let config = MqttConfig {
-        broker_host: host,
-        broker_port: port,
-        client_id,
-        username,
-        password,
-    };
+    let config = MqttConfig { broker_host: host, broker_port: port, client_id, username, password };
 
     state.mqtt.connect(config, app).await
 }
@@ -249,6 +229,82 @@ async fn mqtt_status(state: tauri::State<'_, AppState>) -> Result<String, String
     }
 }
 
+// ─── Task Commands ─────────────────────────────────────────────
+
+/// 获取任务列表（从 Mock JSON 加载 + DB 进度合并）
+#[tauri::command]
+fn list_tasks(state: tauri::State<'_, AppState>) -> Vec<Task> {
+    task_provider::load_tasks(&state.db)
+}
+
+/// 获取单个任务详情
+#[tauri::command]
+fn get_task_detail(task_id: String, state: tauri::State<'_, AppState>) -> Result<Task, String> {
+    let tasks = task_provider::load_tasks(&state.db);
+    tasks.into_iter().find(|t| t.id == task_id).ok_or_else(|| format!("任务 {} 不存在", task_id))
+}
+
+/// 记录关键词完成
+#[tauri::command]
+fn record_keyword_complete(
+    task_id: String,
+    city_name: String,
+    keyword_name: String,
+    device_serial: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    state.db.record_keyword_done(&task_id, &city_name, &keyword_name, &device_serial);
+    Ok("ok".to_string())
+}
+
+/// 开始任务执行记录
+#[tauri::command]
+fn start_task_run(
+    task_id: String,
+    device_serial: String,
+    state: tauri::State<'_, AppState>,
+) -> i64 {
+    state.db.start_task_run(&task_id, &device_serial)
+}
+
+/// 结束任务执行记录
+#[tauri::command]
+fn finish_task_run(
+    task_id: String,
+    started_at: i64,
+    status: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    state.db.finish_task_run(&task_id, started_at, &status);
+    Ok("ok".to_string())
+}
+
+/// 查询按天统计
+#[tauri::command]
+fn get_daily_stats(
+    device_serial: String,
+    run_date: String,
+    state: tauri::State<'_, AppState>,
+) -> Vec<DailyStatRow> {
+    state.db.query_daily_stats(&device_serial, &run_date)
+}
+
+/// 查询某天汇总
+#[tauri::command]
+fn get_daily_summary(run_date: String, state: tauri::State<'_, AppState>) -> DailySummary {
+    state.db.query_daily_summary(&run_date)
+}
+
+/// 清除任务进度（重跑）
+#[tauri::command]
+fn clear_task_progress(
+    task_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    state.db.clear_task_progress(&task_id);
+    Ok("ok".to_string())
+}
+
 // ─── 后台监控线程 ──────────────────────────────────────────────
 
 /// 批量获取设备属性的 shell 命令
@@ -280,11 +336,7 @@ fn parse_battery_field(raw: &str, field: &str) -> Option<i32> {
 /// 获取设备完整属性并构建 DeviceRow
 fn fetch_device_row(serial: &str, state: &str) -> DeviceRow {
     let device_type = if serial.contains(':') { "wifi" } else { "usb" };
-    let address = if device_type == "wifi" {
-        Some(serial.to_string())
-    } else {
-        None
-    };
+    let address = if device_type == "wifi" { Some(serial.to_string()) } else { None };
 
     // 批量 adb shell（1 次调用获取所有属性）
     let raw = connection::adb_command()
@@ -300,11 +352,7 @@ fn fetch_device_row(serial: &str, state: &str) -> DeviceRow {
     let android_version = get_tagged_field(&raw, "__ANDROID__=");
     let sdk_version = get_tagged_field(&raw, "__SDK__=");
     let hw_serial_raw = get_tagged_field(&raw, "__SERIAL__=");
-    let hw_serial = if hw_serial_raw == "unknown" {
-        serial.to_string()
-    } else {
-        hw_serial_raw
-    };
+    let hw_serial = if hw_serial_raw == "unknown" { serial.to_string() } else { hw_serial_raw };
 
     let display_resolution = raw
         .lines()
@@ -498,10 +546,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // 初始化 SQLite 数据库
-            let app_data_dir = app
-                .path()
-                .app_data_dir()
-                .map_err(|e| format!("获取数据目录失败: {}", e))?;
+            let app_data_dir =
+                app.path().app_data_dir().map_err(|e| format!("获取数据目录失败: {}", e))?;
 
             let db = Arc::new(
                 storage::Database::init(&app_data_dir)
@@ -535,6 +581,14 @@ pub fn run() {
             mqtt_subscribe,
             mqtt_publish,
             mqtt_status,
+            list_tasks,
+            get_task_detail,
+            record_keyword_complete,
+            start_task_run,
+            finish_task_run,
+            get_daily_stats,
+            get_daily_summary,
+            clear_task_progress,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

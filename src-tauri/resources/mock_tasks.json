@@ -1,0 +1,227 @@
+[
+    {
+        "id": "550e8400-e29b-41d4-a716-446655440001",
+        "name": "Global Lead Gen",
+        "cities": [
+            {
+                "name": "Tokyo",
+                "poi": "Shinjuku · Shibuya · Akihabara",
+                "keywords": [
+                    "Tech Startup",
+                    "SaaS Company",
+                    "Robotics Lab",
+                    "Design Agency",
+                    "Coffee Shop",
+                    "Co-working Space",
+                    "Boutique Hotel",
+                    "Yoga Studio",
+                    "Fitness Center",
+                    "Art Gallery",
+                    "Sushi Bar",
+                    "Bakery",
+                    "Law Firm",
+                    "Dental Clinic",
+                    "Museum",
+                    "Cinema",
+                    "Univ Campus",
+                    "Public Library"
+                ]
+            },
+            {
+                "name": "Seoul",
+                "poi": "Gangnam · Hongdae · Myeongdong",
+                "keywords": [
+                    "K-Beauty Store",
+                    "PC Bang",
+                    "Hanbok Rental",
+                    "Fried Chicken",
+                    "Language School",
+                    "Cafe Chain",
+                    "Co-living Space",
+                    "Gaming Studio",
+                    "Streetwear Shop"
+                ]
+            },
+            {
+                "name": "Osaka",
+                "poi": "Dotonbori · Namba · Umeda",
+                "keywords": [
+                    "Ramen Shop",
+                    "Theme Park",
+                    "Electronics Mall",
+                    "Capsule Hotel",
+                    "Vintage Store",
+                    "Harbor Cruise"
+                ]
+            },
+            {
+                "name": "Taipei",
+                "poi": "Ximending · Taipei 101 · Jiufen",
+                "keywords": [
+                    "Night Market",
+                    "Tea Shop",
+                    "Hot Spring",
+                    "Bubble Tea",
+                    "Temple",
+                    "Electronics St",
+                    "Art District",
+                    "Bookstore"
+                ]
+            },
+            {
+                "name": "Bangkok",
+                "poi": "Sukhumvit · Chatuchak · Khao San",
+                "keywords": [
+                    "Street Food",
+                    "Temple Tour",
+                    "Floating Market",
+                    "Silk Shop",
+                    "Rooftop Bar",
+                    "Spa Resort",
+                    "Boxing Gym"
+                ]
+            },
+            {
+                "name": "Singapore",
+                "poi": "Marina Bay · Orchard · Sentosa",
+                "keywords": [
+                    "Hawker Center",
+                    "Tech Park",
+                    "Marina Bay",
+                    "Botanic Garden",
+                    "Shopping Mall"
+                ]
+            }
+        ]
+    },
+    {
+        "id": "550e8400-e29b-41d4-a716-446655440002",
+        "name": "Market Audit Pro",
+        "cities": [
+            {
+                "name": "New York",
+                "poi": "Manhattan · Brooklyn · SoHo",
+                "keywords": [
+                    "Fintech Hub",
+                    "Ad Agency",
+                    "Media Company",
+                    "Law Practice",
+                    "Fashion Brand",
+                    "Gallery Space",
+                    "Coworking HQ",
+                    "Restaurant Chain",
+                    "Health Clinic"
+                ]
+            },
+            {
+                "name": "London",
+                "poi": "Westminster · Camden · Soho",
+                "keywords": [
+                    "Insurance Co",
+                    "Pub & Bar",
+                    "Theatre Group",
+                    "EdTech Firm",
+                    "Royal Tours",
+                    "Banking HQ"
+                ]
+            }
+        ]
+    },
+    {
+        "id": "550e8400-e29b-41d4-a716-446655440003",
+        "name": "Data Scraper AI",
+        "cities": [
+            {
+                "name": "Berlin",
+                "poi": "Mitte · Kreuzberg · Prenzlauer Berg",
+                "keywords": [
+                    "Tech Incubator",
+                    "Street Art",
+                    "Vinyl Shop",
+                    "Craft Beer",
+                    "Vegan Cafe",
+                    "Startup Campus"
+                ]
+            },
+            {
+                "name": "Paris",
+                "poi": "Le Marais · Montmartre · Saint-Germain",
+                "keywords": [
+                    "Patisserie",
+                    "Fashion Atelier",
+                    "Concept Store",
+                    "Jazz Club",
+                    "Art Museum"
+                ]
+            },
+            {
+                "name": "Amsterdam",
+                "poi": "Jordaan · De Pijp · Centrum",
+                "keywords": [
+                    "Bike Rental",
+                    "Coffee House",
+                    "Design Studio",
+                    "Canal Tour",
+                    "Flea Market",
+                    "Cheese Shop"
+                ]
+            }
+        ]
+    },
+    {
+        "id": "550e8400-e29b-41d4-a716-446655440004",
+        "name": "Social Monitor",
+        "cities": [
+            {
+                "name": "Dubai",
+                "poi": "Downtown · Marina · JBR",
+                "keywords": [
+                    "Luxury Hotel",
+                    "Desert Safari",
+                    "Gold Souk",
+                    "Rooftop Lounge",
+                    "Beach Club"
+                ]
+            },
+            {
+                "name": "Mumbai",
+                "poi": "Bandra · Colaba · Lower Parel",
+                "keywords": [
+                    "Bollywood Studio",
+                    "Street Market",
+                    "Cricket Academy",
+                    "Tech Park",
+                    "Spice Bazaar"
+                ]
+            }
+        ]
+    },
+    {
+        "id": "550e8400-e29b-41d4-a716-446655440005",
+        "name": "Trend Tracker",
+        "cities": [
+            {
+                "name": "Sydney",
+                "poi": "CBD · Bondi · Surry Hills",
+                "keywords": [
+                    "Surf School",
+                    "Brunch Cafe",
+                    "Wine Bar",
+                    "Wellness Center",
+                    "Farmers Market"
+                ]
+            },
+            {
+                "name": "Melbourne",
+                "poi": "Fitzroy · St Kilda · CBD",
+                "keywords": [
+                    "Street Art Lane",
+                    "Specialty Coffee",
+                    "Vintage Clothing",
+                    "Comedy Club",
+                    "YouTube Alert"
+                ]
+            }
+        ]
+    }
+]

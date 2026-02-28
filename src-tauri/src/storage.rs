@@ -64,17 +64,57 @@ impl Database {
             CREATE TABLE IF NOT EXISTS a_settings (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
-            );",
+            );
+
+            -- 任务定义缓存（远端镜像）
+            CREATE TABLE IF NOT EXISTS a_task_cache (
+                task_id    TEXT PRIMARY KEY,
+                name       TEXT NOT NULL,
+                payload    TEXT NOT NULL,
+                version    INTEGER NOT NULL DEFAULT 1,
+                fetched_at INTEGER NOT NULL
+            );
+
+            -- 执行进度（已完成关键词记录）
+            CREATE TABLE IF NOT EXISTS a_task_progress (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id       TEXT NOT NULL,
+                city_name     TEXT NOT NULL,
+                keyword_name  TEXT NOT NULL,
+                status        TEXT NOT NULL DEFAULT 'ok',
+                completed_at  INTEGER NOT NULL,
+                device_serial TEXT NOT NULL,
+                sync_status   TEXT NOT NULL DEFAULT 'pending',
+                UNIQUE(task_id, city_name, keyword_name)
+            );
+
+            -- 执行记录（按天统计）
+            CREATE TABLE IF NOT EXISTS a_task_runs (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id       TEXT NOT NULL,
+                device_serial TEXT NOT NULL,
+                run_date      TEXT NOT NULL,
+                started_at    INTEGER NOT NULL,
+                ended_at      INTEGER,
+                duration_sec  INTEGER,
+                status        TEXT NOT NULL DEFAULT 'running',
+                cities_done   INTEGER NOT NULL DEFAULT 0,
+                keywords_done INTEGER NOT NULL DEFAULT 0,
+                sync_status   TEXT NOT NULL DEFAULT 'pending',
+                UNIQUE(task_id, device_serial, started_at)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_progress_task ON a_task_progress(task_id);
+            CREATE INDEX IF NOT EXISTS idx_progress_sync ON a_task_progress(sync_status);
+            CREATE INDEX IF NOT EXISTS idx_runs_date ON a_task_runs(run_date, task_id);
+            CREATE INDEX IF NOT EXISTS idx_runs_sync ON a_task_runs(sync_status);",
             )
             .map_err(|e| format!("建表失败: {}", e))?;
 
         // 打开独立的读连接（WAL 模式下读写可并发）
         let reader = Connection::open(&db_path).map_err(|e| format!("打开读连接失败: {}", e))?;
 
-        Ok(Self {
-            writer: Mutex::new(writer),
-            reader: Mutex::new(reader),
-        })
+        Ok(Self { writer: Mutex::new(writer), reader: Mutex::new(reader) })
     }
 
     // ─── 设备写操作 ────────────────────────────────────────────
@@ -139,9 +179,8 @@ impl Database {
             );
         } else {
             // 生成 ?1,?2,?3,... 参数化占位符（从 ?2 开始，?1 = now）
-            let placeholders: Vec<String> = (0..online_serials.len())
-                .map(|i| format!("?{}", i + 2))
-                .collect();
+            let placeholders: Vec<String> =
+                (0..online_serials.len()).map(|i| format!("?{}", i + 2)).collect();
             let sql = format!(
                 "UPDATE a_devices SET state = 'Offline', updated_at = ?1 WHERE state != 'Offline' AND serial NOT IN ({})",
                 placeholders.join(",")
@@ -179,22 +218,16 @@ impl Database {
     /// 检查设备是否存在
     pub fn device_exists(&self, serial: &str) -> bool {
         let conn = self.reader.lock().unwrap();
-        conn.query_row(
-            "SELECT 1 FROM a_devices WHERE serial = ?1",
-            params![serial],
-            |_| Ok(()),
-        )
-        .is_ok()
+        conn.query_row("SELECT 1 FROM a_devices WHERE serial = ?1", params![serial], |_| Ok(()))
+            .is_ok()
     }
 
     /// 检查设备是否需要重新获取属性（model 仍为 unknown）
     pub fn needs_prop_refresh(&self, serial: &str) -> bool {
         let conn = self.reader.lock().unwrap();
-        conn.query_row(
-            "SELECT model FROM a_devices WHERE serial = ?1",
-            params![serial],
-            |row| row.get::<_, String>(0),
-        )
+        conn.query_row("SELECT model FROM a_devices WHERE serial = ?1", params![serial], |row| {
+            row.get::<_, String>(0)
+        })
         .map(|m| m == "unknown")
         .unwrap_or(true)
     }
@@ -238,18 +271,318 @@ impl Database {
     /// 获取设置值
     pub fn get_setting(&self, key: &str) -> Option<String> {
         let conn = self.reader.lock().unwrap();
+        conn.query_row("SELECT value FROM a_settings WHERE key = ?1", params![key], |row| {
+            row.get(0)
+        })
+        .ok()
+    }
+
+    // ─── 任务缓存操作 ────────────────────────────────────────────
+
+    /// 插入或更新任务缓存
+    pub fn upsert_task_cache(&self, task_id: &str, name: &str, payload: &str, version: i64) {
+        let conn = self.writer.lock().unwrap();
+        let now = now_unix();
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO a_task_cache (task_id, name, payload, version, fetched_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![task_id, name, payload, version, now],
+        );
+    }
+
+    /// 加载单个任务缓存
+    pub fn load_task_cache(&self, task_id: &str) -> Option<TaskCacheRow> {
+        let conn = self.reader.lock().unwrap();
         conn.query_row(
-            "SELECT value FROM a_settings WHERE key = ?1",
-            params![key],
-            |row| row.get(0),
+            "SELECT task_id, name, payload, version, fetched_at FROM a_task_cache WHERE task_id = ?1",
+            params![task_id],
+            |row| {
+                Ok(TaskCacheRow {
+                    task_id: row.get(0)?,
+                    name: row.get(1)?,
+                    payload: row.get(2)?,
+                    version: row.get(3)?,
+                    fetched_at: row.get(4)?,
+                })
+            },
         )
         .ok()
     }
+
+    /// 加载所有任务缓存
+    pub fn load_all_task_caches(&self) -> Vec<TaskCacheRow> {
+        let conn = self.reader.lock().unwrap();
+        let mut stmt = match conn.prepare(
+            "SELECT task_id, name, payload, version, fetched_at FROM a_task_cache ORDER BY name",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        stmt.query_map([], |row| {
+            Ok(TaskCacheRow {
+                task_id: row.get(0)?,
+                name: row.get(1)?,
+                payload: row.get(2)?,
+                version: row.get(3)?,
+                fetched_at: row.get(4)?,
+            })
+        })
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
+    /// 删除任务缓存
+    pub fn delete_task_cache(&self, task_id: &str) {
+        let conn = self.writer.lock().unwrap();
+        let _ = conn.execute("DELETE FROM a_task_cache WHERE task_id = ?1", params![task_id]);
+    }
+
+    // ─── 执行进度操作 ────────────────────────────────────────────
+
+    /// 记录关键词完成
+    pub fn record_keyword_done(
+        &self,
+        task_id: &str,
+        city_name: &str,
+        keyword_name: &str,
+        device_serial: &str,
+    ) {
+        let conn = self.writer.lock().unwrap();
+        let now = now_unix();
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO a_task_progress
+                (task_id, city_name, keyword_name, status, completed_at, device_serial, sync_status)
+             VALUES (?1, ?2, ?3, 'ok', ?4, ?5, 'pending')",
+            params![task_id, city_name, keyword_name, now, device_serial],
+        );
+    }
+
+    /// 加载任务的所有已完成记录
+    pub fn load_task_progress(&self, task_id: &str) -> Vec<ProgressRow> {
+        let conn = self.reader.lock().unwrap();
+        let mut stmt = match conn.prepare(
+            "SELECT task_id, city_name, keyword_name, status, completed_at, device_serial
+             FROM a_task_progress WHERE task_id = ?1",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        stmt.query_map(params![task_id], |row| {
+            Ok(ProgressRow {
+                task_id: row.get(0)?,
+                city_name: row.get(1)?,
+                keyword_name: row.get(2)?,
+                status: row.get(3)?,
+                completed_at: row.get(4)?,
+                device_serial: row.get(5)?,
+            })
+        })
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
+    /// 清除任务进度（重跑时使用）
+    pub fn clear_task_progress(&self, task_id: &str) {
+        let conn = self.writer.lock().unwrap();
+        let _ = conn.execute("DELETE FROM a_task_progress WHERE task_id = ?1", params![task_id]);
+    }
+
+    /// 获取未同步的进度记录（离线恢复后批量上传）
+    pub fn load_pending_progress(&self) -> Vec<ProgressRow> {
+        let conn = self.reader.lock().unwrap();
+        let mut stmt = match conn.prepare(
+            "SELECT task_id, city_name, keyword_name, status, completed_at, device_serial
+             FROM a_task_progress WHERE sync_status = 'pending'",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        stmt.query_map([], |row| {
+            Ok(ProgressRow {
+                task_id: row.get(0)?,
+                city_name: row.get(1)?,
+                keyword_name: row.get(2)?,
+                status: row.get(3)?,
+                completed_at: row.get(4)?,
+                device_serial: row.get(5)?,
+            })
+        })
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
+    /// 标记进度为已同步
+    pub fn mark_progress_synced(&self, task_id: &str, city_name: &str, keyword_name: &str) {
+        let conn = self.writer.lock().unwrap();
+        let _ = conn.execute(
+            "UPDATE a_task_progress SET sync_status = 'synced'
+             WHERE task_id = ?1 AND city_name = ?2 AND keyword_name = ?3",
+            params![task_id, city_name, keyword_name],
+        );
+    }
+
+    // ─── 执行记录操作 ────────────────────────────────────────────
+
+    /// 开始一次执行记录
+    pub fn start_task_run(&self, task_id: &str, device_serial: &str) -> i64 {
+        let conn = self.writer.lock().unwrap();
+        let now = now_unix();
+        let today = today_str();
+        let _ = conn.execute(
+            "INSERT INTO a_task_runs
+                (task_id, device_serial, run_date, started_at, status, sync_status)
+             VALUES (?1, ?2, ?3, ?4, 'running', 'pending')",
+            params![task_id, device_serial, today, now],
+        );
+        now // 返回 started_at 作为 run 的标识
+    }
+
+    /// 更新执行记录统计
+    pub fn update_task_run_stats(
+        &self,
+        task_id: &str,
+        started_at: i64,
+        cities_done: i32,
+        keywords_done: i32,
+    ) {
+        let conn = self.writer.lock().unwrap();
+        let _ = conn.execute(
+            "UPDATE a_task_runs SET cities_done = ?1, keywords_done = ?2
+             WHERE task_id = ?3 AND started_at = ?4",
+            params![cities_done, keywords_done, task_id, started_at],
+        );
+    }
+
+    /// 结束执行记录
+    pub fn finish_task_run(&self, task_id: &str, started_at: i64, status: &str) {
+        let conn = self.writer.lock().unwrap();
+        let now = now_unix();
+        let duration = now - started_at;
+        let _ = conn.execute(
+            "UPDATE a_task_runs SET ended_at = ?1, duration_sec = ?2, status = ?3
+             WHERE task_id = ?4 AND started_at = ?5",
+            params![now, duration, status, task_id, started_at],
+        );
+    }
+
+    /// 查询某设备某天的执行统计
+    pub fn query_daily_stats(&self, device_serial: &str, run_date: &str) -> Vec<DailyStatRow> {
+        let conn = self.reader.lock().unwrap();
+        let mut stmt = match conn.prepare(
+            "SELECT task_id, COUNT(*) as runs, COALESCE(SUM(duration_sec), 0) as total_sec,
+                    COALESCE(SUM(cities_done), 0), COALESCE(SUM(keywords_done), 0)
+             FROM a_task_runs
+             WHERE device_serial = ?1 AND run_date = ?2
+             GROUP BY task_id",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        stmt.query_map(params![device_serial, run_date], |row| {
+            Ok(DailyStatRow {
+                task_id: row.get(0)?,
+                run_count: row.get(1)?,
+                total_duration_sec: row.get(2)?,
+                cities_done: row.get(3)?,
+                keywords_done: row.get(4)?,
+            })
+        })
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
+    /// 查询某天所有设备的汇总统计
+    pub fn query_daily_summary(&self, run_date: &str) -> DailySummary {
+        let conn = self.reader.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) as total_runs,
+                    COALESCE(SUM(duration_sec), 0),
+                    COALESCE(SUM(cities_done), 0),
+                    COALESCE(SUM(keywords_done), 0)
+             FROM a_task_runs WHERE run_date = ?1",
+            params![run_date],
+            |row| {
+                Ok(DailySummary {
+                    run_date: run_date.to_string(),
+                    total_runs: row.get(0)?,
+                    total_duration_sec: row.get(1)?,
+                    total_cities_done: row.get(2)?,
+                    total_keywords_done: row.get(3)?,
+                })
+            },
+        )
+        .unwrap_or(DailySummary {
+            run_date: run_date.to_string(),
+            total_runs: 0,
+            total_duration_sec: 0,
+            total_cities_done: 0,
+            total_keywords_done: 0,
+        })
+    }
+}
+
+// ─── 数据结构 ──────────────────────────────────────────────────
+
+/// 任务缓存行
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskCacheRow {
+    pub task_id: String,
+    pub name: String,
+    pub payload: String, // JSON
+    pub version: i64,
+    pub fetched_at: i64,
+}
+
+/// 执行进度行
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProgressRow {
+    pub task_id: String,
+    pub city_name: String,
+    pub keyword_name: String,
+    pub status: String,
+    pub completed_at: i64,
+    pub device_serial: String,
+}
+
+/// 每设备每天每任务的统计
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DailyStatRow {
+    pub task_id: String,
+    pub run_count: i32,
+    pub total_duration_sec: i64,
+    pub cities_done: i32,
+    pub keywords_done: i32,
+}
+
+/// 每天汇总统计
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DailySummary {
+    pub run_date: String,
+    pub total_runs: i32,
+    pub total_duration_sec: i64,
+    pub total_cities_done: i32,
+    pub total_keywords_done: i32,
 }
 
 fn now_unix() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
+        as i64
+}
+
+fn today_str() -> String {
+    let now = now_unix();
+    // 从 Unix 时间戳计算 UTC 日期（Civil date from days since epoch）
+    let days = (now / 86400) as i64;
+    // 算法来自 Howard Hinnant: http://howardhinnant.github.io/date_algorithms.html
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = (yoe as i64) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{:04}-{:02}-{:02}", y, m, d)
 }

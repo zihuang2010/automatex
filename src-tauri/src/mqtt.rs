@@ -146,10 +146,7 @@ impl MqttManager {
         }
 
         if let Some(client) = self.client.lock().await.take() {
-            client
-                .disconnect()
-                .await
-                .map_err(|e| format!("断开失败: {}", e))?;
+            client.disconnect().await.map_err(|e| format!("断开失败: {}", e))?;
         }
         *self.status.lock().await = MqttStatus::Disconnected;
         Ok("MQTT 已断开".to_string())
@@ -159,10 +156,7 @@ impl MqttManager {
     pub async fn subscribe(&self, topic: &str) -> Result<String, String> {
         let guard = self.client.lock().await;
         let client = guard.as_ref().ok_or("MQTT 未连接".to_string())?;
-        client
-            .subscribe(topic, QoS::AtLeastOnce)
-            .await
-            .map_err(|e| format!("订阅失败: {}", e))?;
+        client.subscribe(topic, QoS::AtLeastOnce).await.map_err(|e| format!("订阅失败: {}", e))?;
         Ok(format!("已订阅: {}", topic))
     }
 

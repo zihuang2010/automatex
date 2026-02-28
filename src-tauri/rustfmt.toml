@@ -1,0 +1,23 @@
+# Rustfmt 配置（stable 兼容）
+
+# 基础设定
+edition = "2021"
+max_width = 100
+
+# --- 核心布局优化 ---
+# Max 启发式：尽量将短表达式（结构体/函数调用/链式调用等）压缩到一行
+use_small_heuristics = "Max"
+
+# --- 导入语句 ---
+# 自动按字母顺序排序 import
+reorder_imports = true
+
+# --- 结构与间距 ---
+# 移除不必要的嵌套括号
+remove_nested_parens = true
+# match 臂尾部逗号
+match_block_trailing_comma = true
+
+# --- 杂项 ---
+# Unix 风格换行符
+newline_style = "Unix"

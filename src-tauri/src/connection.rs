@@ -8,11 +8,7 @@ pub fn adb_path() -> &'static str {
         if let Ok(exe) = std::env::current_exe() {
             if let Some(dir) = exe.parent() {
                 // Windows 上查找 adb.exe，macOS/Linux 上查找 adb
-                let sidecar = if cfg!(windows) {
-                    dir.join("adb.exe")
-                } else {
-                    dir.join("adb")
-                };
+                let sidecar = if cfg!(windows) { dir.join("adb.exe") } else { dir.join("adb") };
                 if sidecar.exists() {
                     return sidecar.to_string_lossy().to_string();
                 }
@@ -71,9 +67,7 @@ pub struct DeviceManager {
 
 impl DeviceManager {
     pub fn new() -> Self {
-        Self {
-            devices: Mutex::new(Vec::new()),
-        }
+        Self { devices: Mutex::new(Vec::new()) }
     }
 
     /// 添加 WiFi 设备
@@ -91,11 +85,7 @@ impl DeviceManager {
             return Err(format!("设备 {} 已存在", normalized));
         }
 
-        let entry_name = if name.is_empty() {
-            normalized.clone()
-        } else {
-            name.to_string()
-        };
+        let entry_name = if name.is_empty() { normalized.clone() } else { name.to_string() };
 
         let entry = DeviceEntry {
             serial: normalized.clone(),
@@ -128,11 +118,7 @@ impl DeviceManager {
                 output: output.trim().to_string(),
                 error: String::new(),
             },
-            Err(e) => ShellResult {
-                success: false,
-                output: String::new(),
-                error: e,
-            },
+            Err(e) => ShellResult { success: false, output: String::new(), error: e },
         }
     }
 
@@ -196,14 +182,13 @@ impl DeviceManager {
                         ));
                     }
                     std::thread::sleep(std::time::Duration::from_millis(100));
-                }
+                },
                 Err(e) => return Err(format!("等待 adb connect 失败: {}", e)),
             }
         }
 
-        let output = child
-            .wait_with_output()
-            .map_err(|e| format!("读取 adb connect 输出失败: {}", e))?;
+        let output =
+            child.wait_with_output().map_err(|e| format!("读取 adb connect 输出失败: {}", e))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         if output.status.success() && !stdout.contains("failed") {
@@ -218,13 +203,8 @@ impl DeviceManager {
 
 /// 解析 WiFi 地址，不含端口时默认 5555
 fn parse_wifi_address(addr: &str) -> Result<std::net::SocketAddr, String> {
-    let full = if addr.contains(':') {
-        addr.to_string()
-    } else {
-        format!("{}:5555", addr)
-    };
-    full.parse::<std::net::SocketAddr>()
-        .map_err(|e| format!("地址格式错误 '{}': {}", addr, e))
+    let full = if addr.contains(':') { addr.to_string() } else { format!("{}:5555", addr) };
+    full.parse::<std::net::SocketAddr>().map_err(|e| format!("地址格式错误 '{}': {}", addr, e))
 }
 
 /// 通过 adb CLI 执行 shell 命令（最可靠方式）

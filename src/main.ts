@@ -1,19 +1,29 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import {
-    type MockTask,
-    getTasksForDevice,
-    getAssignedDeviceSerials,
-    releaseTasksForOfflineDevices,
-    startTask,
-    pauseTask,
-    resumeTask,
-    stopTask,
-    retryTask,
-    setTaskTickCallback,
-    startTaskExecution,
-    stopTaskExecution,
-} from './mock-data';
+
+/* ===== Task Types (matches backend Task struct) ===== */
+interface TaskKeyword {
+    name: string;
+    status: string; // 'pending' | 'run' | 'ok'
+}
+
+interface TaskCity {
+    name: string;
+    poi: string;
+    progress: number;
+    total: number;
+    done: number;
+    status: string; // 'pending' | 'active' | 'done'
+    keywords: TaskKeyword[];
+}
+
+interface Task {
+    id: string;
+    name: string;
+    status: string; // 'WAITING' | 'EXECUTING' | 'PAUSED' | 'SUCCESS' | 'ERROR'
+    assigned_device: string | null;
+    cities: TaskCity[];
+}
 
 /* ===== Types ===== */
 /** 设备行（与后端 DeviceRow 一一对应） */
@@ -35,17 +45,136 @@ interface DeviceRow {
 }
 
 let selectedDevice: string | null = null;
-let globalQueue: MockTask[] = [];
-let activeTask: MockTask | null = null;
+let globalQueue: Task[] = [];
+let activeTask: Task | null = null;
 let activeCityIdx = 0;
+
+// 执行引擎：每个任务的 interval timer + run started_at
+const taskTimers = new Map<string, ReturnType<typeof setInterval>>();
+const taskRunStarted = new Map<string, number>();
+
+/** 获取已分配设备的 serial 集合 */
+function getAssignedDeviceSerials(): Set<string> {
+    return new Set(
+        globalQueue
+            .filter(t => t.assigned_device && (t.status === 'EXECUTING' || t.status === 'PAUSED'))
+            .map(t => t.assigned_device!),
+    );
+}
+
+/** 释放离线设备上的任务 */
+function releaseTasksForOfflineDevices(onlineSerials: Set<string>): number {
+    let released = 0;
+    for (const task of globalQueue) {
+        if (
+            task.assigned_device &&
+            (task.status === 'EXECUTING' || task.status === 'PAUSED') &&
+            !onlineSerials.has(task.assigned_device)
+        ) {
+            stopTaskExecution(task.id);
+            task.status = 'ERROR';
+            released++;
+        }
+    }
+    return released;
+}
+
+/** 启动任务执行引擎（前端定时推进关键词 + 后端持久化） */
+function startTaskExecution(taskId: string) {
+    if (taskTimers.has(taskId)) return;
+
+    const timer = setInterval(async () => {
+        const task = globalQueue.find(t => t.id === taskId);
+        if (!task || task.status !== 'EXECUTING') {
+            clearInterval(timer);
+            taskTimers.delete(taskId);
+            return;
+        }
+
+        let activeCity = task.cities.find(c => c.status === 'active');
+        if (!activeCity) {
+            activeCity = task.cities.find(c => c.status === 'pending');
+            if (activeCity) activeCity.status = 'active';
+        }
+        if (!activeCity) {
+            task.status = 'SUCCESS';
+            clearInterval(timer);
+            taskTimers.delete(taskId);
+            const startedAt = taskRunStarted.get(taskId);
+            if (startedAt) {
+                await invoke('finish_task_run', { taskId, startedAt, status: 'completed' });
+                taskRunStarted.delete(taskId);
+            }
+            tickRefresh();
+            return;
+        }
+
+        const nextKw = activeCity.keywords.find(k => k.status === 'pending');
+        if (nextKw) {
+            activeCity.keywords.forEach(k => {
+                if (k.status === 'run') k.status = 'ok';
+            });
+            nextKw.status = 'run';
+            activeCity.done++;
+            activeCity.progress = Math.round((activeCity.done / activeCity.total) * 100);
+            // 持久化到后端
+            await invoke('record_keyword_complete', {
+                taskId: task.id,
+                cityName: activeCity.name,
+                keywordName: nextKw.name,
+                deviceSerial: task.assigned_device ?? '',
+            });
+        } else {
+            activeCity.keywords.forEach(k => {
+                if (k.status === 'run') k.status = 'ok';
+            });
+            activeCity.status = 'done';
+            activeCity.progress = 100;
+
+            const nextCity = task.cities.find(c => c.status === 'pending');
+            if (nextCity) {
+                nextCity.status = 'active';
+            } else {
+                task.status = 'SUCCESS';
+                clearInterval(timer);
+                taskTimers.delete(taskId);
+                const startedAt = taskRunStarted.get(taskId);
+                if (startedAt) {
+                    await invoke('finish_task_run', { taskId, startedAt, status: 'completed' });
+                    taskRunStarted.delete(taskId);
+                }
+            }
+        }
+
+        tickRefresh();
+    }, 10000);
+
+    taskTimers.set(taskId, timer);
+}
+
+/** 停止任务执行定时器 */
+function stopTaskExecution(taskId: string) {
+    const timer = taskTimers.get(taskId);
+    if (timer) {
+        clearInterval(timer);
+        taskTimers.delete(taskId);
+    }
+}
+
+/** 执行引擎的 UI 刷新回调 */
+function tickRefresh() {
+    refreshDevices();
+    renderTaskView();
+    loadChainForDevice(selectedDevice ?? '');
+}
 
 /** 将 unix 时间戳（秒）转为中文相对时间 */
 function timeAgo(unixSec: number): string {
     const diff = Math.floor(Date.now() / 1000) - unixSec;
     if (diff < 60) return '刚刚';
-    if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`;
-    if (diff < 86400) return `${Math.floor(diff / 3600)}小时前`;
-    return `${Math.floor(diff / 86400)}天前`;
+    if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
+    return `${Math.floor(diff / 86400)} 天前`;
 }
 
 const $ = (s: string) => document.querySelector(s) as HTMLElement | null;
@@ -74,9 +203,9 @@ function showToast(msg: string, type: 'info' | 'warning' | 'error' = 'warning') 
 
     const toast = document.createElement('div');
 
-    toast.className = `fixed top-6 left-1/2 -translate-x-1/2 z-[9999] px-6 py-3 rounded-full border ${colorMap[type]} text-xs font-medium shadow-md transition-all duration-300 opacity-0 -translate-y-4 flex items-center gap-2.5`;
+    toast.className = `fixed top - 6 left - 1 / 2 - translate - x - 1 / 2 z - [9999] px - 6 py - 3 rounded - full border ${colorMap[type]} text - xs font - medium shadow - md transition - all duration - 300 opacity - 0 - translate - y - 4 flex items - center gap - 2.5`;
 
-    toast.innerHTML = `<span class="material-symbols-outlined text-base ${iconColorMap[type]}">${iconMap[type]}</span><span>${msg}</span>`;
+    toast.innerHTML = `< span class="material-symbols-outlined text-base ${iconColorMap[type]}" > ${iconMap[type]} </span><span>${msg}</span > `;
     document.body.appendChild(toast);
 
     // 【动画优化】使用双重 requestAnimationFrame 确保浏览器正确渲染过渡动画
@@ -100,7 +229,7 @@ function showToast(msg: string, type: 'info' | 'warning' | 'error' = 'warning') 
 
 /** 获取设备显示名称 */
 function getDeviceName(d: DeviceRow): string {
-    if (d.brand !== 'unknown' && d.model !== 'unknown') return `${d.brand} ${d.model}`;
+    if (d.brand !== 'unknown' && d.model !== 'unknown') return `${d.brand} ${d.model} `;
     if (d.model !== 'unknown') return d.model;
     if (d.name && d.name !== d.serial) return d.name;
     return d.serial;
@@ -116,7 +245,7 @@ function splash() {
         const now = new Date();
         const h = String(now.getHours()).padStart(2, '0');
         const m = String(now.getMinutes()).padStart(2, '0');
-        timeEl.textContent = `${h}:${m}`;
+        timeEl.textContent = `${h}:${m} `;
     }
     // Trigger enhanced entrance animation
     setTimeout(() => el.classList.add('loaded'), 300);
@@ -143,7 +272,8 @@ async function refreshDevices() {
         }
 
         // 就绪设备不应有选中状态：若 selectedDevice 已无任务绑定则取消选中
-        if (selectedDevice && !getAssignedDeviceSerials().has(selectedDevice)) {
+        const assigned = getAssignedDeviceSerials();
+        if (selectedDevice && !assigned.has(selectedDevice)) {
             const selDev = devs.find(d => d.serial === selectedDevice);
             if (selDev && selDev.state !== 'Offline') {
                 selectedDevice = null;
@@ -152,7 +282,7 @@ async function refreshDevices() {
 
         return devs;
     } catch (e) {
-        tree.innerHTML = `<div class="empty-hint text-red">错误: ${e}</div>`;
+        tree.innerHTML = `< div class="empty-hint text-red" > 错误: ${e} </div>`;
         return [];
     }
 }
@@ -165,8 +295,8 @@ function renderDeviceCards(devs: DeviceRow[]) {
     // Split devices: Running / Ready / Offline
     const executingSerials = new Set(
         globalQueue
-            .filter(t => t.status === 'EXECUTING' && t.assignedDevice)
-            .map(t => t.assignedDevice!),
+            .filter(t => t.status === 'EXECUTING' && t.assigned_device)
+            .map(t => t.assigned_device!),
     );
 
     const runningDevs: DeviceRow[] = [];
@@ -189,7 +319,7 @@ function renderDeviceCards(devs: DeviceRow[]) {
         const temp = d.battery_temperature;
         const hwid = d.hw_serial || d.serial;
         const shortHwid = hwid.length > 16 ? hwid.substring(0, 16) + '…' : hwid;
-        const devTask = globalQueue.find(t => t.assignedDevice === d.serial);
+        const devTask = globalQueue.find(t => t.assigned_device === d.serial);
         const taskLabel = devTask ? devTask.name : '空闲';
         // 总体进度（所有城市的关键词完成比例）
         const kwTotal = devTask?.cities.reduce((s, c) => s + c.total, 0) ?? 0;
@@ -544,18 +674,9 @@ async function removeSelectedDevice() {
 
 /* ───── Task View (middle column) ───── */
 function loadTasksForDevice(serial: string) {
-    const deviceTasks = getTasksForDevice(serial);
-    // 合并到全局队列（去重）
-    const seen = new Set(globalQueue.map(t => t.id));
-    for (const t of deviceTasks) {
-        if (!seen.has(t.id)) {
-            globalQueue.push(t);
-            seen.add(t.id);
-        }
-    }
     // 优先选中当前设备正在执行的任务，否则选第一个 EXECUTING，再否则选第一个
     activeTask =
-        globalQueue.find(t => t.assignedDevice === serial && t.status === 'EXECUTING') ??
+        globalQueue.find(t => t.assigned_device === serial && t.status === 'EXECUTING') ??
         globalQueue.find(t => t.status === 'EXECUTING') ??
         globalQueue[0] ??
         null;
@@ -572,7 +693,7 @@ function renderTaskView() {
         return;
     }
     const city = task.cities[activeCityIdx];
-    const execDevice = task.assignedDevice ? resolveDeviceLabel(task.assignedDevice) : '';
+    const execDevice = task.assigned_device ? resolveDeviceLabel(task.assigned_device) : '';
 
     // 状态徽章映射
     const statusBadgeMap: Record<
@@ -613,7 +734,7 @@ function renderTaskView() {
     const badge = statusBadgeMap[task.status] ?? statusBadgeMap['WAITING'];
 
     // 设备信息行
-    const deviceLine = task.assignedDevice
+    const deviceLine = task.assigned_device
         ? `<span class="text-[10px] font-bold text-blue-600 uppercase tracking-tight">执行设备: ${esc(execDevice)}</span>`
         : `<span class="text-[10px] font-bold text-slate-400 uppercase tracking-tight">未分配设备</span>`;
 
@@ -827,16 +948,6 @@ function getReadySerials(): string[] {
     return serials;
 }
 
-/** 从 DB 查询设备列表构建 propsMap（供 mock-data 任务分配使用） */
-async function buildPropsMap(): Promise<Map<string, { battery_level: number }>> {
-    const devs: DeviceRow[] = await invoke('list_devices');
-    const m = new Map<string, { battery_level: number }>();
-    for (const d of devs) {
-        m.set(d.serial, { battery_level: d.battery_level });
-    }
-    return m;
-}
-
 /** 任务操作后统一刷新（查 DB + 渲染，DB 查询 <1ms） */
 async function afterTaskAction() {
     await refreshDevices();
@@ -844,63 +955,79 @@ async function afterTaskAction() {
     loadChainForDevice(selectedDevice ?? '');
 }
 
-// 注册执行引擎的 tick 回调（每 1.5 秒关键词推进时触发 UI 刷新）
-setTaskTickCallback(() => {
-    refreshDevices(); // 刷新设备卡片中的进度条
-    renderTaskView();
-    loadChainForDevice(selectedDevice ?? '');
-});
-
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (window as any).__taskStart = async (taskId: string) => {
+    const task = globalQueue.find(t => t.id === taskId);
+    if (!task) return;
     const readySerials = getReadySerials();
     if (!readySerials.length) {
         showToast('当前没有就绪的设备，请先连接设备');
         return;
     }
-    const propsMap = await buildPropsMap();
-    const result = startTask(taskId, readySerials, propsMap);
-    if (!result.ok) {
-        showToast(result.error ?? '启动失败');
-        return;
-    }
-    if (result.serial) selectedDevice = result.serial;
+    // 分配第一个就绪设备
+    task.assigned_device = readySerials[0];
+    task.status = 'EXECUTING';
+    selectedDevice = readySerials[0];
+    // 持久化执行记录
+    const startedAt = await invoke<number>('start_task_run', {
+        taskId,
+        deviceSerial: readySerials[0],
+    });
+    taskRunStarted.set(taskId, startedAt);
     startTaskExecution(taskId);
     await afterTaskAction();
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (window as any).__taskPause = async (taskId: string) => {
+    const task = globalQueue.find(t => t.id === taskId);
+    if (!task) return;
     stopTaskExecution(taskId);
-    const result = pauseTask(taskId);
-    if (!result.ok) {
-        showToast(result.error ?? '暂停失败');
-        return;
+    task.status = 'PAUSED';
+    const startedAt = taskRunStarted.get(taskId);
+    if (startedAt) {
+        await invoke('finish_task_run', { taskId, startedAt, status: 'paused' });
+        taskRunStarted.delete(taskId);
     }
     await afterTaskAction();
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (window as any).__taskResume = async (taskId: string) => {
+    const task = globalQueue.find(t => t.id === taskId);
+    if (!task) return;
     const readySerials = getReadySerials();
-    const propsMap = await buildPropsMap();
-    const result = resumeTask(taskId, readySerials, propsMap);
-    if (!result.ok) {
-        showToast(result.error ?? '继续失败');
+    const serial =
+        task.assigned_device && readySerials.includes(task.assigned_device)
+            ? task.assigned_device
+            : readySerials[0];
+    if (!serial) {
+        showToast('没有可用设备');
         return;
     }
-    if (result.serial) selectedDevice = result.serial;
+    task.assigned_device = serial;
+    task.status = 'EXECUTING';
+    selectedDevice = serial;
+    const startedAt = await invoke<number>('start_task_run', {
+        taskId,
+        deviceSerial: serial,
+    });
+    taskRunStarted.set(taskId, startedAt);
     startTaskExecution(taskId);
     await afterTaskAction();
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (window as any).__taskStop = async (taskId: string) => {
+    const task = globalQueue.find(t => t.id === taskId);
+    if (!task) return;
     stopTaskExecution(taskId);
-    const result = stopTask(taskId);
-    if (!result.ok) {
-        showToast(result.error ?? '停止失败');
-        return;
+    task.status = 'WAITING';
+    task.assigned_device = null;
+    const startedAt = taskRunStarted.get(taskId);
+    if (startedAt) {
+        await invoke('finish_task_run', { taskId, startedAt, status: 'stopped' });
+        taskRunStarted.delete(taskId);
     }
     selectedDevice = null;
     await afterTaskAction();
@@ -908,14 +1035,29 @@ setTaskTickCallback(() => {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (window as any).__taskRetry = async (taskId: string) => {
+    const task = globalQueue.find(t => t.id === taskId);
+    if (!task) return;
     const readySerials = getReadySerials();
-    const propsMap = await buildPropsMap();
-    const result = retryTask(taskId, readySerials, propsMap);
-    if (!result.ok) {
-        showToast(result.error ?? '重跑失败');
+    if (!readySerials.length) {
+        showToast('没有可用设备');
         return;
     }
-    if (result.serial) selectedDevice = result.serial;
+    // 清除进度，重新开始
+    await invoke('clear_task_progress', { taskId });
+    // 重新加载任务（从后端获取重置后的状态）
+    const freshTasks = await invoke<Task[]>('list_tasks');
+    const freshTask = freshTasks.find(t => t.id === taskId);
+    if (freshTask) {
+        Object.assign(task, freshTask);
+    }
+    task.assigned_device = readySerials[0];
+    task.status = 'EXECUTING';
+    selectedDevice = readySerials[0];
+    const startedAt = await invoke<number>('start_task_run', {
+        taskId,
+        deviceSerial: readySerials[0],
+    });
+    taskRunStarted.set(taskId, startedAt);
     startTaskExecution(taskId);
     await afterTaskAction();
 };
@@ -942,7 +1084,7 @@ function loadChainForDevice(_serial: string) {
     cards.innerHTML = globalQueue
         .map(q => {
             const isActive = q === activeTask;
-            const deviceSub = q.assignedDevice ? resolveDeviceLabel(q.assignedDevice) : '';
+            const deviceSub = q.assigned_device ? resolveDeviceLabel(q.assigned_device) : '';
             const kwTotal = q.cities.reduce((s, c) => s + c.total, 0);
             const cityCount = q.cities.length;
             const ring = isActive ? 'ring-2 ring-blue-200' : '';
@@ -1154,15 +1296,18 @@ function nextFrame(): Promise<void> {
 window.addEventListener('DOMContentLoaded', () => {
     splash();
 
-    // 初始化全局任务队列
-    globalQueue = getTasksForDevice('*');
-    // 默认选中第一个任务
-    if (globalQueue.length > 0 && !activeTask) {
-        activeTask = globalQueue[0];
-        activeCityIdx = 0;
-        renderTaskView();
-    }
-    loadChainForDevice('');
+    // 初始化全局任务队列（从后端加载）
+    invoke<Task[]>('list_tasks')
+        .then(tasks => {
+            globalQueue = tasks;
+            if (globalQueue.length > 0 && !activeTask) {
+                activeTask = globalQueue[0];
+                activeCityIdx = 0;
+                renderTaskView();
+            }
+            loadChainForDevice('');
+        })
+        .catch(e => console.error('加载任务失败:', e));
 
     // Search toggle
     $('#btn-search-dev')?.addEventListener('click', () => {
