@@ -1,4 +1,5 @@
 mod connection;
+pub mod constants;
 mod mqtt;
 mod storage;
 mod task_provider;
@@ -46,12 +47,12 @@ fn add_device(
             connection::DeviceType::Wifi => "wifi".to_string(),
         },
         address: entry.address.clone(),
-        state: "Offline".to_string(), // 后台线程会自动检测并更新为 Device
-        model: "unknown".to_string(),
-        brand: "unknown".to_string(),
-        android_version: "unknown".to_string(),
-        sdk_version: "unknown".to_string(),
-        display_resolution: "unknown".to_string(),
+        state: constants::device_state::OFFLINE.to_string(), // 后台线程会自动检测并更新为 Device
+        model: constants::device_state::UNKNOWN.to_string(),
+        brand: constants::device_state::UNKNOWN.to_string(),
+        android_version: constants::device_state::UNKNOWN.to_string(),
+        sdk_version: constants::device_state::UNKNOWN.to_string(),
+        display_resolution: constants::device_state::UNKNOWN.to_string(),
         battery_level: 0,
         battery_temperature: 0.0,
         updated_at: now,
@@ -322,7 +323,7 @@ fn get_tagged_field(raw: &str, tag: &str) -> String {
         .find(|l| l.starts_with(tag))
         .map(|l| l[tag.len()..].trim().to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "unknown".to_string())
+        .unwrap_or_else(|| constants::device_state::UNKNOWN.to_string())
 }
 
 /// 解析 dumpsys battery 中的字段
@@ -352,26 +353,31 @@ fn fetch_device_row(serial: &str, state: &str) -> DeviceRow {
     let android_version = get_tagged_field(&raw, "__ANDROID__=");
     let sdk_version = get_tagged_field(&raw, "__SDK__=");
     let hw_serial_raw = get_tagged_field(&raw, "__SERIAL__=");
-    let hw_serial = if hw_serial_raw == "unknown" { serial.to_string() } else { hw_serial_raw };
+    let hw_serial = if hw_serial_raw == constants::device_state::UNKNOWN {
+        serial.to_string()
+    } else {
+        hw_serial_raw
+    };
 
     let display_resolution = raw
         .lines()
         .find(|l| l.contains("Physical size"))
         .map(|l| l.trim().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+        .unwrap_or_else(|| constants::device_state::UNKNOWN.to_string());
 
     let battery_level = parse_battery_field(&raw, "level").unwrap_or(0);
     let battery_temp_raw = parse_battery_field(&raw, "temperature").unwrap_or(250);
     let battery_temperature = battery_temp_raw as f64 / 10.0;
 
     // 查找设备名称（优先用 brand + model）
-    let name = if brand != "unknown" && model != "unknown" {
-        format!("{} {}", brand, model)
-    } else if model != "unknown" {
-        model.clone()
-    } else {
-        serial.to_string()
-    };
+    let name =
+        if brand != constants::device_state::UNKNOWN && model != constants::device_state::UNKNOWN {
+            format!("{} {}", brand, model)
+        } else if model != constants::device_state::UNKNOWN {
+            model.clone()
+        } else {
+            serial.to_string()
+        };
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -422,10 +428,10 @@ fn refresh_battery(serial: &str, db: &storage::Database) -> bool {
 fn device_state_str(state: &adb_client::server::DeviceState) -> &'static str {
     use adb_client::server::DeviceState;
     match state {
-        DeviceState::Device => "Device",
-        DeviceState::Offline => "Offline",
+        DeviceState::Device => constants::device_state::DEVICE,
+        DeviceState::Offline => constants::device_state::OFFLINE,
         DeviceState::Unauthorized => "Unauthorized",
-        _ => "Offline",
+        _ => constants::device_state::OFFLINE,
     }
 }
 

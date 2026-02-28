@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Mutex;
 
+use crate::constants;
+
 /// 数据库中的设备行（包含静态 + 动态属性）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceRow {
@@ -228,7 +230,7 @@ impl Database {
         conn.query_row("SELECT model FROM a_devices WHERE serial = ?1", params![serial], |row| {
             row.get::<_, String>(0)
         })
-        .map(|m| m == "unknown")
+        .map(|m| m == constants::device_state::UNKNOWN)
         .unwrap_or(true)
     }
 

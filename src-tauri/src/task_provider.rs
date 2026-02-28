@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+use crate::constants::{city_status, keyword_status, task_status};
 use crate::storage::Database;
 
 // ─── 任务数据结构（前端交互用）────────────────────────────────
@@ -63,7 +64,7 @@ pub fn load_tasks(db: &Database) -> Vec<Task> {
         let progress = db.load_task_progress(&def.id);
         let completed: HashSet<(String, String)> = progress
             .iter()
-            .filter(|p| p.status == "ok")
+            .filter(|p| p.status == keyword_status::OK)
             .map(|p| (p.city_name.clone(), p.keyword_name.clone()))
             .collect();
 
@@ -83,15 +84,19 @@ pub fn load_tasks(db: &Database) -> Vec<Task> {
                 }
                 keywords.push(TaskKeyword {
                     name: kw_name.clone(),
-                    status: if is_done { "ok".to_string() } else { "pending".to_string() },
+                    status: if is_done {
+                        keyword_status::OK.to_string()
+                    } else {
+                        keyword_status::PENDING.to_string()
+                    },
                 });
             }
 
-            let city_status = if done >= total {
-                "done".to_string()
+            let city_status_val = if done >= total {
+                city_status::DONE.to_string()
             } else {
                 all_done = false;
-                "pending".to_string()
+                city_status::PENDING.to_string()
             };
 
             let progress =
@@ -103,29 +108,29 @@ pub fn load_tasks(db: &Database) -> Vec<Task> {
                 progress,
                 total,
                 done,
-                status: city_status,
+                status: city_status_val,
                 keywords,
             });
         }
 
         // 激活第一个未完成的城市
-        if let Some(first_pending) = cities.iter_mut().find(|c| c.status == "pending") {
-            first_pending.status = "active".to_string();
+        if let Some(first_pending) = cities.iter_mut().find(|c| c.status == city_status::PENDING) {
+            first_pending.status = city_status::ACTIVE.to_string();
         }
 
         // 任务状态：有进度但未全完成 → PAUSED（上次中断），全完成 → SUCCESS
-        let task_status = if all_done && !completed.is_empty() {
-            "SUCCESS"
+        let task_status_val = if all_done && !completed.is_empty() {
+            task_status::SUCCESS
         } else if !completed.is_empty() {
-            "PAUSED"
+            task_status::PAUSED
         } else {
-            "WAITING"
+            task_status::WAITING
         };
 
         tasks.push(Task {
             id: def.id,
             name: def.name,
-            status: task_status.to_string(),
+            status: task_status_val.to_string(),
             assigned_device: None,
             cities,
         });

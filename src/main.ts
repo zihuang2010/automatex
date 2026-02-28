@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { TaskStatus, CityStatus, KeywordStatus, DeviceState, RunStatus } from './constants';
 
 /* ===== Task Types (matches backend Task struct) ===== */
 interface TaskKeyword {
@@ -57,7 +58,11 @@ const taskRunStarted = new Map<string, number>();
 function getAssignedDeviceSerials(): Set<string> {
     return new Set(
         globalQueue
-            .filter(t => t.assigned_device && (t.status === 'EXECUTING' || t.status === 'PAUSED'))
+            .filter(
+                t =>
+                    t.assigned_device &&
+                    (t.status === TaskStatus.EXECUTING || t.status === TaskStatus.PAUSED),
+            )
             .map(t => t.assigned_device!),
     );
 }
@@ -68,11 +73,11 @@ function releaseTasksForOfflineDevices(onlineSerials: Set<string>): number {
     for (const task of globalQueue) {
         if (
             task.assigned_device &&
-            (task.status === 'EXECUTING' || task.status === 'PAUSED') &&
+            (task.status === TaskStatus.EXECUTING || task.status === TaskStatus.PAUSED) &&
             !onlineSerials.has(task.assigned_device)
         ) {
             stopTaskExecution(task.id);
-            task.status = 'ERROR';
+            task.status = TaskStatus.ERROR;
             released++;
         }
     }
@@ -85,36 +90,36 @@ function startTaskExecution(taskId: string) {
 
     const timer = setInterval(async () => {
         const task = globalQueue.find(t => t.id === taskId);
-        if (!task || task.status !== 'EXECUTING') {
+        if (!task || task.status !== TaskStatus.EXECUTING) {
             clearInterval(timer);
             taskTimers.delete(taskId);
             return;
         }
 
-        let activeCity = task.cities.find(c => c.status === 'active');
+        let activeCity = task.cities.find(c => c.status === CityStatus.ACTIVE);
         if (!activeCity) {
-            activeCity = task.cities.find(c => c.status === 'pending');
-            if (activeCity) activeCity.status = 'active';
+            activeCity = task.cities.find(c => c.status === CityStatus.PENDING);
+            if (activeCity) activeCity.status = CityStatus.ACTIVE;
         }
         if (!activeCity) {
-            task.status = 'SUCCESS';
+            task.status = TaskStatus.SUCCESS;
             clearInterval(timer);
             taskTimers.delete(taskId);
             const startedAt = taskRunStarted.get(taskId);
             if (startedAt) {
-                await invoke('finish_task_run', { taskId, startedAt, status: 'completed' });
+                await invoke('finish_task_run', { taskId, startedAt, status: RunStatus.COMPLETED });
                 taskRunStarted.delete(taskId);
             }
             tickRefresh();
             return;
         }
 
-        const nextKw = activeCity.keywords.find(k => k.status === 'pending');
+        const nextKw = activeCity.keywords.find(k => k.status === KeywordStatus.PENDING);
         if (nextKw) {
             activeCity.keywords.forEach(k => {
-                if (k.status === 'run') k.status = 'ok';
+                if (k.status === KeywordStatus.RUN) k.status = KeywordStatus.OK;
             });
-            nextKw.status = 'run';
+            nextKw.status = KeywordStatus.RUN;
             activeCity.done++;
             activeCity.progress = Math.round((activeCity.done / activeCity.total) * 100);
             // 持久化到后端
@@ -126,21 +131,25 @@ function startTaskExecution(taskId: string) {
             });
         } else {
             activeCity.keywords.forEach(k => {
-                if (k.status === 'run') k.status = 'ok';
+                if (k.status === KeywordStatus.RUN) k.status = KeywordStatus.OK;
             });
-            activeCity.status = 'done';
+            activeCity.status = CityStatus.DONE;
             activeCity.progress = 100;
 
-            const nextCity = task.cities.find(c => c.status === 'pending');
+            const nextCity = task.cities.find(c => c.status === CityStatus.PENDING);
             if (nextCity) {
-                nextCity.status = 'active';
+                nextCity.status = CityStatus.ACTIVE;
             } else {
-                task.status = 'SUCCESS';
+                task.status = TaskStatus.SUCCESS;
                 clearInterval(timer);
                 taskTimers.delete(taskId);
                 const startedAt = taskRunStarted.get(taskId);
                 if (startedAt) {
-                    await invoke('finish_task_run', { taskId, startedAt, status: 'completed' });
+                    await invoke('finish_task_run', {
+                        taskId,
+                        startedAt,
+                        status: RunStatus.COMPLETED,
+                    });
                     taskRunStarted.delete(taskId);
                 }
             }
@@ -275,7 +284,7 @@ async function refreshDevices() {
         const assigned = getAssignedDeviceSerials();
         if (selectedDevice && !assigned.has(selectedDevice)) {
             const selDev = devs.find(d => d.serial === selectedDevice);
-            if (selDev && selDev.state !== 'Offline') {
+            if (selDev && selDev.state !== DeviceState.OFFLINE) {
                 selectedDevice = null;
             }
         }
@@ -295,7 +304,7 @@ function renderDeviceCards(devs: DeviceRow[]) {
     // Split devices: Running / Ready / Offline
     const executingSerials = new Set(
         globalQueue
-            .filter(t => t.status === 'EXECUTING' && t.assigned_device)
+            .filter(t => t.status === TaskStatus.EXECUTING && t.assigned_device)
             .map(t => t.assigned_device!),
     );
 
@@ -304,7 +313,7 @@ function renderDeviceCards(devs: DeviceRow[]) {
     const offlineDevs: DeviceRow[] = [];
 
     devs.forEach(d => {
-        if (d.state === 'Offline') {
+        if (d.state === DeviceState.OFFLINE) {
             offlineDevs.push(d);
         } else if (executingSerials.has(d.serial)) {
             runningDevs.push(d);
@@ -676,8 +685,8 @@ async function removeSelectedDevice() {
 function loadTasksForDevice(serial: string) {
     // 优先选中当前设备正在执行的任务，否则选第一个 EXECUTING，再否则选第一个
     activeTask =
-        globalQueue.find(t => t.assigned_device === serial && t.status === 'EXECUTING') ??
-        globalQueue.find(t => t.status === 'EXECUTING') ??
+        globalQueue.find(t => t.assigned_device === serial && t.status === TaskStatus.EXECUTING) ??
+        globalQueue.find(t => t.status === TaskStatus.EXECUTING) ??
         globalQueue[0] ??
         null;
     activeCityIdx = 0;
@@ -700,38 +709,38 @@ function renderTaskView() {
         string,
         { bg: string; text: string; border: string; label: string }
     > = {
-        WAITING: {
+        [TaskStatus.WAITING]: {
             bg: 'bg-slate-50',
             text: 'text-slate-500',
             border: 'border-slate-200',
             label: '等待中',
         },
-        EXECUTING: {
+        [TaskStatus.EXECUTING]: {
             bg: 'bg-green-50',
             text: 'text-green-600',
             border: 'border-green-100',
             label: '运行中',
         },
-        PAUSED: {
+        [TaskStatus.PAUSED]: {
             bg: 'bg-amber-50',
             text: 'text-amber-600',
             border: 'border-amber-100',
             label: '已暂停',
         },
-        SUCCESS: {
+        [TaskStatus.SUCCESS]: {
             bg: 'bg-green-50',
             text: 'text-green-600',
             border: 'border-green-100',
             label: '已完成',
         },
-        ERROR: {
+        [TaskStatus.ERROR]: {
             bg: 'bg-red-50',
             text: 'text-red-600',
             border: 'border-red-100',
             label: '错误异常',
         },
     };
-    const badge = statusBadgeMap[task.status] ?? statusBadgeMap['WAITING'];
+    const badge = statusBadgeMap[task.status] ?? statusBadgeMap[TaskStatus.WAITING];
 
     // 设备信息行
     const deviceLine = task.assigned_device
@@ -740,23 +749,23 @@ function renderTaskView() {
 
     // 按钮：根据状态显示
     const btnStart =
-        task.status === 'WAITING'
+        task.status === TaskStatus.WAITING
             ? `<button onclick="window.__taskStart('${task.id}')" class="px-2.5 py-1.5 rounded-md border border-green-200 bg-green-50 text-[11px] font-black text-green-600 hover:bg-green-100 transition-all flex items-center gap-1.5 uppercase"><span class="material-symbols-outlined text-sm fill-1">play_arrow</span> 启动</button>`
             : '';
     const btnPause =
-        task.status === 'EXECUTING'
+        task.status === TaskStatus.EXECUTING
             ? `<button onclick="window.__taskPause('${task.id}')" class="px-2.5 py-1.5 rounded-md border border-amber-200 bg-amber-50 text-[11px] font-black text-amber-600 hover:bg-amber-100 transition-all flex items-center gap-1.5 uppercase"><span class="material-symbols-outlined text-sm">pause</span> 暂停</button>`
             : '';
     const btnResume =
-        task.status === 'PAUSED' || task.status === 'ERROR'
+        task.status === TaskStatus.PAUSED || task.status === TaskStatus.ERROR
             ? `<button onclick="window.__taskResume('${task.id}')" class="px-2.5 py-1.5 rounded-md border border-green-200 bg-green-50 text-[11px] font-black text-green-600 hover:bg-green-100 transition-all flex items-center gap-1.5 uppercase"><span class="material-symbols-outlined text-sm">resume</span> 继续</button>`
             : '';
     const btnRetry =
-        task.status === 'ERROR' || task.status === 'SUCCESS'
+        task.status === TaskStatus.ERROR || task.status === TaskStatus.SUCCESS
             ? `<button onclick="window.__taskRetry('${task.id}')" class="px-2.5 py-1.5 rounded-md border border-blue-200 bg-blue-50 text-[11px] font-black text-blue-600 hover:bg-blue-100 transition-all flex items-center gap-1.5 uppercase"><span class="material-symbols-outlined text-sm">replay</span> 重跑</button>`
             : '';
     const btnStop =
-        task.status === 'EXECUTING' || task.status === 'PAUSED'
+        task.status === TaskStatus.EXECUTING || task.status === TaskStatus.PAUSED
             ? `<button onclick="window.__taskStop('${task.id}')" class="px-2.5 py-1.5 rounded-md border border-red-200 bg-red-50 text-[11px] font-black text-red-600 hover:bg-red-100 transition-all flex items-center gap-1.5 uppercase"><span class="material-symbols-outlined text-sm">stop</span> 停止</button>`
             : '';
 
@@ -796,43 +805,43 @@ function renderTaskView() {
                   ? 'border-2 border-blue-500 shadow-md'
                   : 'border border-slate-200';
               const statusIcon =
-                  c.status === 'done'
+                  c.status === CityStatus.DONE
                       ? '<span class="material-symbols-outlined text-green-500 icon-sm fill-1">check_circle</span>'
-                      : c.status === 'active'
+                      : c.status === CityStatus.ACTIVE
                         ? `<div class="h-1.5 w-1.5 rounded-full bg-blue-500"></div>`
                         : '<span class="material-symbols-outlined text-slate-300 icon-sm">schedule</span>';
               const nameWeight = isActive
                   ? 'font-bold text-slate-900'
                   : 'font-semibold text-slate-500';
               const barBg =
-                  c.status === 'done'
+                  c.status === CityStatus.DONE
                       ? 'bg-green-50'
-                      : c.status === 'active'
+                      : c.status === CityStatus.ACTIVE
                         ? 'bg-slate-100'
                         : 'bg-slate-50';
               const barFill =
-                  c.status === 'done'
+                  c.status === CityStatus.DONE
                       ? 'bg-green-500'
-                      : c.status === 'active'
+                      : c.status === CityStatus.ACTIVE
                         ? 'bg-blue-500'
                         : 'bg-slate-200';
-              const pct = c.status === 'done' ? 100 : c.progress;
+              const pct = c.status === CityStatus.DONE ? 100 : c.progress;
               const statsLabel =
-                  c.status === 'done'
+                  c.status === CityStatus.DONE
                       ? '<span class="text-[11px] text-slate-400 font-bold uppercase">已完成</span>'
-                      : c.status === 'active'
+                      : c.status === CityStatus.ACTIVE
                         ? `<span class="text-[11px] text-slate-400 font-bold uppercase">${c.done}/${c.total} 关键词</span>`
                         : '<span class="text-[11px] text-slate-400 font-bold uppercase">等待中</span>';
               const pctLabel =
-                  c.status === 'done'
+                  c.status === CityStatus.DONE
                       ? '<span class="text-[11px] font-black text-green-600">100%</span>'
-                      : c.status === 'active'
+                      : c.status === CityStatus.ACTIVE
                         ? `<span class="text-[11px] font-black text-blue-600">${c.progress}%</span>`
                         : '';
               const cardBg =
-                  c.status === 'done'
+                  c.status === CityStatus.DONE
                       ? 'bg-green-50/50'
-                      : c.status === 'active'
+                      : c.status === CityStatus.ACTIVE
                         ? 'bg-blue-50/40'
                         : 'bg-slate-50/50';
               return `
@@ -844,7 +853,7 @@ function renderTaskView() {
             </div>
             ${statusIcon}
           </div>
-          <div class="text-[10px] text-slate-400 truncate mb-2" title="${c.poi}">
+          <div class="text-[10px] text-slate-500 truncate mb-2" title="${c.poi}">
             <span class="material-symbols-outlined icon-xs text-slate-300 align-middle mr-0.5">location_on</span>${c.poi}
           </div>
           <div class="w-full h-2 ${barBg} rounded-full overflow-hidden">
@@ -875,14 +884,14 @@ function renderTaskView() {
         <div class="grid gap-2" style="grid-template-columns: repeat(5, minmax(0, 1fr))" id="kw-grid">
           ${city.keywords
               .map(k => {
-                  if (k.status === 'ok') {
+                  if (k.status === KeywordStatus.OK) {
                       return `<div class="kw-item flex items-center justify-between p-2 rounded bg-green-100/50 border border-green-200 transition-all hover:bg-green-100">
         <div class="flex items-center min-w-0">
           <span class="material-symbols-outlined icon-sm text-green-500 mr-1.5 fill-1">check_circle</span>
           <span class="text-[12px] font-semibold text-slate-700 truncate">${k.name}</span>
         </div>
       </div>`;
-                  } else if (k.status === 'run') {
+                  } else if (k.status === KeywordStatus.RUN) {
                       return `<div class="kw-item flex items-center p-2 rounded bg-blue-100/50 border border-blue-400 keyword-active ring-2 ring-blue-100">
         <div class="h-2 w-2 rounded-full bg-blue-500 mr-1.5 animate-pulse"></div>
         <span class="text-[12px] font-bold text-blue-700 truncate">${k.name}</span>
@@ -966,7 +975,7 @@ async function afterTaskAction() {
     }
     // 分配第一个就绪设备
     task.assigned_device = readySerials[0];
-    task.status = 'EXECUTING';
+    task.status = TaskStatus.EXECUTING;
     selectedDevice = readySerials[0];
     // 持久化执行记录
     const startedAt = await invoke<number>('start_task_run', {
@@ -983,10 +992,10 @@ async function afterTaskAction() {
     const task = globalQueue.find(t => t.id === taskId);
     if (!task) return;
     stopTaskExecution(taskId);
-    task.status = 'PAUSED';
+    task.status = TaskStatus.PAUSED;
     const startedAt = taskRunStarted.get(taskId);
     if (startedAt) {
-        await invoke('finish_task_run', { taskId, startedAt, status: 'paused' });
+        await invoke('finish_task_run', { taskId, startedAt, status: RunStatus.PAUSED });
         taskRunStarted.delete(taskId);
     }
     await afterTaskAction();
@@ -1006,7 +1015,7 @@ async function afterTaskAction() {
         return;
     }
     task.assigned_device = serial;
-    task.status = 'EXECUTING';
+    task.status = TaskStatus.EXECUTING;
     selectedDevice = serial;
     const startedAt = await invoke<number>('start_task_run', {
         taskId,
@@ -1022,11 +1031,11 @@ async function afterTaskAction() {
     const task = globalQueue.find(t => t.id === taskId);
     if (!task) return;
     stopTaskExecution(taskId);
-    task.status = 'WAITING';
+    task.status = TaskStatus.WAITING;
     task.assigned_device = null;
     const startedAt = taskRunStarted.get(taskId);
     if (startedAt) {
-        await invoke('finish_task_run', { taskId, startedAt, status: 'stopped' });
+        await invoke('finish_task_run', { taskId, startedAt, status: RunStatus.STOPPED });
         taskRunStarted.delete(taskId);
     }
     selectedDevice = null;
@@ -1034,7 +1043,7 @@ async function afterTaskAction() {
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-(window as any).__taskRetry = async (taskId: string) => {
+(window as any).__taskRetry = async (taskId: string): Promise<void> => {
     const task = globalQueue.find(t => t.id === taskId);
     if (!task) return;
     const readySerials = getReadySerials();
@@ -1051,7 +1060,7 @@ async function afterTaskAction() {
         Object.assign(task, freshTask);
     }
     task.assigned_device = readySerials[0];
-    task.status = 'EXECUTING';
+    task.status = TaskStatus.EXECUTING;
     selectedDevice = readySerials[0];
     const startedAt = await invoke<number>('start_task_run', {
         taskId,
@@ -1077,7 +1086,7 @@ function loadChainForDevice(_serial: string) {
     const cards = $('#chain-cards')!;
 
     const queueSub = document.querySelector('.queue-sub');
-    const executingCount = globalQueue.filter(t => t.status === 'EXECUTING').length;
+    const executingCount = globalQueue.filter(t => t.status === TaskStatus.EXECUTING).length;
     if (queueSub)
         queueSub.textContent = `${executingCount} 个执行中 · 共 ${globalQueue.length} 个任务`;
 
@@ -1087,7 +1096,15 @@ function loadChainForDevice(_serial: string) {
             const deviceSub = q.assigned_device ? resolveDeviceLabel(q.assigned_device) : '';
             const kwTotal = q.cities.reduce((s, c) => s + c.total, 0);
             const cityCount = q.cities.length;
-            const ring = isActive ? 'ring-2 ring-blue-200' : '';
+            const ringColor =
+                q.status === TaskStatus.ERROR
+                    ? 'ring-red-200'
+                    : q.status === TaskStatus.PAUSED
+                      ? 'ring-amber-200'
+                      : q.status === TaskStatus.SUCCESS
+                        ? 'ring-green-200'
+                        : 'ring-blue-200';
+            const ring = isActive ? `ring-2 ${ringColor}` : '';
 
             // 城市 + 关键词统计行
             const statsRow = `
@@ -1102,7 +1119,7 @@ function loadChainForDevice(_serial: string) {
           </div>
         </div>`;
 
-            if (q.status === 'EXECUTING') {
+            if (q.status === TaskStatus.EXECUTING) {
                 const kwDone = q.cities.reduce((s, c) => s + c.done, 0);
                 const pct = kwTotal > 0 ? Math.round((kwDone / kwTotal) * 100) : 0;
                 return `
@@ -1126,7 +1143,7 @@ function loadChainForDevice(_serial: string) {
           </div>
         </div>
       </div>`;
-            } else if (q.status === 'PAUSED') {
+            } else if (q.status === TaskStatus.PAUSED) {
                 const kwDone = q.cities.reduce((s, c) => s + c.done, 0);
                 const pct = kwTotal > 0 ? Math.round((kwDone / kwTotal) * 100) : 0;
                 return `
@@ -1150,7 +1167,7 @@ function loadChainForDevice(_serial: string) {
           </div>
         </div>
       </div>`;
-            } else if (q.status === 'WAITING' || q.status === 'SCHEDULED') {
+            } else if (q.status === TaskStatus.WAITING || q.status === 'SCHEDULED') {
                 return `
       <div class="bg-slate-50/60 border border-slate-200 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer transition-all hover:shadow-md ${ring}" onclick="window.__switchTask('${q.id}')">
         <div class="w-1 self-stretch bg-[#64748B]"></div>
@@ -1164,7 +1181,7 @@ function loadChainForDevice(_serial: string) {
           ${statsRow}
         </div>
       </div>`;
-            } else if (q.status === 'SUCCESS') {
+            } else if (q.status === TaskStatus.SUCCESS) {
                 return `
       <div class="bg-green-50/40 border border-green-100 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer opacity-80 transition-all hover:opacity-100 ${ring}" onclick="window.__switchTask('${q.id}')">
         <div class="w-1 self-stretch bg-[#10B981]"></div>
@@ -1178,7 +1195,7 @@ function loadChainForDevice(_serial: string) {
           ${statsRow}
         </div>
       </div>`;
-            } else if (q.status === 'ERROR') {
+            } else if (q.status === TaskStatus.ERROR) {
                 return `
       <div class="bg-red-50/40 border border-red-100 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer transition-all hover:shadow-md ${ring}" onclick="window.__switchTask('${q.id}')">
         <div class="w-1 self-stretch bg-red-500"></div>
@@ -1428,7 +1445,9 @@ window.addEventListener('DOMContentLoaded', () => {
         // 刷新设备列表并获取结果
         const devs = await refreshDevices();
         // 获取在线设备，释放离线设备上的任务
-        const onlineSerials = new Set(devs.filter(d => d.state !== 'Offline').map(d => d.serial));
+        const onlineSerials = new Set(
+            devs.filter(d => d.state !== DeviceState.OFFLINE).map(d => d.serial),
+        );
         const released = releaseTasksForOfflineDevices(onlineSerials);
         if (released > 0) {
             renderTaskView();
