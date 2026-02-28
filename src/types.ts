@@ -51,4 +51,6 @@ export interface DeviceRow {
 export interface TaskRunStats {
     last_run_at: number | null;
     today_runs: number;
+    today_duration_sec: number;
+    today_keywords: number;
 }

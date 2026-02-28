@@ -23,13 +23,18 @@ export function setTaskViewCallbacks(
     _onLoadChainForDevice = onLoadChainForDevice;
 }
 
-/* ===== Task View Rendering ===== */
+/* ===== 分区更新：缓存上一次各区域的 HTML ===== */
+let _prevTaskId: string | null = null;
+let _prevHeaderHtml = '';
+let _prevMetricsHtml = '';
+let _prevCityHtml = '';
+let _prevKwHtml = '';
+let _prevKwInfoHtml = '';
 
 // TaskRunStats 缓存（避免每次渲染都跨进程查 DB）
 let _statsCache: { taskId: string; stats: TaskRunStats; taskStatus: string } | null = null;
 
 export async function loadTasksForDevice(serial: string) {
-    // 查找分配给该设备的任务并切换
     const task = globalQueue.find(t => t.assigned_device === serial);
     if (task && task !== activeTask) {
         setActiveTask(task);
@@ -41,22 +46,135 @@ export async function loadTasksForDevice(serial: string) {
     }
 }
 
+/* ===== 骨架：首次渲染时创建带 id 的容器结构 ===== */
+function ensureSkeleton(mid: HTMLElement): boolean {
+    if (mid.querySelector('#tv-header')) return false; // 已存在
+    mid.innerHTML = `
+    <div id="tv-header" class="shrink-0"></div>
+    <div id="tv-metrics" class="shrink-0"></div>
+    <div class="flex-1 bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col min-h-0">
+      <div class="px-4 pt-3 pb-0 shrink-0 border-b border-slate-100">
+        <div id="tv-city-header" class="flex items-center justify-between mb-2.5"></div>
+        <div id="tv-cities" class="flex gap-2 overflow-x-auto pb-3 scrollbar-hide"></div>
+      </div>
+      <div class="flex-1 overflow-y-auto p-4 min-h-0">
+        <div id="tv-kw-info" class="flex items-center justify-between mb-3"></div>
+        <div id="tv-kw-grid" class="flex flex-wrap gap-2"></div>
+      </div>
+    </div>`;
+    // 首次创建，清空缓存
+    _prevHeaderHtml = '';
+    _prevMetricsHtml = '';
+    _prevCityHtml = '';
+    _prevKwHtml = '';
+    _prevKwInfoHtml = '';
+    return true;
+}
+
+/* ===== 高效更新：只更新变化的区域 ===== */
+function patchHtml(id: string, html: string, prev: string): string {
+    if (html !== prev) {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = html;
+    }
+    return html;
+}
+
+/* ===== 主渲染函数 ===== */
 export async function renderTaskView() {
     const mid = $('#col-mid')!;
     const task = activeTask;
+
     if (!task) {
         mid.innerHTML =
             '<div class="empty-hint" style="padding:40px;text-align:center">选择任务以查看详情</div>';
+        _prevTaskId = null;
         return;
     }
 
     const city = task.cities[activeCityIdx] ?? task.cities[0];
     if (!city) {
         mid.innerHTML = '<div class="empty-hint">无城市数据</div>';
+        _prevTaskId = null;
         return;
     }
 
-    // ── Status Badge ──
+    // 任务切换时重建骨架
+    if (_prevTaskId !== task.id) {
+        _prevTaskId = task.id;
+        ensureSkeleton(mid);
+    } else if (!mid.querySelector('#tv-header')) {
+        ensureSkeleton(mid);
+    }
+
+    // ── Header ──
+    const headerHtml = buildHeader(task);
+    _prevHeaderHtml = patchHtml('tv-header', headerHtml, _prevHeaderHtml);
+
+    // ── Metrics ──（异步获取统计信息）
+    const metricsHtml = await buildMetrics(task);
+    _prevMetricsHtml = patchHtml('tv-metrics', metricsHtml, _prevMetricsHtml);
+
+    // ── City Header ──
+    const citiesDone = task.cities.filter((c: TaskCity) => c.status === CityStatus.DONE).length;
+    const cityHeaderHtml = `
+    <div class="flex items-center gap-2">
+      <span class="material-symbols-outlined icon-sm text-blue-400">location_city</span>
+      <span class="text-[11px] font-black text-slate-500 uppercase tracking-tight">覆盖城市</span>
+    </div>
+    <span class="text-[11px] font-bold text-slate-400">${citiesDone}/${task.cities.length} 已完成</span>`;
+    // city header 直接内联更新，不做 prev 缓存（轻量）
+    const cityHeaderEl = document.getElementById('tv-city-header');
+    if (cityHeaderEl) cityHeaderEl.innerHTML = cityHeaderHtml;
+
+    // ── City Cards ──
+    const cityCardsHtml = buildCityCards(task);
+    _prevCityHtml = patchHtml('tv-cities', cityCardsHtml, _prevCityHtml);
+
+    // ── Keywords Info Bar ──
+    const kwInfoHtml = `
+    <div class="flex items-center gap-1.5">
+      <span class="material-symbols-outlined icon-sm text-blue-400 fill-1">sell</span>
+      <span class="text-[11px] font-black text-slate-400 uppercase tracking-tight">关键词</span>
+      <span class="px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded text-[10px] font-bold">${city.done}/${city.total}</span>
+    </div>
+    <div class="relative">
+      <input class="w-40 pl-7 pr-2 py-1 bg-slate-50 border border-slate-200 rounded text-[11px] focus:ring-1 focus:ring-blue-200 focus:border-blue-400 focus:bg-white outline-none transition-all placeholder:text-slate-300" placeholder="搜索..." type="text" id="kw-filter-input" oninput="window.__filterKw(this.value)" />
+      <span class="material-symbols-outlined absolute left-2 top-1/2 -translate-y-1/2 text-slate-300 text-xs">search</span>
+    </div>`;
+
+    // 保留搜索框的值和焦点
+    const existingInput = document.getElementById('kw-filter-input') as HTMLInputElement | null;
+    const savedSearch = existingInput?.value || '';
+    const hadFocus = document.activeElement === existingInput;
+    _prevKwInfoHtml = patchHtml('tv-kw-info', kwInfoHtml, _prevKwInfoHtml);
+    if (savedSearch) {
+        const newInput = document.getElementById('kw-filter-input') as HTMLInputElement | null;
+        if (newInput) {
+            newInput.value = savedSearch;
+            if (hadFocus) newInput.focus();
+        }
+    }
+
+    // ── Keyword Grid ──
+    const kwGridHtml = buildKeywordGrid(city);
+    _prevKwHtml = patchHtml('tv-kw-grid', kwGridHtml, _prevKwHtml);
+
+    // 恢复搜索过滤状态
+    if (savedSearch) {
+        const filterFn = (window as unknown as Record<string, (v: string) => void>).__filterKw;
+        if (filterFn) filterFn(savedSearch);
+    }
+}
+
+/* ===== 各区域构建函数 ===== */
+
+function buildHeader(task: {
+    id: string;
+    name: string;
+    status: string;
+    assigned_device: string | null;
+}): string {
     type BadgeInfo = { bg: string; text: string; border: string; label: string };
     const badgeMap: Record<string, BadgeInfo> = {
         [TaskStatus.WAITING]: {
@@ -91,68 +209,10 @@ export async function renderTaskView() {
         },
     };
     const badge = badgeMap[task.status] || badgeMap[TaskStatus.WAITING];
-
-    // ── Device assignment tag ──
     const deviceTag = task.assigned_device
-        ? `<p class="text-[11px] text-slate-400 font-semibold mt-0.5"><span class="material-symbols-outlined text-sm align-middle mr-0.5">smartphone</span>${esc(task.assigned_device)}</p>`
-        : '';
+        ? `<p class="text-[11px] text-slate-400 font-semibold mt-1.5 h-4 leading-4"><span class="material-symbols-outlined text-sm icon-xs align-middle mr-0.5">smartphone</span>${esc(task.assigned_device)}</p>`
+        : `<p class="h-4 mt-1.5"></p>`;
 
-    // ── Metric Cards ──
-    const kwTotal = task.cities.reduce((s: number, c: TaskCity) => s + c.total, 0);
-    const kwDone = task.cities.reduce((s: number, c: TaskCity) => s + c.done, 0);
-
-    let lastRunLabel = '--';
-    let todayRuns = 0;
-    try {
-        const needsRefresh =
-            !_statsCache ||
-            _statsCache.taskId !== task.id ||
-            _statsCache.taskStatus !== task.status;
-        if (needsRefresh) {
-            const stats = await invoke<TaskRunStats>('get_task_run_stats', { taskId: task.id });
-            _statsCache = { taskId: task.id, stats, taskStatus: task.status };
-        }
-        todayRuns = _statsCache!.stats.today_runs;
-        if (_statsCache!.stats.last_run_at) {
-            const r = formatRunTime(_statsCache!.stats.last_run_at);
-            lastRunLabel = `${r.date} ${r.time}`;
-        }
-    } catch {
-        /* ignore */
-    }
-
-    const metricCards = `
-    <div class="grid grid-cols-3 gap-2.5 mb-4 shrink-0">
-      <div class="bg-white border border-slate-200 p-4 rounded-2xl flex items-center gap-3.5">
-        <div class="p-2.5 bg-emerald-50 rounded-xl shrink-0">
-          <span class="material-symbols-outlined text-emerald-500">check_circle</span>
-        </div>
-        <div>
-          <div class="text-lg font-bold text-slate-600">${kwDone} <span class="text-xs font-bold text-slate-400">/ ${kwTotal}</span></div>
-          <div class="text-[11px] font-bold text-slate-500">完成进度</div>
-        </div>
-      </div>
-      <div class="bg-white border border-slate-200 p-4 rounded-2xl flex items-center gap-3.5">
-        <div class="p-2.5 bg-blue-50 rounded-xl shrink-0">
-          <span class="material-symbols-outlined text-blue-500">schedule</span>
-        </div>
-        <div>
-          <div class="text-sm font-bold text-slate-600">${lastRunLabel}</div>
-          <div class="text-[11px] font-bold text-slate-500">上次执行</div>
-        </div>
-      </div>
-      <div class="bg-white border border-slate-200 p-4 rounded-2xl flex items-center gap-3.5">
-        <div class="p-2.5 bg-indigo-50 rounded-xl shrink-0">
-          <span class="material-symbols-outlined text-indigo-500">refresh</span>
-        </div>
-        <div>
-          <div class="text-lg font-bold text-slate-600">${todayRuns} <span class="text-xs font-bold text-slate-600">次</span></div>
-          <div class="text-[11px] font-bold text-slate-500">今日执行</div>
-        </div>
-      </div>
-    </div>`;
-
-    // ── Action Buttons ──
     const btnStart =
         task.status === TaskStatus.WAITING
             ? `<button onclick="window.__taskStart('${task.id}')" class="flex items-center gap-2.5 px-5 py-2 bg-emerald-500 hover:bg-emerald-600 text-white font-medium rounded-xl transition-all shadow-lg shadow-emerald-500/20 text-xs"><span class="material-symbols-outlined text-base">play_arrow</span><span class="font-bold" style="letter-spacing:0.15em">启动</span></button>`
@@ -174,8 +234,106 @@ export async function renderTaskView() {
             ? `<button onclick="window.__taskStop('${task.id}')" class="flex items-center gap-2.5 px-5 py-2 bg-white text-rose-500 border border-rose-200 font-medium rounded-xl hover:bg-rose-50 transition-all text-xs"><span class="material-symbols-outlined text-base">stop</span><span class="font-bold" style="letter-spacing:0.15em">停止</span></button>`
             : '';
 
-    // ── City Cards ──
-    const cityCards = task.cities
+    return `
+    <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 mb-4 flex items-center justify-between">
+      <div class="flex items-center gap-4 min-w-0">
+        <div class="w-12 h-12 bg-indigo-500/10 flex items-center justify-center rounded-xl shrink-0">
+          <span class="material-symbols-outlined text-indigo-500 text-2xl">hub</span>
+        </div>
+        <div class="min-w-0">
+          <div class="flex items-center gap-2">
+            <h2 class="text-lg font-bold tracking-tight text-slate-800 truncate">${task.name}</h2>
+            <span class="px-2.5 py-0.5 ${badge.bg} ${badge.text} text-[11px] font-semibold rounded-full border ${badge.border} shrink-0">${badge.label}</span>
+          </div>
+          ${deviceTag}
+        </div>
+      </div>
+      <div class="flex items-center gap-2.5 shrink-0 min-w-[120px] justify-end">
+        ${btnStart}${btnPause}${btnResume}${btnRetry}${btnStop}
+      </div>
+    </div>`;
+}
+
+async function buildMetrics(task: {
+    id: string;
+    status: string;
+    cities: TaskCity[];
+}): Promise<string> {
+    const kwTotal = task.cities.reduce((s: number, c: TaskCity) => s + c.total, 0);
+    const kwDone = task.cities.reduce((s: number, c: TaskCity) => s + c.done, 0);
+    const pctDone = kwTotal > 0 ? Math.round((kwDone / kwTotal) * 100) : 0;
+
+    let lastRunLabel = '--';
+    let todayRuns = 0;
+    let todayKeywords = 0;
+    let todayDurationSec = 0;
+    try {
+        const needsRefresh =
+            !_statsCache ||
+            _statsCache.taskId !== task.id ||
+            _statsCache.taskStatus !== task.status;
+        if (needsRefresh) {
+            const stats = await invoke<TaskRunStats>('get_task_run_stats', { taskId: task.id });
+            _statsCache = { taskId: task.id, stats, taskStatus: task.status };
+        }
+        todayRuns = _statsCache!.stats.today_runs;
+        todayKeywords = _statsCache!.stats.today_keywords;
+        todayDurationSec = _statsCache!.stats.today_duration_sec;
+        if (_statsCache!.stats.last_run_at) {
+            const r = formatRunTime(_statsCache!.stats.last_run_at);
+            lastRunLabel = `${r.date} ${r.time}`;
+        }
+    } catch {
+        /* ignore */
+    }
+
+    const durationH = Math.floor(todayDurationSec / 3600);
+    const durationM = Math.floor((todayDurationSec % 3600) / 60);
+    const durationLabel = durationH > 0 ? `${durationH}h${durationM}m` : `${durationM}m`;
+    const ratePerHour =
+        todayDurationSec > 60 ? Math.round((todayKeywords / todayDurationSec) * 3600) : 0;
+
+    return `
+    <div class="grid grid-cols-4 gap-2.5 mb-4">
+      <div class="bg-emerald-50/50 rounded-md border border-emerald-100 p-3">
+        <div class="flex items-center justify-between mb-1.5">
+          <span class="material-symbols-outlined icon-sm text-emerald-400">check_circle</span>
+          <span class="text-[11px] font-black text-emerald-600">${pctDone}%</span>
+        </div>
+        <div class="text-[13px] font-bold text-slate-800">${kwDone} <span class="text-slate-400">/ ${kwTotal}</span></div>
+        <div class="text-[11px] text-slate-500 font-bold uppercase mt-1">完成进度</div>
+        <div class="w-full h-2 bg-emerald-100 rounded-full overflow-hidden mt-1.5">
+          <div class="h-full bg-emerald-500 rounded-full transition-all" style="width:${pctDone}%"></div>
+        </div>
+      </div>
+      <div class="bg-blue-50/50 rounded-md border border-blue-100 p-3">
+        <div class="flex items-center justify-between mb-1.5">
+          <span class="material-symbols-outlined icon-sm text-blue-400">trending_up</span>
+          <span class="text-[11px] font-black text-blue-600">${ratePerHour > 0 ? `${ratePerHour}/h` : '--'}</span>
+        </div>
+        <div class="text-[13px] font-bold text-slate-800">${todayKeywords} <span class="text-slate-400">词</span></div>
+        <div class="text-[11px] text-slate-500 font-bold uppercase mt-1">今日采集</div>
+      </div>
+      <div class="bg-violet-50/50 rounded-md border border-violet-100 p-3">
+        <div class="flex items-center justify-between mb-1.5">
+          <span class="material-symbols-outlined icon-sm text-violet-400">timer</span>
+          <span class="text-[11px] font-black text-violet-600">${todayRuns} 次</span>
+        </div>
+        <div class="text-[13px] font-bold text-slate-800">${durationLabel}</div>
+        <div class="text-[11px] text-slate-500 font-bold uppercase mt-1">今日时长</div>
+      </div>
+      <div class="bg-amber-50/50 rounded-md border border-amber-100 p-3">
+        <div class="flex items-center justify-between mb-1.5">
+          <span class="material-symbols-outlined icon-sm text-amber-400">schedule</span>
+        </div>
+        <div class="text-[13px] font-bold text-slate-800">${lastRunLabel}</div>
+        <div class="text-[11px] text-slate-500 font-bold uppercase mt-1">上次执行</div>
+      </div>
+    </div>`;
+}
+
+function buildCityCards(task: { cities: TaskCity[] }): string {
+    return task.cities
         .map((c: TaskCity, i: number) => {
             const isActive = i === activeCityIdx;
             const borderCls = isActive
@@ -185,7 +343,7 @@ export async function renderTaskView() {
                 c.status === CityStatus.DONE
                     ? '<span class="material-symbols-outlined text-green-500 icon-sm fill-1">check_circle</span>'
                     : c.status === CityStatus.ACTIVE
-                      ? `<div class="h-1.5 w-1.5 rounded-full bg-blue-500"></div>`
+                      ? '<div class="h-1.5 w-1.5 rounded-full bg-blue-500"></div>'
                       : '<span class="material-symbols-outlined text-slate-300 icon-sm">schedule</span>';
             const nameWeight = isActive
                 ? 'font-bold text-slate-900'
@@ -222,30 +380,31 @@ export async function renderTaskView() {
                       ? 'bg-blue-50/40'
                       : 'bg-slate-50/50';
             return `
-        <div class="${cardBg} rounded-md ${borderCls} p-3 cursor-pointer ${!isActive ? 'hover:bg-slate-50' : ''} transition-all relative overflow-hidden" style="width:220px;min-width:220px;flex-shrink:0" onclick="window.__switchCity(${i})">
-          <div class="flex items-center justify-between mb-2">
-            <div class="flex items-center space-x-2">
-              <span class="material-symbols-outlined icon-sm text-blue-400">location_city</span>
-              <span class="text-[13px] ${nameWeight}">${c.name}</span>
-            </div>
-            ${statusIcon}
+      <div class="${cardBg} rounded-md ${borderCls} p-3 cursor-pointer ${!isActive ? 'hover:bg-slate-50' : ''} transition-all relative overflow-hidden" style="width:220px;min-width:220px;flex-shrink:0" onclick="window.__switchCity(${i})">
+        <div class="flex items-center justify-between mb-2">
+          <div class="flex items-center space-x-2">
+            <span class="material-symbols-outlined icon-sm text-blue-400">location_city</span>
+            <span class="text-[13px] ${nameWeight}">${c.name}</span>
           </div>
-          <div class="text-[10px] text-slate-500 truncate mb-2" title="${c.poi}">
-            <span class="material-symbols-outlined icon-xs text-slate-300 align-middle mr-0.5">location_on</span>${c.poi}
-          </div>
-          <div class="w-full h-2 ${barBg} rounded-full overflow-hidden">
-            <div class="h-full ${barFill} rounded-full" style="width: ${pct}%"></div>
-          </div>
-          <div class="flex justify-between mt-2">
-            ${statsLabel}
-            ${pctLabel}
-          </div>
-        </div>`;
+          ${statusIcon}
+        </div>
+        <div class="text-[10px] text-slate-500 truncate mb-2" title="${c.poi}">
+          <span class="material-symbols-outlined icon-xs text-slate-300 align-middle mr-0.5">location_on</span>${c.poi}
+        </div>
+        <div class="w-full h-2 ${barBg} rounded-full overflow-hidden">
+          <div class="h-full ${barFill} rounded-full" style="width: ${pct}%"></div>
+        </div>
+        <div class="flex justify-between mt-2">
+          ${statsLabel}
+          ${pctLabel}
+        </div>
+      </div>`;
         })
         .join('');
+}
 
-    // ── Keyword Grid ──
-    const kwGrid = city.keywords
+function buildKeywordGrid(city: TaskCity): string {
+    return city.keywords
         .map((k: TaskKeyword) => {
             if (k.status === KeywordStatus.OK) {
                 return `<div class="kw-item flex items-center justify-between p-2 rounded bg-green-100/50 border border-green-200 transition-all hover:bg-green-100">
@@ -266,54 +425,6 @@ export async function renderTaskView() {
             }
         })
         .join('');
-
-    mid.innerHTML = `
-    <!-- Task Header -->
-    <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 mb-4 flex items-center justify-between shrink-0">
-      <div class="flex items-center gap-4">
-        <div class="w-12 h-12 bg-indigo-500/10 flex items-center justify-center rounded-xl shrink-0">
-          <span class="material-symbols-outlined text-indigo-500 text-2xl">hub</span>
-        </div>
-        <div>
-          <div class="flex items-center gap-2">
-            <h2 class="text-lg font-bold tracking-tight text-slate-800">${task.name}</h2>
-            <span class="px-2.5 py-0.5 ${badge.bg} ${badge.text} text-[11px] font-semibold rounded-full border ${badge.border}">${badge.label}</span>
-          </div>
-          ${deviceTag}
-        </div>
-      </div>
-      <div class="flex items-center gap-2.5">
-        ${btnStart}${btnPause}${btnResume}${btnRetry}${btnStop}
-      </div>
-    </div>
-
-    <!-- Metric Cards -->
-    ${metricCards}
-
-    <!-- City Cards -->
-    <div class="flex gap-2.5 mb-4 shrink-0 overflow-x-auto pb-1 scrollbar-hide">
-      ${cityCards}
-    </div>
-
-    <!-- Keywords Section -->
-    <div class="flex-1 bg-white rounded-md border border-[var(--panel-border)] shadow-sm overflow-hidden flex flex-col min-h-0">
-      <div class="px-4 py-2 bg-slate-50/50 border-b border-slate-100 flex items-center justify-between shrink-0">
-        <div class="flex items-center space-x-3">
-          <span class="text-[11px] font-black text-slate-500 uppercase tracking-tight">${city.name} ｜ 关键词 </span>
-          <span class="px-1.5 py-0.5 bg-slate-200/50 text-slate-600 rounded text-[10px] font-black">共 ${city.total} 个</span>
-        </div>
-        <div class="relative w-56">
-          <span class="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-sm">search</span>
-          <input class="w-full pl-9 pr-3 py-1.5 bg-white border border-slate-200 rounded-md text-xs focus:ring-2 focus:ring-blue-100 focus:border-blue-500 outline-none transition-all" placeholder="搜索关键词..." type="text" id="kw-filter-input" oninput="window.__filterKw(this.value)" />
-        </div>
-      </div>
-      <div class="p-4 overflow-y-auto flex-1">
-        <div class="flex flex-wrap gap-2" id="kw-grid">
-          ${kwGrid}
-        </div>
-      </div>
-    </div>
-  `;
 }
 
 /** 注册全局视图切换回调 */
@@ -335,7 +446,7 @@ export function registerViewActions() {
             if (i === activeCityIdx) return;
             setActiveCityIdx(i);
             await renderTaskView();
-            const cityContainer = document.querySelector('#col-mid .overflow-x-auto');
+            const cityContainer = document.getElementById('tv-cities');
             const cards = cityContainer?.querySelectorAll('[onclick*="__switchCity"]');
             if (cards && cards[i]) {
                 cards[i].scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
@@ -344,7 +455,7 @@ export function registerViewActions() {
 
         __filterKw: (val: unknown) => {
             const q = (val as string).toLowerCase();
-            document.querySelectorAll('#kw-grid .kw-item').forEach(el => {
+            document.querySelectorAll('#tv-kw-grid .kw-item').forEach(el => {
                 const name = el.textContent?.toLowerCase() || '';
                 (el as HTMLElement).style.display = name.includes(q) ? '' : 'none';
             });

@@ -70,7 +70,7 @@ export function showToast(msg: string, type: 'info' | 'warning' | 'error' = 'war
 
     const toast = document.createElement('div');
     toast.className = `toast-auto fixed top-6 left-1/2 -translate-x-1/2 z-[9999] px-6 py-3 rounded-full border ${colorMap[type]} text-xs font-medium shadow-md transition-all duration-300 opacity-0 -translate-y-4 flex items-center gap-2.5`;
-    toast.innerHTML = `<span class="material-symbols-outlined text-base ${iconColorMap[type]}">${iconMap[type]}</span><span>${msg}</span>`;
+    toast.innerHTML = `<span class="material-symbols-outlined text-base ${iconColorMap[type]}">${iconMap[type]}</span><span>${esc(msg)}</span>`;
     document.body.appendChild(toast);
 
     requestAnimationFrame(() => {

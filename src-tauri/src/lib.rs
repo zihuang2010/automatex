@@ -242,11 +242,11 @@ fn list_tasks(state: tauri::State<'_, AppState>) -> Vec<Task> {
     task_provider::load_tasks(&state.db)
 }
 
-/// 获取单个任务详情
+/// 获取单个任务详情（#4: 单任务加载，避免全量查询）
 #[tauri::command]
 fn get_task_detail(task_id: String, state: tauri::State<'_, AppState>) -> Result<Task, String> {
-    let tasks = task_provider::load_tasks(&state.db);
-    tasks.into_iter().find(|t| t.id == task_id).ok_or_else(|| format!("任务 {} 不存在", task_id))
+    task_provider::load_task_by_id(&state.db, &task_id)
+        .ok_or_else(|| format!("任务 {} 不存在", task_id))
 }
 
 /// 记录关键词完成
@@ -313,6 +313,26 @@ fn clear_task_progress(
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
     state.db.clear_task_progress(&task_id);
+    state.db.delete_task_state(&task_id); // #1: 同时重置状态
+    Ok("ok".to_string())
+}
+
+/// #1: 保存任务运行时状态
+#[tauri::command]
+fn save_task_state(
+    task_id: String,
+    status: String,
+    assigned_device: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    state.db.save_task_state(&task_id, &status, assigned_device.as_deref());
+    Ok("ok".to_string())
+}
+
+/// #1: 删除任务运行时状态（重置为 WAITING）
+#[tauri::command]
+fn delete_task_state(task_id: String, state: tauri::State<'_, AppState>) -> Result<String, String> {
+    state.db.delete_task_state(&task_id);
     Ok("ok".to_string())
 }
 
@@ -636,6 +656,8 @@ pub fn run() {
             get_daily_summary,
             clear_task_progress,
             get_task_run_stats,
+            save_task_state,
+            delete_task_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

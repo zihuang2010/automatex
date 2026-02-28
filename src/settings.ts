@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { $ } from './utils';
+import { $, showToast } from './utils';
 
 /* ===== Settings Panel ===== */
 
@@ -58,9 +58,19 @@ export function initSettings() {
     });
 
     $('#settings-save')?.addEventListener('click', async () => {
+        const host = ($('#set-mqtt-host') as HTMLInputElement).value.trim();
+        const portStr = ($('#set-mqtt-port') as HTMLInputElement).value.trim();
+        const port = parseInt(portStr, 10);
+
+        // #13: 基础输入校验
+        if (host && (isNaN(port) || port < 1 || port > 65535)) {
+            showToast('MQTT 端口号必须在 1-65535 之间', 'error');
+            return;
+        }
+
         const settings = {
-            mqtt_host: ($('#set-mqtt-host') as HTMLInputElement).value,
-            mqtt_port: ($('#set-mqtt-port') as HTMLInputElement).value,
+            mqtt_host: host,
+            mqtt_port: portStr || '1883',
             mqtt_client_id: ($('#set-mqtt-client-id') as HTMLInputElement).value,
             mqtt_username: ($('#set-mqtt-username') as HTMLInputElement).value,
             mqtt_password: ($('#set-mqtt-password') as HTMLInputElement).value,

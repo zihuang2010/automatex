@@ -116,6 +116,12 @@ impl Database {
         // 打开独立的读连接（WAL 模式下读写可并发）
         let reader = Connection::open(&db_path).map_err(|e| format!("打开读连接失败: {}", e))?;
 
+        // #1: 迁移——为 a_task_cache 添加运行时状态列（幂等）
+        let _ = writer.execute_batch(
+            "ALTER TABLE a_task_cache ADD COLUMN status TEXT NOT NULL DEFAULT 'WAITING';
+             ALTER TABLE a_task_cache ADD COLUMN assigned_device TEXT;",
+        );
+
         Ok(Self { writer: Mutex::new(writer), reader: Mutex::new(reader) })
     }
 
@@ -312,14 +318,44 @@ impl Database {
 
     // ─── 任务缓存操作 ────────────────────────────────────────────
 
-    /// 插入或更新任务缓存
+    /// 插入或更新任务缓存（#9: 仅更新定义字段，不覆盖 status/assigned_device）
     pub fn upsert_task_cache(&self, task_id: &str, name: &str, payload: &str, version: i64) {
         let conn = self.writer.lock().unwrap();
         let now = now_unix();
         let _ = conn.execute(
-            "INSERT OR REPLACE INTO a_task_cache (task_id, name, payload, version, fetched_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO a_task_cache (task_id, name, payload, version, fetched_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(task_id) DO UPDATE SET name=excluded.name, payload=excluded.payload, version=excluded.version, fetched_at=excluded.fetched_at",
             params![task_id, name, payload, version, now],
+        );
+    }
+
+    /// #1: 保存任务运行时状态
+    pub fn save_task_state(&self, task_id: &str, status: &str, assigned_device: Option<&str>) {
+        let conn = self.writer.lock().unwrap();
+        let _ = conn.execute(
+            "UPDATE a_task_cache SET status = ?2, assigned_device = ?3 WHERE task_id = ?1",
+            params![task_id, status, assigned_device],
+        );
+    }
+
+    /// #1: 加载任务运行时状态
+    pub fn load_task_state(&self, task_id: &str) -> Option<(String, Option<String>)> {
+        let conn = self.reader.lock().unwrap();
+        conn.query_row(
+            "SELECT status, assigned_device FROM a_task_cache WHERE task_id = ?1",
+            params![task_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .ok()
+    }
+
+    /// #1: 删除任务运行时状态（重跑时调用）
+    pub fn delete_task_state(&self, task_id: &str) {
+        let conn = self.writer.lock().unwrap();
+        let _ = conn.execute(
+            "UPDATE a_task_cache SET status = 'WAITING', assigned_device = NULL WHERE task_id = ?1",
+            params![task_id],
         );
     }
 
@@ -492,15 +528,32 @@ impl Database {
         );
     }
 
-    /// 结束执行记录
+    /// 结束执行记录（同时保存本轮完成数，确保多轮执行日统计正确）
     pub fn finish_task_run(&self, task_id: &str, started_at: i64, status: &str) {
         let conn = self.writer.lock().unwrap();
         let now = now_unix();
         let duration = now - started_at;
+
+        // 统计当前进度（在 clear_task_progress 之前调用）
+        let keywords_done: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM a_task_progress WHERE task_id = ?1",
+                params![task_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        let cities_done: i32 = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT city_name) FROM a_task_progress WHERE task_id = ?1",
+                params![task_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
         let _ = conn.execute(
-            "UPDATE a_task_runs SET ended_at = ?1, duration_sec = ?2, status = ?3
-             WHERE task_id = ?4 AND started_at = ?5",
-            params![now, duration, status, task_id, started_at],
+            "UPDATE a_task_runs SET ended_at = ?1, duration_sec = ?2, status = ?3, keywords_done = ?4, cities_done = ?5
+             WHERE task_id = ?6 AND started_at = ?7",
+            params![now, duration, status, keywords_done, cities_done, task_id, started_at],
         );
     }
 
@@ -582,7 +635,25 @@ impl Database {
             )
             .unwrap_or(0);
 
-        TaskRunStats { last_run_at, today_runs }
+        // 今日执行总时长（秒）
+        let today_duration_sec: i64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(duration_sec), 0) FROM a_task_runs WHERE task_id = ?1 AND run_date = ?2",
+                params![task_id, today],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        // 今日采集关键词数（从 a_task_runs 统计，确保多轮执行数据累加）
+        let today_keywords: i32 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(keywords_done), 0) FROM a_task_runs WHERE task_id = ?1 AND run_date = ?2",
+                params![task_id, today],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        TaskRunStats { last_run_at, today_runs, today_duration_sec, today_keywords }
     }
 }
 
@@ -593,6 +664,8 @@ impl Database {
 pub struct TaskRunStats {
     pub last_run_at: Option<i64>,
     pub today_runs: i32,
+    pub today_duration_sec: i64,
+    pub today_keywords: i32,
 }
 
 /// 任务缓存行

@@ -65,83 +65,108 @@ pub fn load_tasks(db: &Database) -> Vec<Task> {
     let mut tasks = Vec::new();
 
     for def in defs {
-        // 加载已完成记录
-        let progress = db.load_task_progress(&def.id);
-        let completed: HashSet<(String, String)> = progress
-            .iter()
-            .filter(|p| p.status == keyword_status::OK)
-            .map(|p| (p.city_name.clone(), p.keyword_name.clone()))
-            .collect();
-
-        // 合并定义 + 进度
-        let mut cities = Vec::new();
-        let mut all_done = true;
-
-        for city_def in &def.cities {
-            let mut keywords = Vec::new();
-            let mut done = 0;
-            let total = city_def.keywords.len() as i32;
-
-            for kw_name in &city_def.keywords {
-                let is_done = completed.contains(&(city_def.name.clone(), kw_name.clone()));
-                if is_done {
-                    done += 1;
-                }
-                keywords.push(TaskKeyword {
-                    name: kw_name.clone(),
-                    status: if is_done {
-                        keyword_status::OK.to_string()
-                    } else {
-                        keyword_status::PENDING.to_string()
-                    },
-                });
-            }
-
-            let city_status_val = if done >= total {
-                city_status::DONE.to_string()
-            } else {
-                all_done = false;
-                city_status::PENDING.to_string()
-            };
-
-            let progress =
-                if total > 0 { ((done as f64 / total as f64) * 100.0).round() as i32 } else { 0 };
-
-            cities.push(TaskCity {
-                name: city_def.name.clone(),
-                poi: city_def.poi.clone(),
-                progress,
-                total,
-                done,
-                status: city_status_val,
-                keywords,
-            });
-        }
-
-        // 激活第一个未完成的城市
-        if let Some(first_pending) = cities.iter_mut().find(|c| c.status == city_status::PENDING) {
-            first_pending.status = city_status::ACTIVE.to_string();
-        }
-
-        // 任务状态：有进度但未全完成 → PAUSED（上次中断），全完成 → SUCCESS
-        let task_status_val = if all_done && !completed.is_empty() {
-            task_status::SUCCESS
-        } else if !completed.is_empty() {
-            task_status::PAUSED
-        } else {
-            task_status::WAITING
-        };
-
-        tasks.push(Task {
-            id: def.id,
-            name: def.name,
-            status: task_status_val.to_string(),
-            assigned_device: None,
-            cities,
-        });
+        tasks.push(build_task(db, def));
     }
 
     tasks
+}
+
+/// #4: 加载单个任务（避免全量加载再过滤）
+pub fn load_task_by_id(db: &Database, target_id: &str) -> Option<Task> {
+    let defs = load_mock_definitions();
+    defs.into_iter().find(|d| d.id == target_id).map(|def| build_task(db, def))
+}
+
+/// 内部：从 Mock 定义 + DB 进度 + DB 状态 构建单个 Task
+fn build_task(db: &Database, def: MockTaskDef) -> Task {
+    // 加载已完成记录
+    let progress = db.load_task_progress(&def.id);
+    let completed: HashSet<(String, String)> = progress
+        .iter()
+        .filter(|p| p.status == keyword_status::OK)
+        .map(|p| (p.city_name.clone(), p.keyword_name.clone()))
+        .collect();
+
+    // 合并定义 + 进度
+    let mut cities = Vec::new();
+    let mut all_done = true;
+
+    for city_def in &def.cities {
+        let mut keywords = Vec::new();
+        let mut done = 0;
+        let total = city_def.keywords.len() as i32;
+
+        for kw_name in &city_def.keywords {
+            let is_done = completed.contains(&(city_def.name.clone(), kw_name.clone()));
+            if is_done {
+                done += 1;
+            }
+            keywords.push(TaskKeyword {
+                name: kw_name.clone(),
+                status: if is_done {
+                    keyword_status::OK.to_string()
+                } else {
+                    keyword_status::PENDING.to_string()
+                },
+            });
+        }
+
+        let city_status_val = if done >= total {
+            city_status::DONE.to_string()
+        } else {
+            all_done = false;
+            city_status::PENDING.to_string()
+        };
+
+        let progress =
+            if total > 0 { ((done as f64 / total as f64) * 100.0).round() as i32 } else { 0 };
+
+        cities.push(TaskCity {
+            name: city_def.name.clone(),
+            poi: city_def.poi.clone(),
+            progress,
+            total,
+            done,
+            status: city_status_val,
+            keywords,
+        });
+    }
+
+    // 激活第一个未完成的城市
+    if let Some(first_pending) = cities.iter_mut().find(|c| c.status == city_status::PENDING) {
+        first_pending.status = city_status::ACTIVE.to_string();
+    }
+
+    // 默认状态：从进度推断
+    let inferred_status = if all_done && !completed.is_empty() {
+        task_status::SUCCESS
+    } else if !completed.is_empty() {
+        task_status::PAUSED
+    } else {
+        task_status::WAITING
+    };
+
+    // #1: 从 DB 加载保存的运行时状态（覆盖推断值）
+    let final_status = match db.load_task_state(&def.id) {
+        Some((saved_status, _)) => {
+            // EXECUTING → PAUSED（重启后设备不再绑定）
+            if saved_status == task_status::EXECUTING {
+                task_status::PAUSED.to_string()
+            } else if saved_status == task_status::WAITING
+                && inferred_status != task_status::WAITING
+            {
+                // 如果 DB 记录 WAITING 但实际有进度，以推断为准
+                inferred_status.to_string()
+            } else {
+                saved_status
+            }
+        },
+        None => inferred_status.to_string(),
+    };
+    // 重启后统一释放设备绑定（与手动暂停/停止行为一致）
+    let assigned_device: Option<String> = None;
+
+    Task { id: def.id, name: def.name, status: final_status, assigned_device, cities }
 }
 
 /// 从嵌入资源读取 Mock 任务定义

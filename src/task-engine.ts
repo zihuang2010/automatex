@@ -33,21 +33,28 @@ export function releaseTasksForOfflineDevices(onlineSerials: Set<string>): numbe
             );
             stopTaskExecution(task.id);
             task.status = TaskStatus.ERROR;
+            task.assigned_device = null; // #7: 清除已离线的设备绑定
+            // #1: 持久化 ERROR 状态
+            invoke('save_task_state', {
+                taskId: task.id,
+                status: TaskStatus.ERROR,
+                assignedDevice: null,
+            }).catch(() => {});
             released++;
         }
     }
     return released;
 }
 
-/** 启动任务执行引擎（前端定时推进关键词 + 后端持久化） */
+/** 启动任务执行引擎（前端定时推进关键词 + 后端持久化）
+ *  #6: 改用递归 setTimeout，等 async 完成后再启动下一轮，避免并行 IPC */
 export function startTaskExecution(taskId: string) {
     if (taskTimers.has(taskId)) return;
 
-    const timer = setInterval(async () => {
+    async function tick() {
         try {
             const task = globalQueue.find((t: Task) => t.id === taskId);
             if (!task || task.status !== TaskStatus.EXECUTING) {
-                clearInterval(timer);
                 taskTimers.delete(taskId);
                 return;
             }
@@ -59,7 +66,6 @@ export function startTaskExecution(taskId: string) {
             }
             if (!activeCity) {
                 task.status = TaskStatus.SUCCESS;
-                clearInterval(timer);
                 taskTimers.delete(taskId);
                 const startedAt = taskRunStarted.get(taskId);
                 if (startedAt) {
@@ -102,7 +108,6 @@ export function startTaskExecution(taskId: string) {
                     nextCity.status = CityStatus.ACTIVE;
                 } else {
                     task.status = TaskStatus.SUCCESS;
-                    clearInterval(timer);
                     taskTimers.delete(taskId);
                     const startedAt = taskRunStarted.get(taskId);
                     if (startedAt) {
@@ -120,8 +125,15 @@ export function startTaskExecution(taskId: string) {
         } catch (err) {
             console.error(`[TaskEngine] 任务 ${taskId} 执行异常:`, err);
         }
-    }, 10000);
 
+        // 递归 setTimeout：上一轮完成后才启动下一轮计时
+        if (taskTimers.has(taskId)) {
+            const next = setTimeout(tick, 10000);
+            taskTimers.set(taskId, next);
+        }
+    }
+
+    const timer = setTimeout(tick, 10000);
     taskTimers.set(taskId, timer);
 }
 
@@ -129,7 +141,7 @@ export function startTaskExecution(taskId: string) {
 export function stopTaskExecution(taskId: string) {
     const timer = taskTimers.get(taskId);
     if (timer) {
-        clearInterval(timer);
+        clearTimeout(timer);
         taskTimers.delete(taskId);
     }
 }
@@ -150,6 +162,7 @@ export function registerTaskActions() {
         __taskStart: async (taskId: string) => {
             const task = globalQueue.find(t => t.id === taskId);
             if (!task) return;
+            if (task.status !== TaskStatus.WAITING) return; // #10: 防重复启动
             const readySerials = getReadySerials();
             if (!readySerials.length) {
                 showToast('当前没有就绪的设备，请先连接设备');
@@ -158,6 +171,12 @@ export function registerTaskActions() {
             task.assigned_device = readySerials[0];
             task.status = TaskStatus.EXECUTING;
             setSelectedDevice(readySerials[0]);
+            // #1: 持久化状态
+            await invoke('save_task_state', {
+                taskId,
+                status: TaskStatus.EXECUTING,
+                assignedDevice: readySerials[0],
+            });
             const startedAt = await invoke<number>('start_task_run', {
                 taskId,
                 deviceSerial: readySerials[0],
@@ -171,8 +190,14 @@ export function registerTaskActions() {
             const task = globalQueue.find(t => t.id === taskId);
             if (!task) return;
             stopTaskExecution(taskId);
-            task.status = TaskStatus.PAUSED;
-            task.assigned_device = null;
+            task.status = TaskStatus.PAUSED; // #2: 先设状态
+            task.assigned_device = null; // 再清绑定
+            // #1: 持久化状态
+            await invoke('save_task_state', {
+                taskId,
+                status: TaskStatus.PAUSED,
+                assignedDevice: null,
+            });
             const startedAt = taskRunStarted.get(taskId);
             if (startedAt) {
                 await invoke('finish_task_run', { taskId, startedAt, status: RunStatus.PAUSED });
@@ -194,6 +219,12 @@ export function registerTaskActions() {
             task.assigned_device = serial;
             task.status = TaskStatus.EXECUTING;
             setSelectedDevice(serial);
+            // #1: 持久化状态
+            await invoke('save_task_state', {
+                taskId,
+                status: TaskStatus.EXECUTING,
+                assignedDevice: serial,
+            });
             const startedAt = await invoke<number>('start_task_run', {
                 taskId,
                 deviceSerial: serial,
@@ -207,12 +238,30 @@ export function registerTaskActions() {
             const task = globalQueue.find(t => t.id === taskId);
             if (!task) return;
             stopTaskExecution(taskId);
-            task.status = TaskStatus.WAITING;
-            task.assigned_device = null;
             const startedAt = taskRunStarted.get(taskId);
             if (startedAt) {
                 await invoke('finish_task_run', { taskId, startedAt, status: RunStatus.STOPPED });
                 taskRunStarted.delete(taskId);
+            }
+            // 停止 = 彻底回到 WAITING + 清除进度
+            await invoke('clear_task_progress', { taskId });
+            // 从后端重新加载干净的任务数据
+            const freshTasks = await invoke<Task[]>('list_tasks');
+            const freshTask = freshTasks.find((t: Task) => t.id === taskId);
+            const idx = globalQueue.indexOf(task);
+            if (freshTask && idx >= 0) {
+                globalQueue[idx] = freshTask;
+            } else {
+                task.status = TaskStatus.WAITING;
+                task.assigned_device = null;
+                task.cities.forEach(c => {
+                    c.done = 0;
+                    c.progress = 0;
+                    c.status = 'pending';
+                    c.keywords.forEach(k => {
+                        k.status = 'pending';
+                    });
+                });
             }
             setSelectedDevice(null);
             await afterTaskAction();
@@ -229,11 +278,14 @@ export function registerTaskActions() {
             await invoke('clear_task_progress', { taskId });
             const freshTasks = await invoke<Task[]>('list_tasks');
             const freshTask = freshTasks.find((t: Task) => t.id === taskId);
-            if (freshTask) {
-                Object.assign(task, freshTask);
-            }
-            task.assigned_device = readySerials[0];
-            task.status = TaskStatus.EXECUTING;
+            // #3: 整体替换而非 Object.assign，避免旧属性残留
+            const idx = globalQueue.indexOf(task);
+            const updatedTask: Task = {
+                ...(freshTask ?? task),
+                assigned_device: readySerials[0],
+                status: TaskStatus.EXECUTING,
+            };
+            if (idx >= 0) globalQueue[idx] = updatedTask;
             setSelectedDevice(readySerials[0]);
             const startedAt = await invoke<number>('start_task_run', {
                 taskId,
@@ -251,10 +303,16 @@ export function registerTaskActions() {
     }
 }
 
-/** 清理所有定时器（页面卸载时调用） */
+/** 清理所有定时器（页面卸载时调用）
+ *  #14: 同时结束未完成的执行记录，避免 DB 中残留 running 状态 */
 export function cleanupAllTimers() {
     for (const [id, timer] of taskTimers) {
-        clearInterval(timer);
+        clearTimeout(timer);
         taskTimers.delete(id);
     }
+    // 尝试结束所有未关闭的执行记录
+    for (const [taskId, startedAt] of taskRunStarted) {
+        invoke('finish_task_run', { taskId, startedAt, status: RunStatus.STOPPED }).catch(() => {});
+    }
+    taskRunStarted.clear();
 }
