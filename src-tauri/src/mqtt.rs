@@ -65,7 +65,7 @@ impl MqttManager {
         *self.status.lock().await = MqttStatus::Connecting;
 
         let mut opts = MqttOptions::new(&config.client_id, &config.broker_host, config.broker_port);
-        opts.set_keep_alive(Duration::from_secs(30));
+        opts.set_keep_alive(Duration::from_secs(crate::constants::timing::MQTT_KEEP_ALIVE_SECS));
 
         if let (Some(ref user), Some(ref pass)) = (&config.username, &config.password) {
             if !user.is_empty() {

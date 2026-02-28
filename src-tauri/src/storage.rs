@@ -270,6 +270,37 @@ impl Database {
         .unwrap_or_default()
     }
 
+    /// 按 serial 查询单台设备（O(1) 查询，替代 load_all_devices + 内存过滤）
+    pub fn get_device_by_serial(&self, serial: &str) -> Option<DeviceRow> {
+        let conn = self.reader.lock().unwrap();
+        conn.query_row(
+            "SELECT serial, hw_serial, name, device_type, address, state,
+                    model, brand, android_version, sdk_version, display_resolution,
+                    battery_level, battery_temperature, updated_at
+             FROM a_devices WHERE serial = ?1",
+            params![serial],
+            |row| {
+                Ok(DeviceRow {
+                    serial: row.get(0)?,
+                    hw_serial: row.get(1)?,
+                    name: row.get(2)?,
+                    device_type: row.get(3)?,
+                    address: row.get(4)?,
+                    state: row.get(5)?,
+                    model: row.get(6)?,
+                    brand: row.get(7)?,
+                    android_version: row.get(8)?,
+                    sdk_version: row.get(9)?,
+                    display_resolution: row.get(10)?,
+                    battery_level: row.get(11)?,
+                    battery_temperature: row.get(12)?,
+                    updated_at: row.get(13)?,
+                })
+            },
+        )
+        .ok()
+    }
+
     /// 获取设置值
     pub fn get_setting(&self, key: &str) -> Option<String> {
         let conn = self.reader.lock().unwrap();
@@ -293,6 +324,7 @@ impl Database {
     }
 
     /// 加载单个任务缓存
+    #[allow(dead_code)]
     pub fn load_task_cache(&self, task_id: &str) -> Option<TaskCacheRow> {
         let conn = self.reader.lock().unwrap();
         conn.query_row(
@@ -312,6 +344,7 @@ impl Database {
     }
 
     /// 加载所有任务缓存
+    #[allow(dead_code)]
     pub fn load_all_task_caches(&self) -> Vec<TaskCacheRow> {
         let conn = self.reader.lock().unwrap();
         let mut stmt = match conn.prepare(
@@ -334,6 +367,7 @@ impl Database {
     }
 
     /// 删除任务缓存
+    #[allow(dead_code)]
     pub fn delete_task_cache(&self, task_id: &str) {
         let conn = self.writer.lock().unwrap();
         let _ = conn.execute("DELETE FROM a_task_cache WHERE task_id = ?1", params![task_id]);
@@ -390,6 +424,7 @@ impl Database {
     }
 
     /// 获取未同步的进度记录（离线恢复后批量上传）
+    #[allow(dead_code)]
     pub fn load_pending_progress(&self) -> Vec<ProgressRow> {
         let conn = self.reader.lock().unwrap();
         let mut stmt = match conn.prepare(
@@ -414,6 +449,7 @@ impl Database {
     }
 
     /// 标记进度为已同步
+    #[allow(dead_code)]
     pub fn mark_progress_synced(&self, task_id: &str, city_name: &str, keyword_name: &str) {
         let conn = self.writer.lock().unwrap();
         let _ = conn.execute(
@@ -440,6 +476,7 @@ impl Database {
     }
 
     /// 更新执行记录统计
+    #[allow(dead_code)]
     pub fn update_task_run_stats(
         &self,
         task_id: &str,
@@ -559,6 +596,7 @@ pub struct TaskRunStats {
 }
 
 /// 任务缓存行
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskCacheRow {
     pub task_id: String,
@@ -604,20 +642,7 @@ fn now_unix() -> i64 {
         as i64
 }
 
+/// 获取本地时区的今日日期字符串（YYYY-MM-DD）
 fn today_str() -> String {
-    let now = now_unix();
-    // 从 Unix 时间戳计算 UTC 日期（Civil date from days since epoch）
-    let days = (now / 86400) as i64;
-    // 算法来自 Howard Hinnant: http://howardhinnant.github.io/date_algorithms.html
-    let z = days + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as u32;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = (yoe as i64) + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    format!("{:04}-{:02}-{:02}", y, m, d)
+    chrono::Local::now().format("%Y-%m-%d").to_string()
 }

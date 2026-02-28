@@ -44,3 +44,21 @@ pub mod run_status {
     pub const STOPPED: &str = "stopped";
     pub const PAUSED: &str = "paused";
 }
+
+/// 时间间隔常量（秒）
+pub mod timing {
+    /// 电池/温度定时刷新间隔
+    pub const BATTERY_REFRESH_INTERVAL_SECS: u64 = 20;
+    /// ADB track_devices 断开后重连等待
+    pub const ADB_RECONNECT_WAIT_SECS: u64 = 5;
+    /// WiFi 设备连接超时
+    pub const WIFI_CONNECT_TIMEOUT_SECS: u64 = 5;
+    /// MQTT keep-alive 间隔
+    pub const MQTT_KEEP_ALIVE_SECS: u64 = 30;
+}
+
+/// 允许保存的设置键白名单
+pub mod settings {
+    pub const ALLOWED_KEYS: &[&str] =
+        &["mqtt_host", "mqtt_port", "mqtt_client_id", "mqtt_username", "mqtt_password"];
+}

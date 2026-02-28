@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 /// 获取内嵌 adb 的路径（Tauri sidecar，与可执行文件同目录）
 pub fn adb_path() -> &'static str {
@@ -60,54 +60,33 @@ pub struct ShellResult {
 
 // ─── Device Manager ─────────────────────────────────────────────
 
-pub struct DeviceManager {
-    /// 用户手动添加的设备列表（WiFi 设备）
-    pub devices: Mutex<Vec<DeviceEntry>>,
-}
+/// ADB 操作管理器（无状态，设备列表由 DB 统一管理）
+pub struct DeviceManager;
 
 impl DeviceManager {
     pub fn new() -> Self {
-        Self { devices: Mutex::new(Vec::new()) }
+        Self
     }
 
-    /// 添加 WiFi 设备
-    pub fn add_wifi_device(&self, address: &str, name: &str) -> Result<DeviceEntry, String> {
+    /// 构建 WiFi 设备条目（不再维护内存列表，设备持久化由调用方负责）
+    pub fn build_wifi_entry(address: &str, name: &str) -> Result<DeviceEntry, String> {
         let addr = parse_wifi_address(address)?;
         let normalized = addr.to_string();
-
-        let mut devices = self.devices.lock().unwrap();
-
-        // 检查是否已添加
-        if devices
-            .iter()
-            .any(|d| d.address.as_deref() == Some(&normalized) || d.serial == normalized)
-        {
-            return Err(format!("设备 {} 已存在", normalized));
-        }
-
         let entry_name = if name.is_empty() { normalized.clone() } else { name.to_string() };
 
-        let entry = DeviceEntry {
+        Ok(DeviceEntry {
             serial: normalized.clone(),
             name: entry_name,
             device_type: DeviceType::Wifi,
             address: Some(normalized),
-        };
-
-        devices.push(entry.clone());
-        Ok(entry)
+        })
     }
 
-    /// 移除设备（同时断开 WiFi 连接）
-    pub fn remove_device_and_disconnect(&self, serial: &str) -> Result<(), String> {
-        // Phase 1: 不持锁执行 ADB 断开（可能阻塞）
+    /// 断开 WiFi 设备的 ADB 连接
+    pub fn disconnect_wifi(serial: &str) {
         if serial.contains(':') {
             let _ = adb_command().args(["disconnect", serial]).output();
         }
-        // Phase 2: 持锁移除（瞬时操作）
-        let mut devices = self.devices.lock().unwrap();
-        devices.retain(|d| d.serial != serial && d.address.as_deref() != Some(serial));
-        Ok(())
     }
 
     /// 在设备上执行 shell 命令
@@ -166,8 +145,8 @@ impl DeviceManager {
             .spawn()
             .map_err(|e| format!("执行 adb connect 失败: {}", e))?;
 
-        // 5 秒超时
-        let timeout = std::time::Duration::from_secs(5);
+        let timeout =
+            std::time::Duration::from_secs(crate::constants::timing::WIFI_CONNECT_TIMEOUT_SECS);
         let start = std::time::Instant::now();
         loop {
             match child.try_wait() {

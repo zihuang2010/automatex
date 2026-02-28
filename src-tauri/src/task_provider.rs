@@ -50,16 +50,21 @@ struct MockCityDef {
 
 // ─── 任务提供者 ─────────────────────────────────────────────────
 
-/// 加载 Mock JSON 任务定义，合并 DB 中的已完成进度，返回恢复后的任务列表
+/// 同步任务缓存到数据库（仅在启动时调用一次）
+pub fn sync_task_cache(db: &Database) {
+    let defs = load_mock_definitions();
+    for def in defs {
+        let payload = serde_json::to_string(&def.cities).unwrap_or_default();
+        db.upsert_task_cache(&def.id, &def.name, &payload, 1);
+    }
+}
+
+/// 加载 Mock JSON 任务定义，合并 DB 中的已完成进度，返回恢复后的任务列表（纯读操作）
 pub fn load_tasks(db: &Database) -> Vec<Task> {
     let defs = load_mock_definitions();
     let mut tasks = Vec::new();
 
     for def in defs {
-        // 从 DB 缓存并获取已完成进度
-        let payload = serde_json::to_string(&def.cities).unwrap_or_default();
-        db.upsert_task_cache(&def.id, &def.name, &payload, 1);
-
         // 加载已完成记录
         let progress = db.load_task_progress(&def.id);
         let completed: HashSet<(String, String)> = progress
