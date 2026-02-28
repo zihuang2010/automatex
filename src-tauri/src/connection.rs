@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::{Mutex, OnceLock};
 
 /// 获取内嵌 adb 的路径（Tauri sidecar，与可执行文件同目录）
@@ -61,14 +60,6 @@ pub struct ShellResult {
     pub success: bool,
     pub output: String,
     pub error: String,
-}
-
-// ─── ADB Server 连接地址 ─────────────────────────────────────────
-
-const ADB_SERVER_PORT: u16 = 5037;
-
-fn adb_server_addr() -> SocketAddrV4 {
-    SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), ADB_SERVER_PORT)
 }
 
 // ─── Device Manager ─────────────────────────────────────────────
