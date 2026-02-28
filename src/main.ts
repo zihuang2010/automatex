@@ -603,7 +603,12 @@ function renderTaskView() {
             border: 'border-green-100',
             label: '已完成',
         },
-        ERROR: { bg: 'bg-red-50', text: 'text-red-600', border: 'border-red-100', label: '出错' },
+        ERROR: {
+            bg: 'bg-red-50',
+            text: 'text-red-600',
+            border: 'border-red-100',
+            label: '错误异常',
+        },
     };
     const badge = statusBadgeMap[task.status] ?? statusBadgeMap['WAITING'];
 
@@ -971,7 +976,7 @@ function loadChainForDevice(_serial: string) {
           </div>
           ${statsRow}
           <div class="flex justify-between items-center mt-2">
-            <span class="text-[10px] font-semibold text-slate-500">当前进度</span>
+            <span class="text-[10px] font-semibold text-slate-400">当前进度</span>
             <span class="text-[10px] font-bold text-[#2563EB]">${pct}%</span>
           </div>
           <div class="absolute bottom-0 left-1 right-0 h-[2px] bg-slate-100 overflow-hidden">
@@ -1037,9 +1042,9 @@ function loadChainForDevice(_serial: string) {
         <div class="w-1 self-stretch bg-red-500"></div>
         <div class="flex-1 p-3">
           <div class="flex justify-between items-start mb-2">
-            <h4 class="font-semibold text-sm text-slate-900 leading-tight truncate pr-2">${esc(q.name)}</h4>
+            <h4 class="font-semibold text-sm text-slate-700 leading-tight truncate pr-2">${esc(q.name)}</h4>
             <div class="bg-slate-100 px-2 py-0.5 rounded-full shrink-0">
-              <span class="text-[10px] font-bold text-red-500">出错</span>
+              <span class="text-[11px] font-bold text-red-500">错误异常</span>
             </div>
           </div>
           <p class="mono-technical text-[10px] text-slate-400 font-medium mb-2">设备: ${esc(deviceSub)}</p>
