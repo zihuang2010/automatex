@@ -1156,10 +1156,9 @@ function loadChainForDevice(_serial: string) {
               <span class="text-[10px] font-bold text-amber-600">已暂停</span>
             </div>
           </div>
-          <p class="mono-technical text-[10px] text-amber-600 font-medium mb-2">设备: ${esc(deviceSub)}</p>
           ${statsRow}
-          <div class="mt-auto flex justify-between items-center mb-1 mt-3">
-            <span class="text-[10px] font-medium text-slate-400">暂停于</span>
+          <div class="flex justify-between items-center mt-2">
+            <span class="text-[10px] font-semibold text-slate-400">暂停进度</span>
             <span class="text-[10px] font-bold text-amber-600">${pct}%</span>
           </div>
           <div class="absolute bottom-0 left-1 right-0 h-[2px] bg-slate-100 overflow-hidden">

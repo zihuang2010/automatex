@@ -4,7 +4,7 @@
         <meta charset="UTF-8" />
         <link rel="stylesheet" href="/src/styles.css" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>AutomateX 工作台 PRO v2</title>
+        <title>AutomateX 工作台 PRO</title>
     </head>
 
     <body>
@@ -402,104 +402,114 @@
 
                 <!-- Body -->
                 <div class="p-6 space-y-8">
-                    <!-- MQTT Server -->
                     <section class="space-y-4">
                         <h2 class="text-xs font-bold uppercase tracking-wider text-gray-400 px-1">
                             MQTT 服务器
                         </h2>
-                        <div class="space-y-4">
+                        <div class="space-y-5">
                             <div class="grid grid-cols-12 gap-4">
-                                <div class="col-span-8 space-y-1.5">
-                                    <label class="text-sm font-medium text-gray-600 px-1"
+                                <div class="col-span-8 space-y-2">
+                                    <label class="block text-sm font-medium text-gray-600 px-1"
                                         >主机</label
                                     >
                                     <input
                                         type="text"
                                         id="set-mqtt-host"
                                         placeholder="127.0.0.1"
-                                        class="w-full bg-gray-50 border border-gray-200 rounded-lg px-4 py-2.5 text-gray-700 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-mono text-sm outline-none"
+                                        class="w-full bg-gray-50/50 border border-gray-200 rounded-lg px-4 py-2.5 text-gray-700 focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all font-mono text-sm outline-none"
                                     />
                                 </div>
-                                <div class="col-span-4 space-y-1.5">
-                                    <label class="text-sm font-medium text-gray-600 px-1"
+                                <div class="col-span-4 space-y-2">
+                                    <label class="block text-sm font-medium text-gray-600 px-1"
                                         >端口</label
                                     >
                                     <input
                                         type="number"
                                         id="set-mqtt-port"
                                         placeholder="1883"
-                                        class="w-full bg-gray-50 border border-gray-200 rounded-lg px-4 py-2.5 text-gray-700 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-mono text-sm outline-none"
+                                        class="w-full bg-gray-50/50 border border-gray-200 rounded-lg px-4 py-2.5 text-gray-700 focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all font-mono text-sm outline-none"
                                     />
                                 </div>
                             </div>
-                            <div class="space-y-1.5">
-                                <label class="text-sm font-medium text-gray-600 px-1"
+
+                            <div class="space-y-2">
+                                <label class="block text-sm font-medium text-gray-600 px-1"
                                     >客户端 ID</label
                                 >
                                 <input
                                     type="text"
                                     id="set-mqtt-client-id"
                                     placeholder="automatex-001"
-                                    class="w-full bg-gray-50 border border-gray-200 rounded-lg px-4 py-2.5 text-gray-700 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-mono text-sm outline-none"
+                                    class="w-full bg-gray-50/50 border border-gray-200 rounded-lg px-4 py-2.5 text-gray-700 focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all font-mono text-sm outline-none"
                                 />
                             </div>
+
                             <div class="grid grid-cols-2 gap-4">
-                                <div class="space-y-1.5">
-                                    <label class="text-sm font-medium text-gray-600 px-1"
+                                <div class="space-y-2">
+                                    <label class="block text-sm font-medium text-gray-600 px-1"
                                         >用户名
-                                        <span class="text-gray-400 font-normal">(可选)</span></label
+                                        <span class="text-gray-400 font-normal text-xs"
+                                            >(可选)</span
+                                        ></label
                                     >
                                     <input
                                         type="text"
                                         id="set-mqtt-username"
-                                        placeholder="用户名"
-                                        class="w-full bg-gray-50 border border-gray-200 rounded-lg px-4 py-2.5 text-gray-700 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm outline-none"
+                                        placeholder="请输入用户名"
+                                        class="w-full bg-gray-50/50 border border-gray-200 rounded-lg px-4 py-2.5 text-gray-700 focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all text-sm outline-none"
                                     />
                                 </div>
-                                <div class="space-y-1.5">
-                                    <label class="text-sm font-medium text-gray-600 px-1"
+                                <div class="space-y-2">
+                                    <label class="block text-sm font-medium text-gray-600 px-1"
                                         >密码
-                                        <span class="text-gray-400 font-normal">(可选)</span></label
+                                        <span class="text-gray-400 font-normal text-xs"
+                                            >(可选)</span
+                                        ></label
                                     >
                                     <input
                                         type="password"
                                         id="set-mqtt-password"
-                                        placeholder="密码"
-                                        class="w-full bg-gray-50 border border-gray-200 rounded-lg px-4 py-2.5 text-gray-700 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm outline-none"
+                                        placeholder="请输入密码"
+                                        class="w-full bg-gray-50/50 border border-gray-200 rounded-lg px-4 py-2.5 text-gray-700 focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all text-sm outline-none"
                                     />
                                 </div>
                             </div>
                         </div>
                     </section>
 
-                    <!-- MQTT Status -->
                     <section class="space-y-4">
                         <h2 class="text-xs font-bold uppercase tracking-wider text-gray-400 px-1">
                             MQTT 状态
                         </h2>
                         <div
-                            class="flex items-center justify-between p-4 bg-gray-50 rounded-xl border border-dashed border-gray-200"
+                            class="flex items-center justify-between p-4 bg-white rounded-xl border border-gray-100 shadow-sm"
                         >
                             <div class="flex items-center gap-3">
+                                <span class="relative flex h-2.5 w-2.5">
+                                    <span
+                                        class="animate-ping absolute inline-flex h-full w-full rounded-full bg-gray-300 opacity-75"
+                                        id="mqtt-ping"
+                                    ></span>
+                                    <span
+                                        class="relative inline-flex rounded-full h-2.5 w-2.5 bg-gray-300"
+                                        id="mqtt-dot"
+                                    ></span>
+                                </span>
                                 <span
-                                    class="w-2.5 h-2.5 rounded-full bg-gray-300"
-                                    id="mqtt-dot"
-                                ></span>
-                                <span
-                                    class="text-sm font-medium text-gray-500"
+                                    class="text-sm font-semibold text-gray-500"
                                     id="mqtt-status-text"
                                     >未连接</span
                                 >
                             </div>
                             <div class="flex gap-2">
                                 <button
-                                    class="px-4 py-1.5 text-sm font-medium rounded-full border border-emerald-500 text-emerald-600 hover:bg-emerald-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                    class="px-5 py-1.5 text-sm font-bold rounded-full border-2 border-emerald-500/20 text-emerald-600 hover:bg-emerald-50 hover:border-emerald-500/40 transition-all active:scale-95 disabled:opacity-40"
                                     id="btn-mqtt-connect"
                                 >
                                     连接
                                 </button>
                                 <button
-                                    class="px-4 py-1.5 text-sm font-medium rounded-full border border-rose-400 text-rose-500 hover:bg-rose-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                    class="px-5 py-1.5 text-sm font-bold rounded-full border-2 border-rose-500/10 text-rose-400 hover:bg-rose-50 hover:border-rose-500/30 transition-all active:scale-95 disabled:opacity-40"
                                     id="btn-mqtt-disconnect"
                                     disabled
                                 >
