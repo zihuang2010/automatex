@@ -1153,7 +1153,7 @@ function loadChainForDevice(_serial: string) {
           <div class="flex justify-between items-start mb-2">
             <h4 class="font-semibold text-xs text-slate-700 leading-tight truncate pr-2">${esc(q.name)}</h4>
             <div class="bg-slate-100 px-2 py-0.5 rounded-full shrink-0">
-              <span class="text-[10px] font-bold text-amber-600">已暂停</span>
+              <span class="text-[11px] font-bold text-amber-600">已暂停</span>
             </div>
           </div>
           ${statsRow}
@@ -1188,7 +1188,7 @@ function loadChainForDevice(_serial: string) {
           <div class="flex justify-between items-start mb-2">
             <h4 class="font-semibold text-xs text-slate-700 leading-tight truncate pr-2">${esc(q.name)}</h4>
             <div class="bg-slate-100 px-2 py-0.5 rounded-full shrink-0">
-              <span class="text-[10px] font-bold text-[#10B981]">已完成</span>
+              <span class="text-[11px] font-bold text-[#10B981]">已完成</span>
             </div>
           </div>
           ${statsRow}
