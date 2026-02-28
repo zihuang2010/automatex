@@ -7,7 +7,7 @@ mod task_provider;
 use connection::{DeviceManager, ShellResult};
 use mqtt::{MqttConfig, MqttManager, MqttStatus};
 use std::sync::Arc;
-use storage::{DailyStatRow, DailySummary, DeviceRow};
+use storage::{DailyStatRow, DailySummary, DeviceRow, TaskRunStats};
 use task_provider::Task;
 use tauri::{Emitter, Manager};
 
@@ -294,6 +294,12 @@ fn get_daily_stats(
 #[tauri::command]
 fn get_daily_summary(run_date: String, state: tauri::State<'_, AppState>) -> DailySummary {
     state.db.query_daily_summary(&run_date)
+}
+
+/// 查询任务执行统计（最近执行时间 + 今日执行次数）
+#[tauri::command]
+fn get_task_run_stats(task_id: String, state: tauri::State<'_, AppState>) -> TaskRunStats {
+    state.db.query_task_run_stats(&task_id)
 }
 
 /// 清除任务进度（重跑）
@@ -595,6 +601,7 @@ pub fn run() {
             get_daily_stats,
             get_daily_summary,
             clear_task_progress,
+            get_task_run_stats,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

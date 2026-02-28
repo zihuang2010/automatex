@@ -58,11 +58,7 @@ const taskRunStarted = new Map<string, number>();
 function getAssignedDeviceSerials(): Set<string> {
     return new Set(
         globalQueue
-            .filter(
-                t =>
-                    t.assigned_device &&
-                    (t.status === TaskStatus.EXECUTING || t.status === TaskStatus.PAUSED),
-            )
+            .filter(t => t.assigned_device && t.status === TaskStatus.EXECUTING)
             .map(t => t.assigned_device!),
     );
 }
@@ -694,7 +690,7 @@ function loadTasksForDevice(serial: string) {
     loadChainForDevice(serial);
 }
 
-function renderTaskView() {
+async function renderTaskView() {
     const mid = document.getElementById('col-mid')!;
     const task = activeTask;
     if (!task) {
@@ -703,6 +699,25 @@ function renderTaskView() {
     }
     const city = task.cities[activeCityIdx];
     const execDevice = task.assigned_device ? resolveDeviceLabel(task.assigned_device) : '';
+
+    // 获取任务执行统计
+    let lastRunTime = '--';
+    let lastRunDate = '';
+    let todayRuns = 0;
+    try {
+        const stats = await invoke<{ last_run_at: number; today_runs: number }>(
+            'get_task_run_stats',
+            { taskId: task.id },
+        );
+        if (stats.last_run_at > 0) {
+            const rt = formatRunTime(stats.last_run_at);
+            lastRunTime = rt.time;
+            lastRunDate = rt.date;
+        }
+        todayRuns = stats.today_runs;
+    } catch {
+        /* 首次无记录 */
+    }
 
     // 状态徽章映射
     const statusBadgeMap: Record<
@@ -742,59 +757,101 @@ function renderTaskView() {
     };
     const badge = statusBadgeMap[task.status] ?? statusBadgeMap[TaskStatus.WAITING];
 
-    // 设备信息行
-    const deviceLine = task.assigned_device
-        ? `<span class="text-[10px] font-bold text-blue-600 uppercase tracking-tight">执行设备: ${esc(execDevice)}</span>`
-        : `<span class="text-[10px] font-bold text-slate-400 uppercase tracking-tight">未分配设备</span>`;
+    // 设备标签（始终渲染以保持固定高度，无设备时 invisible 占位）
+    const deviceTag = task.assigned_device
+        ? `<div class="flex items-center gap-1.5 mt-1 text-blue-600 text-xs font-semibold">
+         <span class="material-symbols-outlined text-sm fill-0">smartphone</span>${esc(execDevice)}
+       </div>`
+        : `<div class="flex items-center gap-1.5 mt-1 text-xs invisible">
+         <span class="material-symbols-outlined text-sm">smartphone</span>&nbsp;
+       </div>`;
 
-    // 按钮：根据状态显示
+    // 四列指标卡片（middle.html 风格）
+    const totalKeywords = task.cities.reduce((s, c) => s + c.total, 0);
+    const metricCards = `
+    <div class="grid grid-cols-4 gap-3 mb-4 shrink-0">
+      <div class="bg-white border border-slate-200 p-4 rounded-2xl flex items-center gap-3.5">
+        <div class="p-2.5 bg-blue-50 rounded-xl shrink-0">
+          <span class="material-symbols-outlined text-blue-500">location_on</span>
+        </div>
+        <div>
+          <div class="text-lg font-bold text-slate-600">${task.cities.length}</div>
+          <div class="text-[11px] font-bold text-slate-500">城市</div>
+        </div>
+      </div>
+      <div class="bg-white border border-slate-200 p-4 rounded-2xl flex items-center gap-3.5">
+        <div class="p-2.5 bg-cyan-50 rounded-xl shrink-0">
+          <span class="material-symbols-outlined text-cyan-500">key</span>
+        </div>
+        <div>
+          <div class="text-lg font-bold text-slate-600">${totalKeywords}</div>
+          <div class="text-[11px] font-bold text-slate-500">关键词</div>
+        </div>
+      </div>
+      <div class="bg-white border border-slate-200 p-4 rounded-2xl flex items-center gap-3.5">
+        <div class="p-2.5 bg-amber-50 rounded-xl shrink-0">
+          <span class="material-symbols-outlined text-amber-500">schedule</span>
+        </div>
+        <div>
+          <div class="text-lg font-bold text-slate-600">${lastRunTime}</div>
+          <div class="text-[11px] font-bold text-slate-500">上次执行${lastRunDate ? ' · ' + lastRunDate : ''}</div>
+        </div>
+      </div>
+      <div class="bg-white border border-slate-200 p-4 rounded-2xl flex items-center gap-3.5">
+        <div class="p-2.5 bg-indigo-50 rounded-xl shrink-0">
+          <span class="material-symbols-outlined text-indigo-500">refresh</span>
+        </div>
+        <div>
+          <div class="text-lg font-bold text-slate-600">${todayRuns} <span class="text-xs font-bold text-slate-600">次</span></div>
+          <div class="text-[11px] font-bold text-slate-500">今日执行</div>
+        </div>
+      </div>
+    </div>`;
+
+    // 按钮（middle.html 风格：rounded-xl 大号带阴影）
     const btnStart =
         task.status === TaskStatus.WAITING
-            ? `<button onclick="window.__taskStart('${task.id}')" class="px-2.5 py-1.5 rounded-md border border-green-200 bg-green-50 text-[11px] font-black text-green-600 hover:bg-green-100 transition-all flex items-center gap-1.5 uppercase"><span class="material-symbols-outlined text-sm fill-1">play_arrow</span> 启动</button>`
+            ? `<button onclick="window.__taskStart('${task.id}')" class="flex items-center gap-2.5 px-5 py-2 bg-emerald-500 hover:bg-emerald-600 text-white font-medium rounded-xl transition-all shadow-lg shadow-emerald-500/20 text-xs"><span class="material-symbols-outlined text-base">play_arrow</span><span class="font-bold" style="letter-spacing:0.15em">启动</span></button>`
             : '';
     const btnPause =
         task.status === TaskStatus.EXECUTING
-            ? `<button onclick="window.__taskPause('${task.id}')" class="px-2.5 py-1.5 rounded-md border border-amber-200 bg-amber-50 text-[11px] font-black text-amber-600 hover:bg-amber-100 transition-all flex items-center gap-1.5 uppercase"><span class="material-symbols-outlined text-sm">pause</span> 暂停</button>`
+            ? `<button onclick="window.__taskPause('${task.id}')" class="flex items-center gap-2.5 px-5 py-2 bg-amber-500 hover:bg-amber-600 text-white font-medium rounded-xl transition-all shadow-lg shadow-amber-500/20 text-xs"><span class="material-symbols-outlined text-base">pause</span><span class="font-bold" style="letter-spacing:0.15em">暂停</span></button>`
             : '';
     const btnResume =
         task.status === TaskStatus.PAUSED || task.status === TaskStatus.ERROR
-            ? `<button onclick="window.__taskResume('${task.id}')" class="px-2.5 py-1.5 rounded-md border border-green-200 bg-green-50 text-[11px] font-black text-green-600 hover:bg-green-100 transition-all flex items-center gap-1.5 uppercase"><span class="material-symbols-outlined text-sm">resume</span> 继续</button>`
+            ? `<button onclick="window.__taskResume('${task.id}')" class="flex items-center gap-2.5 px-5 py-2 bg-emerald-500 hover:bg-emerald-600 text-white font-medium rounded-xl transition-all shadow-lg shadow-emerald-500/20 text-xs"><span class="material-symbols-outlined text-base">play_arrow</span><span class="font-bold" style="letter-spacing:0.15em">继续</span></button>`
             : '';
     const btnRetry =
         task.status === TaskStatus.ERROR || task.status === TaskStatus.SUCCESS
-            ? `<button onclick="window.__taskRetry('${task.id}')" class="px-2.5 py-1.5 rounded-md border border-blue-200 bg-blue-50 text-[11px] font-black text-blue-600 hover:bg-blue-100 transition-all flex items-center gap-1.5 uppercase"><span class="material-symbols-outlined text-sm">replay</span> 重跑</button>`
+            ? `<button onclick="window.__taskRetry('${task.id}')" class="flex items-center gap-2.5 px-5 py-2 bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-xl transition-all shadow-lg shadow-blue-500/20 text-xs"><span class="material-symbols-outlined text-base">replay</span><span class="font-bold" style="letter-spacing:0.15em">重跑</span></button>`
             : '';
     const btnStop =
         task.status === TaskStatus.EXECUTING || task.status === TaskStatus.PAUSED
-            ? `<button onclick="window.__taskStop('${task.id}')" class="px-2.5 py-1.5 rounded-md border border-red-200 bg-red-50 text-[11px] font-black text-red-600 hover:bg-red-100 transition-all flex items-center gap-1.5 uppercase"><span class="material-symbols-outlined text-sm">stop</span> 停止</button>`
+            ? `<button onclick="window.__taskStop('${task.id}')" class="flex items-center gap-2.5 px-5 py-2 bg-white text-rose-500 border border-rose-200 font-medium rounded-xl hover:bg-rose-50 transition-all text-xs"><span class="material-symbols-outlined text-base">stop</span><span class="font-bold" style="letter-spacing:0.15em">停止</span></button>`
             : '';
 
     mid.innerHTML = `
     <!-- Task Header -->
-    <div class="bg-white rounded-md border border-[var(--panel-border)] shadow-sm p-3 mb-4 flex items-center justify-between shrink-0">
-      <div class="flex items-center space-x-4">
-        <div class="h-11 w-11 rounded-xl task-icon-glow text-white flex items-center justify-center">
-          <span class="material-symbols-outlined text-2xl fill-1">automation</span>
+    <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 mb-4 flex items-center justify-between shrink-0">
+      <div class="flex items-center gap-4">
+        <div class="w-12 h-12 bg-indigo-500/10 flex items-center justify-center rounded-xl shrink-0">
+          <span class="material-symbols-outlined text-indigo-500 text-2xl">hub</span>
         </div>
         <div>
-          <div class="flex items-center space-x-2">
-            <h2 class="text-sm font-black text-slate-800">${task.name}</h2>
-            <span class="px-1.5 py-0.5 ${badge.bg} ${badge.text} text-[10px] font-black rounded border ${badge.border} uppercase tracking-tighter">${badge.label}</span>
+          <div class="flex items-center gap-2">
+            <h2 class="text-lg font-bold tracking-tight text-slate-800">${task.name}</h2>
+            <span class="px-2.5 py-0.5 ${badge.bg} ${badge.text} text-[11px] font-semibold rounded-full border ${badge.border}">${badge.label}</span>
           </div>
-          <div class="flex flex-col mt-0.5">
-            ${deviceLine}
-            <div class="flex items-center text-[10px] text-slate-400 font-medium mt-0.5">
-              <span class="material-symbols-outlined icon-xs text-[10px] mr-1">location_on</span>${task.cities.length} 个城市
-              <span class="mx-2 text-slate-200">|</span>
-              <span class="uppercase tracking-tighter">${task.cities.reduce((s, c) => s + c.total, 0)} 个关键词</span>
-            </div>
-          </div>
+          ${deviceTag}
         </div>
       </div>
-      <div class="flex items-center space-x-1.5">
+      <div class="flex items-center gap-2.5">
         ${btnStart}${btnPause}${btnResume}${btnRetry}${btnStop}
       </div>
     </div>
+
+    <!-- Metric Cards -->
+    ${metricCards}
 
     <!-- City Cards -->
     <div class="flex gap-2.5 mb-4 shrink-0 overflow-x-auto pb-1 scrollbar-hide">
@@ -877,11 +934,11 @@ function renderTaskView() {
         </div>
         <div class="relative w-56">
           <span class="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-sm">search</span>
-          <input class="w-full pl-9 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-blue-100 focus:border-blue-500 outline-none transition-all" placeholder="搜索关键词..." type="text" id="kw-filter-input" oninput="window.__filterKw(this.value)" />
+          <input class="w-full pl-9 pr-3 py-1.5 bg-white border border-slate-200 rounded-md text-xs focus:ring-2 focus:ring-blue-100 focus:border-blue-500 outline-none transition-all" placeholder="搜索关键词..." type="text" id="kw-filter-input" oninput="window.__filterKw(this.value)" />
         </div>
       </div>
       <div class="p-4 overflow-y-auto flex-1">
-        <div class="grid gap-2" style="grid-template-columns: repeat(5, minmax(0, 1fr))" id="kw-grid">
+        <div class="flex flex-wrap gap-2" id="kw-grid">
           ${city.keywords
               .map(k => {
                   if (k.status === KeywordStatus.OK) {
@@ -924,10 +981,10 @@ function renderTaskView() {
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-(window as any).__switchCity = (idx: number) => {
+(window as any).__switchCity = async (idx: number) => {
     if (idx === activeCityIdx) return;
     activeCityIdx = idx;
-    renderTaskView();
+    await renderTaskView();
     // 自动滚动到选中的城市卡片
     const cityContainer = document.querySelector('#col-mid .overflow-x-auto');
     const cards = cityContainer?.querySelectorAll('[onclick*="__switchCity"]');
@@ -993,11 +1050,13 @@ async function afterTaskAction() {
     if (!task) return;
     stopTaskExecution(taskId);
     task.status = TaskStatus.PAUSED;
+    task.assigned_device = null;
     const startedAt = taskRunStarted.get(taskId);
     if (startedAt) {
         await invoke('finish_task_run', { taskId, startedAt, status: RunStatus.PAUSED });
         taskRunStarted.delete(taskId);
     }
+    selectedDevice = null;
     await afterTaskAction();
 };
 
@@ -1006,14 +1065,11 @@ async function afterTaskAction() {
     const task = globalQueue.find(t => t.id === taskId);
     if (!task) return;
     const readySerials = getReadySerials();
-    const serial =
-        task.assigned_device && readySerials.includes(task.assigned_device)
-            ? task.assigned_device
-            : readySerials[0];
-    if (!serial) {
+    if (!readySerials.length) {
         showToast('没有可用设备');
         return;
     }
+    const serial = readySerials[0];
     task.assigned_device = serial;
     task.status = TaskStatus.EXECUTING;
     selectedDevice = serial;
@@ -1295,6 +1351,19 @@ async function showDeviceInfo(serial: string) {
 }
 
 /* ───── Utility ───── */
+
+/** 将 Unix 时间戳（秒）格式化为友好的执行时间 */
+function formatRunTime(ts: number): { time: string; date: string } {
+    const d = new Date(ts * 1000);
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    const time = `${hh}:${mm}`;
+    const mo = d.getMonth() + 1;
+    const dd = d.getDate();
+    const date = `${mo}月${dd}日`;
+    return { time, date };
+}
+
 function esc(t: string) {
     return t
         .replace(/&/g, '&amp;')

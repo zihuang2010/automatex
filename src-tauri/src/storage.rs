@@ -521,9 +521,42 @@ impl Database {
             total_keywords_done: 0,
         })
     }
+
+    /// 查询某任务的执行统计：最近执行时间 + 今日执行次数
+    pub fn query_task_run_stats(&self, task_id: &str) -> TaskRunStats {
+        let conn = self.reader.lock().unwrap();
+        let today = today_str();
+
+        // 最近一次执行的 started_at
+        let last_run_at: Option<i64> = conn
+            .query_row(
+                "SELECT started_at FROM a_task_runs WHERE task_id = ?1 ORDER BY started_at DESC LIMIT 1",
+                params![task_id],
+                |row| row.get(0),
+            )
+            .ok();
+
+        // 今日执行次数
+        let today_runs: i32 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM a_task_runs WHERE task_id = ?1 AND run_date = ?2",
+                params![task_id, today],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        TaskRunStats { last_run_at, today_runs }
+    }
 }
 
 // ─── 数据结构 ──────────────────────────────────────────────────
+
+/// 任务执行统计
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskRunStats {
+    pub last_run_at: Option<i64>,
+    pub today_runs: i32,
+}
 
 /// 任务缓存行
 #[derive(Debug, Clone, Serialize, Deserialize)]
