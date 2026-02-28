@@ -130,14 +130,6 @@ fn pull_file(
     state.manager.pull_file(&serial, &remote_path, &local_path)
 }
 
-/// 移除所有设备
-#[tauri::command]
-fn remove_all_devices(state: tauri::State<'_, AppState>) -> Result<String, String> {
-    state.manager.clear_devices();
-    state.db.clear_devices();
-    Ok("已移除所有设备".to_string())
-}
-
 // ─── Settings Commands ─────────────────────────────────────────
 
 /// 获取设置
@@ -474,12 +466,12 @@ fn spawn_device_monitor(handle: tauri::AppHandle, db: Arc<storage::Database>) {
         }
     });
 
-    // ── 线程 2: 电池/温度定时刷新（每 10s）──
+    // ── 线程 2: 电池/温度定时刷新（每 20s）──
     let db_battery = Arc::clone(&db);
     let handle_battery = handle.clone();
     std::thread::spawn(move || {
         loop {
-            std::thread::sleep(std::time::Duration::from_secs(10));
+            std::thread::sleep(std::time::Duration::from_secs(20));
 
             // 从 DB 中读取当前在线设备
             let devices = db_battery.load_all_devices();
@@ -536,7 +528,6 @@ pub fn run() {
             reboot_device,
             push_file,
             pull_file,
-            remove_all_devices,
             get_settings,
             save_settings,
             mqtt_connect,

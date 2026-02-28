@@ -68,49 +68,6 @@ impl Database {
             )
             .map_err(|e| format!("建表失败: {}", e))?;
 
-        // ── 旧表迁移 ──
-        let table_exists = |name: &str| -> bool {
-            writer
-                .query_row(
-                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
-                    params![name],
-                    |row| row.get::<_, i32>(0),
-                )
-                .unwrap_or(0)
-                > 0
-        };
-
-        if table_exists("devices_v2") {
-            let _ = writer.execute_batch(
-                "INSERT OR IGNORE INTO a_devices
-                    (serial, hw_serial, name, device_type, address, state,
-                     model, brand, android_version, sdk_version, display_resolution,
-                     battery_level, battery_temperature, updated_at)
-                 SELECT serial, hw_serial, name, device_type, address, state,
-                        model, brand, android_version, sdk_version, display_resolution,
-                        battery_level, battery_temperature, updated_at
-                 FROM devices_v2;
-                 DROP TABLE devices_v2;",
-            );
-        }
-
-        if table_exists("devices") {
-            let _ = writer.execute_batch(
-                "INSERT OR IGNORE INTO a_devices (serial, name, device_type, address, state)
-                 SELECT serial, name, device_type, address, 'Offline'
-                 FROM devices;
-                 DROP TABLE devices;",
-            );
-        }
-
-        if table_exists("settings") {
-            let _ = writer.execute_batch(
-                "INSERT OR IGNORE INTO a_settings (key, value)
-                 SELECT key, value FROM settings;
-                 DROP TABLE settings;",
-            );
-        }
-
         // 打开独立的读连接（WAL 模式下读写可并发）
         let reader = Connection::open(&db_path).map_err(|e| format!("打开读连接失败: {}", e))?;
 
@@ -206,12 +163,6 @@ impl Database {
     pub fn delete_device(&self, serial: &str) {
         let conn = self.writer.lock().unwrap();
         let _ = conn.execute("DELETE FROM a_devices WHERE serial = ?1", params![serial]);
-    }
-
-    /// 清空所有设备
-    pub fn clear_devices(&self) {
-        let conn = self.writer.lock().unwrap();
-        let _ = conn.execute("DELETE FROM a_devices", []);
     }
 
     /// 保存设置值

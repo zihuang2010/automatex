@@ -118,23 +118,6 @@ impl DeviceManager {
         Ok(entry)
     }
 
-    /// 清空所有设备（断开所有 ADB 连接，包括自动发现的）
-    pub fn clear_devices(&self) {
-        // Phase 1: 不持锁执行 ADB 断开操作
-        if let Ok(mut server) = std::panic::catch_unwind(|| ADBServer::new(adb_server_addr())) {
-            if let Ok(devs) = server.devices() {
-                for dev in &devs {
-                    let serial = dev.identifier.to_string();
-                    let _ = adb_command().args(["disconnect", &serial]).output();
-                }
-            }
-        }
-        let _ = adb_command().arg("disconnect").output();
-
-        // Phase 2: 持锁清空手动列表（瞬时操作）
-        self.devices.lock().unwrap().clear();
-    }
-
     /// 移除设备（同时断开 WiFi 连接）
     pub fn remove_device_and_disconnect(&self, serial: &str) -> Result<(), String> {
         // Phase 1: 不持锁执行 ADB 断开（可能阻塞）
