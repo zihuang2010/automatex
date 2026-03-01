@@ -55,7 +55,8 @@ function initTheme() {
         document.documentElement.classList.add('dark');
     }
     updateThemeIcon();
-    syncWindowBg();
+    // 注意：此处不调用 syncWindowBg()，开屏期间保持 tauri.conf.json 中的 backgroundColor
+    // 等 splash 退场后再同步，避免底色闪变
 }
 
 function toggleTheme() {
@@ -92,6 +93,8 @@ function splash() {
     setTimeout(() => {
         el.classList.add('out');
         app.classList.add('show');
+        // 开屏退场后再同步窗口背景色（避免底色闪变）
+        syncWindowBg();
         setTimeout(() => el.remove(), 800);
     }, 3200);
 }
