@@ -18,7 +18,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET="x86_64-pc-windows-msvc"
 ADB_BIN="$ROOT_DIR/backends/binaries/adb-${TARGET}.exe"
 RELEASE_DIR="$ROOT_DIR/backends/target/$TARGET/release"
-OUTPUT_DIR="$ROOT_DIR/backends/target/output/windows-x64"
+OUTPUT_DIR="$ROOT_DIR/backends/target/x86_64-pc-windows"
 XWIN_CACHE="$HOME/.xwin-cache"
 XWIN_SPLAT="$XWIN_CACHE/splat"
 
@@ -111,7 +111,7 @@ export XWIN_CACHE_DIR="$XWIN_CACHE"
 # 正规 `npx tauri build` 会自动添加此 feature，但 cargo xwin build 绕过 CLI 必须手动指定
 cargo xwin build --release --target "$TARGET" --features tauri/custom-protocol
 
-# ── 收集产物到 backends/target/output/ ──
+# ── 收集产物到 backends/target/x86_64-pc-windows/ ──
 info "收集产物..."
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
@@ -137,6 +137,6 @@ echo ""
 info "产物目录: $OUTPUT_DIR"
 ls -lh "$OUTPUT_DIR"
 echo ""
-warn "部署: 将 backends/target/output/windows-x64/ 整个文件夹复制到 Windows 机器运行"
+warn "部署: 将 backends/target/x86_64-pc-windows/ 整个文件夹复制到 Windows 机器运行"
 warn "确保 adb.exe 与主程序在同一目录下"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
