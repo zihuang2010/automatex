@@ -30,6 +30,32 @@ import {
 } from './dialogs';
 import { initSettings, updateMqttStatusUI } from './settings';
 
+/* ===== Theme Toggle ===== */
+
+function initTheme() {
+    const saved = localStorage.getItem('theme');
+    // 默认暗色，仅用户明确选择 light 时才用亮色
+    if (saved !== 'light') {
+        document.documentElement.classList.add('dark');
+    }
+    updateThemeIcon();
+}
+
+function toggleTheme() {
+    const isDark = document.documentElement.classList.toggle('dark');
+    localStorage.setItem('theme', isDark ? 'dark' : 'light');
+    updateThemeIcon();
+}
+
+function updateThemeIcon() {
+    const icon = document.getElementById('theme-icon');
+    if (icon) {
+        icon.textContent = document.documentElement.classList.contains('dark')
+            ? 'light_mode'
+            : 'dark_mode';
+    }
+}
+
 /* ===== Splash Screen ===== */
 
 function splash() {
@@ -63,6 +89,10 @@ async function fullRefresh() {
 /* ===== Init ===== */
 
 window.addEventListener('DOMContentLoaded', () => {
+    // ── Step 0: 初始化主题 ──
+    initTheme();
+    $('#btn-theme-toggle')?.addEventListener('click', toggleTheme);
+
     // ── Step 1: 注册跨模块回调（打破循环依赖）──
     setRefreshCallbacks(() => fullRefresh());
     setDeviceCallbacks(
@@ -153,7 +183,7 @@ window.addEventListener('DOMContentLoaded', () => {
             // 设备离线处理现在由后端引擎负责
             // 只需通知引擎当前在线设备列表
             const onlineSerials = devs
-                .filter(d => d.state !== DeviceState.OFFLINE)
+                .filter(d => d.state === DeviceState.DEVICE)
                 .map(d => d.serial);
             invoke('engine_release_offline', { onlineSerials }).catch(() => {});
         }, 300);
@@ -162,6 +192,22 @@ window.addEventListener('DOMContentLoaded', () => {
     listen<string>('mqtt-status', event => {
         updateMqttStatusUI(event.payload);
     });
+
+    // ── Step 7: 网络状态检测 ──
+    function updateNetworkStatus() {
+        const dot = document.getElementById('net-status-text');
+        if (!dot) return;
+        if (navigator.onLine) {
+            dot.textContent = '已连接';
+            dot.classList.remove('offline');
+        } else {
+            dot.textContent = '已断开';
+            dot.classList.add('offline');
+        }
+    }
+    updateNetworkStatus();
+    window.addEventListener('online', updateNetworkStatus);
+    window.addEventListener('offline', updateNetworkStatus);
 
     // Auto-refresh after splash
     setTimeout(refreshDevices, 2400);

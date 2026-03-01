@@ -8,9 +8,9 @@
     </head>
 
     <body>
-        <!-- ===== 开屏 ===== -->
+        <!-- ===== 开屏（写轮眼风格） ===== -->
         <div class="splash" id="splash">
-            <!-- 浅色渐变背景光晕 -->
+            <!-- 暗色背景光晕 -->
             <div class="splash-bg-glow splash-bg-glow-1"></div>
             <div class="splash-bg-glow splash-bg-glow-2"></div>
             <div class="splash-bg-glow splash-bg-glow-3"></div>
@@ -18,164 +18,246 @@
             <!-- 网格底纹 -->
             <div class="splash-grid"></div>
 
-            <!-- 浮动粒子 -->
+            <!-- 浮动粒子（红色系） -->
             <div class="splash-particles">
                 <div
                     class="splash-particle"
                     style="
-                        --x: 15%;
-                        --y: 20%;
+                        --x: 12%;
+                        --y: 18%;
                         --size: 4px;
                         --dur: 6s;
                         --delay: 0s;
-                        --color: rgba(99, 102, 241, 0.4);
+                        --color: rgba(220, 38, 38, 0.5);
                     "
                 ></div>
                 <div
                     class="splash-particle"
                     style="
-                        --x: 80%;
-                        --y: 15%;
+                        --x: 82%;
+                        --y: 12%;
                         --size: 3px;
                         --dur: 8s;
                         --delay: 1s;
-                        --color: rgba(59, 130, 246, 0.35);
+                        --color: rgba(239, 68, 68, 0.4);
                     "
                 ></div>
                 <div
                     class="splash-particle"
                     style="
-                        --x: 25%;
-                        --y: 75%;
+                        --x: 20%;
+                        --y: 78%;
                         --size: 5px;
                         --dur: 7s;
                         --delay: 0.5s;
-                        --color: rgba(6, 182, 212, 0.3);
+                        --color: rgba(185, 28, 28, 0.35);
                     "
                 ></div>
                 <div
                     class="splash-particle"
                     style="
-                        --x: 70%;
-                        --y: 80%;
+                        --x: 72%;
+                        --y: 82%;
                         --size: 3px;
                         --dur: 9s;
                         --delay: 2s;
-                        --color: rgba(99, 102, 241, 0.3);
+                        --color: rgba(220, 38, 38, 0.3);
                     "
                 ></div>
                 <div
                     class="splash-particle"
                     style="
                         --x: 50%;
-                        --y: 10%;
+                        --y: 8%;
                         --size: 4px;
                         --dur: 10s;
                         --delay: 1.5s;
-                        --color: rgba(59, 130, 246, 0.25);
+                        --color: rgba(239, 68, 68, 0.3);
                     "
                 ></div>
                 <div
                     class="splash-particle"
                     style="
-                        --x: 90%;
+                        --x: 88%;
                         --y: 50%;
                         --size: 3px;
                         --dur: 7s;
                         --delay: 0.8s;
-                        --color: rgba(6, 182, 212, 0.35);
+                        --color: rgba(185, 28, 28, 0.4);
                     "
                 ></div>
                 <div
                     class="splash-particle"
                     style="
-                        --x: 10%;
-                        --y: 50%;
+                        --x: 8%;
+                        --y: 55%;
                         --size: 5px;
                         --dur: 11s;
                         --delay: 3s;
-                        --color: rgba(99, 102, 241, 0.2);
+                        --color: rgba(220, 38, 38, 0.25);
                     "
                 ></div>
                 <div
                     class="splash-particle"
                     style="
-                        --x: 40%;
-                        --y: 90%;
+                        --x: 42%;
+                        --y: 88%;
                         --size: 3px;
                         --dur: 8s;
                         --delay: 2.5s;
-                        --color: rgba(59, 130, 246, 0.3);
+                        --color: rgba(239, 68, 68, 0.35);
                     "
                 ></div>
             </div>
 
-            <!-- 旋转轨道 -->
-            <div class="splash-orbit splash-orbit-1"></div>
-            <div class="splash-orbit splash-orbit-2"></div>
-            <div class="splash-orbit splash-orbit-3"></div>
-
-            <!-- Shimmer 光带 -->
+            <!-- Shimmer 光带（红色） -->
             <div class="splash-shimmer"></div>
 
             <!-- 中心内容 -->
             <div class="splash-center">
                 <div class="splash-glow"></div>
                 <div class="splash-logo-wrap">
-                    <svg class="splash-logo" viewBox="0 0 120 120" width="88" height="88">
+                    <!-- 写轮眼 SVG -->
+                    <svg
+                        class="splash-logo sharingan-spin"
+                        viewBox="0 0 200 200"
+                        width="140"
+                        height="140"
+                    >
                         <defs>
-                            <linearGradient id="sg1" x1="0%" y1="0%" x2="100%" y2="100%">
-                                <stop offset="0%" stop-color="#6366f1" />
-                                <stop offset="50%" stop-color="#3b82f6" />
-                                <stop offset="100%" stop-color="#06b6d4" />
-                            </linearGradient>
-                            <linearGradient id="sg2" x1="0%" y1="0%" x2="100%" y2="100%">
-                                <stop offset="0%" stop-color="#818cf8" />
-                                <stop offset="100%" stop-color="#67e8f9" />
-                            </linearGradient>
-                            <filter id="sdrop">
+                            <radialGradient id="iris-grad" cx="50%" cy="50%" r="50%">
+                                <stop offset="0%" stop-color="#dc2626" />
+                                <stop offset="60%" stop-color="#b91c1c" />
+                                <stop offset="100%" stop-color="#7f1d1d" />
+                            </radialGradient>
+                            <radialGradient id="pupil-grad" cx="50%" cy="50%" r="50%">
+                                <stop offset="0%" stop-color="#1a1a1a" />
+                                <stop offset="100%" stop-color="#000000" />
+                            </radialGradient>
+                            <filter id="eye-glow">
+                                <feGaussianBlur stdDeviation="4" result="blur" />
+                                <feMerge>
+                                    <feMergeNode in="blur" />
+                                    <feMergeNode in="SourceGraphic" />
+                                </feMerge>
+                            </filter>
+                            <filter id="tomoe-glow">
                                 <feDropShadow
                                     dx="0"
-                                    dy="4"
-                                    stdDeviation="12"
-                                    flood-color="rgba(99,102,241,0.35)"
+                                    dy="0"
+                                    stdDeviation="2"
+                                    flood-color="#000"
+                                    flood-opacity="0.8"
                                 />
                             </filter>
                         </defs>
-                        <g filter="url(#sdrop)">
-                            <rect x="15" y="15" width="90" height="90" rx="26" fill="url(#sg1)" />
-                            <path
-                                d="M67 30 L43 62 L56 62 L52 90 L77 55 L63 55 L67 30Z"
-                                fill="white"
-                                opacity="0.95"
-                            />
-                            <circle cx="40" cy="85" r="3.5" fill="url(#sg2)" opacity="0.7" />
-                            <circle cx="60" cy="85" r="3.5" fill="url(#sg2)" opacity="0.5" />
-                            <circle cx="80" cy="85" r="3.5" fill="url(#sg2)" opacity="0.7" />
-                            <line
-                                x1="44"
-                                y1="85"
-                                x2="56"
-                                y2="85"
-                                stroke="url(#sg2)"
-                                stroke-width="1.5"
-                                opacity="0.4"
-                            />
-                            <line
-                                x1="64"
-                                y1="85"
-                                x2="76"
-                                y2="85"
-                                stroke="url(#sg2)"
-                                stroke-width="1.5"
-                                opacity="0.4"
-                            />
+
+                        <!-- 外圈光环 -->
+                        <circle
+                            cx="100"
+                            cy="100"
+                            r="88"
+                            fill="none"
+                            stroke="#dc2626"
+                            stroke-width="2"
+                            opacity="0.3"
+                            filter="url(#eye-glow)"
+                        />
+                        <circle
+                            cx="100"
+                            cy="100"
+                            r="92"
+                            fill="none"
+                            stroke="#ef4444"
+                            stroke-width="0.5"
+                            opacity="0.2"
+                        />
+
+                        <!-- 虹膜 -->
+                        <circle
+                            cx="100"
+                            cy="100"
+                            r="80"
+                            fill="url(#iris-grad)"
+                            filter="url(#eye-glow)"
+                        />
+
+                        <!-- 虹膜纹理环 -->
+                        <circle
+                            cx="100"
+                            cy="100"
+                            r="70"
+                            fill="none"
+                            stroke="#991b1b"
+                            stroke-width="0.8"
+                            opacity="0.4"
+                        />
+                        <circle
+                            cx="100"
+                            cy="100"
+                            r="55"
+                            fill="none"
+                            stroke="#7f1d1d"
+                            stroke-width="0.5"
+                            opacity="0.3"
+                        />
+
+                        <!-- 勾玉容器（旋转） -->
+                        <g class="tomoe-group" filter="url(#tomoe-glow)">
+                            <!-- 勾玉 1（上方） -->
+                            <g transform="rotate(0 100 100)">
+                                <circle cx="100" cy="48" r="10" fill="#0a0a0a" />
+                                <path
+                                    d="M100,48 Q100,75 100,100"
+                                    stroke="#0a0a0a"
+                                    stroke-width="5"
+                                    fill="none"
+                                    stroke-linecap="round"
+                                />
+                                <circle cx="100" cy="51" r="4" fill="#dc2626" opacity="0.6" />
+                            </g>
+                            <!-- 勾玉 2（右下） -->
+                            <g transform="rotate(120 100 100)">
+                                <circle cx="100" cy="48" r="10" fill="#0a0a0a" />
+                                <path
+                                    d="M100,48 Q100,75 100,100"
+                                    stroke="#0a0a0a"
+                                    stroke-width="5"
+                                    fill="none"
+                                    stroke-linecap="round"
+                                />
+                                <circle cx="100" cy="51" r="4" fill="#dc2626" opacity="0.6" />
+                            </g>
+                            <!-- 勾玉 3（左下） -->
+                            <g transform="rotate(240 100 100)">
+                                <circle cx="100" cy="48" r="10" fill="#0a0a0a" />
+                                <path
+                                    d="M100,48 Q100,75 100,100"
+                                    stroke="#0a0a0a"
+                                    stroke-width="5"
+                                    fill="none"
+                                    stroke-linecap="round"
+                                />
+                                <circle cx="100" cy="51" r="4" fill="#dc2626" opacity="0.6" />
+                            </g>
                         </g>
+
+                        <!-- 瞳孔 -->
+                        <circle cx="100" cy="100" r="18" fill="url(#pupil-grad)" />
+                        <!-- 瞳孔高光 -->
+                        <ellipse
+                            cx="93"
+                            cy="93"
+                            rx="5"
+                            ry="4"
+                            fill="white"
+                            opacity="0.12"
+                            transform="rotate(-30 93 93)"
+                        />
                     </svg>
                 </div>
                 <div class="splash-time">--:--</div>
                 <h1 class="splash-name">AutomateX</h1>
-
                 <span class="splash-version">v1.0.2-STABLE</span>
             </div>
         </div>
@@ -184,7 +266,7 @@
         <div class="app h-screen flex flex-col overflow-hidden" id="app">
             <!-- Header (code.html style) -->
             <header
-                class="bg-white border-b border-slate-200 px-5 flex items-center justify-between shrink-0 z-30 h-10"
+                class="bg-[var(--premium-bg)] border-b border-slate-200 px-5 flex items-center justify-between shrink-0 z-30 h-10"
             >
                 <div class="flex items-center space-x-2">
                     <div class="flex items-baseline space-x-2">
@@ -197,13 +279,22 @@
                         >
                     </div>
                 </div>
-                <div class="flex items-center">
+                <div class="flex items-center gap-3">
                     <div
                         class="flex items-center text-slate-500 font-bold text-[10px] uppercase tracking-widest"
                         id="topbar-status"
                     >
-                        <span class="pulsing-dot">已连接</span>
+                        <span class="pulsing-dot" id="net-status-text">检测中</span>
                     </div>
+                    <button
+                        id="btn-theme-toggle"
+                        class="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-slate-100 transition-colors text-slate-400 hover:text-slate-600"
+                        title="切换主题"
+                    >
+                        <span class="material-symbols-outlined text-base" id="theme-icon"
+                            >dark_mode</span
+                        >
+                    </button>
                 </div>
             </header>
 

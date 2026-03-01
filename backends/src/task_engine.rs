@@ -8,7 +8,7 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::constants::{city_status, keyword_status, run_status, task_status};
-use crate::storage::Database;
+use crate::storage::{Database, DeviceRow};
 use crate::task_provider::{self, Task};
 
 // ─── 运行中任务的状态 ──────────────────────────────────────────
@@ -33,26 +33,30 @@ enum TickEffect {
     KeywordDone { task_id: String, city_name: String, kw_name: String, device_serial: String },
     /// 整个任务执行完成
     TaskSuccess { task_id: String },
+    /// 设备离线，任务需要标记 ERROR
+    DeviceOffline { task_id: String },
     /// 无需任何 DB 操作（城市切换、RUN→OK 等）
     None,
 }
 
 // ─── 引擎核心 ─────────────────────────────────────────────────
 
-/// 在持有 tasks 写锁时安全调用（不借用 &self）
-fn pick_ready_serial(storage: &Database, tasks: &[Task]) -> Result<String, String> {
+/// 从预加载的设备列表中挑选就绪设备（不执行 DB 查询，避免在写锁内阻塞）
+fn pick_ready_serial(devices: &[DeviceRow], tasks: &[Task]) -> Result<String, String> {
     let assigned: HashSet<&str> = tasks
         .iter()
         .filter(|t| t.status == task_status::EXECUTING)
         .filter_map(|t| t.assigned_device.as_deref())
         .collect();
 
-    let devices = storage.load_all_devices();
     devices
-        .into_iter()
-        .find(|d| d.state != "Offline" && !assigned.contains(d.serial.as_str()))
-        .map(|d| d.serial)
-        .ok_or_else(|| "没有可用设备".to_string())
+        .iter()
+        .find(|d| {
+            d.state == crate::constants::device_state::DEVICE
+                && !assigned.contains(d.serial.as_str())
+        })
+        .map(|d| d.serial.clone())
+        .ok_or_else(|| "当前没有就绪的设备，请检查设备状态".to_string())
 }
 
 pub struct TaskEngine {
@@ -92,6 +96,8 @@ impl TaskEngine {
 
     /// 启动任务
     pub async fn start_task(self: &Arc<Self>, task_id: &str) -> Result<(), String> {
+        // DB 查询在写锁外执行，减少锁持有时间
+        let devices = self.storage.load_all_devices();
         let serial = {
             let mut tasks = self.tasks.write().await;
 
@@ -103,7 +109,7 @@ impl TaskEngine {
             if task_status_val != task_status::WAITING {
                 return Err("任务状态非 WAITING，无法启动".into());
             }
-            let serial = pick_ready_serial(&self.storage, &tasks)?;
+            let serial = pick_ready_serial(&devices, &tasks)?;
 
             let task = tasks.iter_mut().find(|t| t.id == task_id).unwrap();
             task.status = task_status::EXECUTING.to_string();
@@ -197,6 +203,7 @@ impl TaskEngine {
 
     /// 继续任务
     pub async fn resume_task(self: &Arc<Self>, task_id: &str) -> Result<(), String> {
+        let devices = self.storage.load_all_devices();
         let serial = {
             let mut tasks = self.tasks.write().await;
 
@@ -208,7 +215,7 @@ impl TaskEngine {
             if task_status_val != task_status::PAUSED && task_status_val != task_status::ERROR {
                 return Err(format!("任务状态为 {}，只有 PAUSED/ERROR 可以继续", task_status_val));
             }
-            let serial = pick_ready_serial(&self.storage, &tasks)?;
+            let serial = pick_ready_serial(&devices, &tasks)?;
 
             let task = tasks.iter_mut().find(|t| t.id == task_id).unwrap();
             task.status = task_status::EXECUTING.to_string();
@@ -325,9 +332,10 @@ impl TaskEngine {
         .await
         .map_err(|e| format!("DB 操作失败: {}", e))?;
 
+        let devices = self.storage.load_all_devices();
         let serial = {
             let mut tasks = self.tasks.write().await;
-            let serial = pick_ready_serial(&self.storage, &tasks)?;
+            let serial = pick_ready_serial(&devices, &tasks)?;
 
             if let Some(mut fresh) = fresh {
                 fresh.status = task_status::EXECUTING.to_string();
@@ -422,6 +430,7 @@ impl TaskEngine {
 
     /// 获取就绪设备列表（在线且未被任务占用）
     pub async fn get_ready_serials(&self) -> Vec<String> {
+        let devices = self.storage.load_all_devices();
         let tasks = self.tasks.read().await;
         let assigned: HashSet<String> = tasks
             .iter()
@@ -429,10 +438,11 @@ impl TaskEngine {
             .filter_map(|t| t.assigned_device.clone())
             .collect();
 
-        let devices = self.storage.load_all_devices();
         devices
             .into_iter()
-            .filter(|d| d.state != "Offline" && !assigned.contains(&d.serial))
+            .filter(|d| {
+                d.state == crate::constants::device_state::DEVICE && !assigned.contains(&d.serial)
+            })
             .map(|d| d.serial)
             .collect()
     }
@@ -497,6 +507,26 @@ impl TaskEngine {
             }
 
             let device_serial = task.assigned_device.clone().unwrap_or_default();
+
+            // 检测设备是否仍在线，避免产生虚假进度
+            let device_online = self
+                .storage
+                .get_device_by_serial(&device_serial)
+                .map(|d| d.state == crate::constants::device_state::DEVICE)
+                .unwrap_or(false);
+            if !device_online {
+                // 回退 RUN 状态的关键词
+                for city in &mut task.cities {
+                    for kw in &mut city.keywords {
+                        if kw.status == keyword_status::RUN {
+                            kw.status = keyword_status::PENDING.to_string();
+                        }
+                    }
+                }
+                task.status = task_status::ERROR.to_string();
+                task.assigned_device = None;
+                break 'effect TickEffect::DeviceOffline { task_id: task_id.to_string() };
+            }
 
             // 找活跃城市或激活第一个 pending
             let active_idx =
@@ -582,6 +612,17 @@ impl TaskEngine {
                     eprintln!("[engine] save_task_state(SUCCESS) 失败: {}", e);
                 }
                 true
+            },
+            TickEffect::DeviceOffline { task_id } => {
+                let db = Arc::clone(&self.storage);
+                if let Err(e) = tokio::task::spawn_blocking(move || {
+                    db.save_task_state(&task_id, task_status::ERROR, None);
+                })
+                .await
+                {
+                    eprintln!("[engine] save_task_state(ERROR/DeviceOffline) 失败: {}", e);
+                }
+                true // 返回 true 停止执行循环
             },
             TickEffect::None => false,
         }

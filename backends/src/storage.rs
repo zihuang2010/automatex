@@ -592,6 +592,20 @@ impl Database {
         );
     }
 
+    /// 启动时清理残留的 EXECUTING 状态和设备绑定
+    pub fn cleanup_stale_assignments(&self) {
+        let conn = self.w();
+        let affected = conn.execute(
+            "UPDATE a_task_cache SET status = 'PAUSED', assigned_device = NULL WHERE status = 'EXECUTING'",
+            [],
+        );
+        match affected {
+            Ok(n) if n > 0 => eprintln!("[db] 清理了 {} 条残留 EXECUTING 任务", n),
+            Err(e) => eprintln!("[db] cleanup_stale_assignments 失败: {}", e),
+            _ => {},
+        }
+    }
+
     /// 启动时清理孤儿 run（崩溃/异常退出导致 status 仍为 running 的记录）
     pub fn cleanup_orphan_runs(&self) {
         let conn = self.w();

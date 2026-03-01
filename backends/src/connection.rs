@@ -166,7 +166,13 @@ impl DeviceManager {
 
 fn parse_wifi_address(addr: &str) -> Result<std::net::SocketAddr, String> {
     let full = if addr.contains(':') { addr.to_string() } else { format!("{}:5555", addr) };
-    full.parse::<std::net::SocketAddr>().map_err(|e| format!("地址格式错误 '{}': {}", addr, e))
+    let socket_addr = full
+        .parse::<std::net::SocketAddr>()
+        .map_err(|e| format!("地址格式错误 '{}': {}", addr, e))?;
+    if socket_addr.port() == 0 {
+        return Err(format!("端口号不能为 0: '{}'", addr));
+    }
+    Ok(socket_addr)
 }
 
 /// FIX #4: 带超时的 ADB 命令执行（防止进程永久阻塞）

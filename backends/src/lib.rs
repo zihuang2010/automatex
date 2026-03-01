@@ -423,7 +423,8 @@ fn spawn_device_monitor(handle: tauri::AppHandle, db: Arc<storage::Database>) {
                     let serial = device.identifier.clone();
                     let state = device_state_str(&device.state);
 
-                    let online_serials = {
+                    // 缓存刷新时批量标记离线设备（不再每个事件都执行）
+                    {
                         let mut cache = devices_cache.lock().unwrap();
                         if cache.0.elapsed()
                             > std::time::Duration::from_millis(
@@ -445,25 +446,43 @@ fn spawn_device_monitor(handle: tauri::AppHandle, db: Arc<storage::Database>) {
                                 .map(|d| d.identifier)
                                 .collect();
                             *cache = (std::time::Instant::now(), serials);
-                        }
-                        cache.1.clone()
-                    };
 
-                    let online_refs: Vec<&str> =
-                        online_serials.iter().map(|s: &String| s.as_str()).collect();
-                    db_cb.mark_offline_except(&online_refs);
+                            // 只在缓存刷新时才执行 mark_offline_except
+                            let online_refs: Vec<&str> =
+                                cache.1.iter().map(|s| s.as_str()).collect();
+                            db_cb.mark_offline_except(&online_refs);
+                        }
+                    }
 
                     if !db_cb.device_exists(&serial)
                         || (state == "Device" && db_cb.needs_prop_refresh(&serial))
                     {
-                        // FIX #1: 限制并发线程数
-                        let current = PROP_FETCH_THREADS.load(Ordering::Relaxed);
-                        if current < constants::limits::MAX_PROP_FETCH_THREADS {
-                            PROP_FETCH_THREADS.fetch_add(1, Ordering::Relaxed);
+                        // 原子的 check-and-increment，避免 TOCTOU 竞争
+                        let acquired = PROP_FETCH_THREADS.fetch_update(
+                            Ordering::SeqCst,
+                            Ordering::SeqCst,
+                            |current| {
+                                if current < constants::limits::MAX_PROP_FETCH_THREADS {
+                                    Some(current + 1)
+                                } else {
+                                    None
+                                }
+                            },
+                        );
+                        if acquired.is_ok() {
                             let db_inner = Arc::clone(&db_cb);
                             let handle_inner = handle_cb.clone();
                             std::thread::spawn(move || {
                                 let row = fetch_device_row(&serial, state);
+                                // 如果设备在属性获取期间已被标记为 Offline，丢弃本次更新
+                                if let Some(current) = db_inner.get_device_by_serial(&row.serial) {
+                                    if current.state == constants::device_state::OFFLINE
+                                        && row.state == constants::device_state::DEVICE
+                                    {
+                                        PROP_FETCH_THREADS.fetch_sub(1, Ordering::Relaxed);
+                                        return;
+                                    }
+                                }
                                 db_inner.upsert_device(&row);
                                 let _ = handle_inner.emit("devices-changed", ());
                                 PROP_FETCH_THREADS.fetch_sub(1, Ordering::Relaxed);
@@ -629,6 +648,12 @@ pub fn run() {
 
             // 清理上次异常退出的孤儿 run 记录
             db.cleanup_orphan_runs();
+
+            // 启动时重置所有设备为 Offline，等待 track_devices 重新探测真实状态
+            db.mark_offline_except(&[]);
+
+            // 清理上次运行残留的 EXECUTING 状态和设备绑定
+            db.cleanup_stale_assignments();
 
             let mqtt = Arc::new(MqttManager::new());
             let engine = TaskEngine::new(Arc::clone(&db), app.handle().clone());

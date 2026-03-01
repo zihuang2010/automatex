@@ -122,7 +122,8 @@ impl MqttManager {
                                 *status.lock().await = MqttStatus::Error(err_msg.clone());
                                 let _ = app_handle
                                     .emit("mqtt-status", format!("error:{}", err_msg));
-                                break;
+                                // 等待后重试，rumqttc eventloop 会自动尝试重连
+                                tokio::time::sleep(Duration::from_secs(5)).await;
                             }
                         }
                     }
@@ -151,15 +152,19 @@ impl MqttManager {
     }
 
     pub async fn subscribe(&self, topic: &str) -> Result<String, String> {
-        let guard = self.client.lock().await;
-        let client = guard.as_ref().ok_or("MQTT 未连接".to_string())?;
+        let client = {
+            let guard = self.client.lock().await;
+            guard.as_ref().ok_or("MQTT 未连接".to_string())?.clone()
+        };
         client.subscribe(topic, QoS::AtLeastOnce).await.map_err(|e| format!("订阅失败: {}", e))?;
         Ok(format!("已订阅: {}", topic))
     }
 
     pub async fn publish(&self, topic: &str, payload: &str) -> Result<String, String> {
-        let guard = self.client.lock().await;
-        let client = guard.as_ref().ok_or("MQTT 未连接".to_string())?;
+        let client = {
+            let guard = self.client.lock().await;
+            guard.as_ref().ok_or("MQTT 未连接".to_string())?.clone()
+        };
         client
             .publish(topic, QoS::AtLeastOnce, false, payload.as_bytes())
             .await

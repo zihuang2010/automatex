@@ -1,5 +1,5 @@
 import { Task, DeviceRow } from './types';
-import { TaskStatus, DeviceState } from './constants';
+import { TaskStatus } from './constants';
 
 export let selectedDevice: string | null = null;
 export let globalQueue: Task[] = [];
@@ -44,14 +44,6 @@ export function getAssignedDeviceSerials(): Set<string> {
             .filter(t => t.assigned_device && t.status === TaskStatus.EXECUTING)
             .map(t => t.assigned_device!),
     );
-}
-
-/** 获取就绪设备列表（在线且未被任务占用） */
-export function getReadySerials(): string[] {
-    const assigned = getAssignedDeviceSerials();
-    return cachedDevices
-        .filter(d => d.state !== DeviceState.OFFLINE && !assigned.has(d.serial))
-        .map(d => d.serial);
 }
 
 /** 根据 serial 查找设备 */

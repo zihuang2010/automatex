@@ -14,11 +14,6 @@ export function esc(t: string): string {
         .replace(/"/g, '&quot;');
 }
 
-/** 等待浏览器完成一帧渲染（双 rAF 保证 paint 完成） */
-export function nextFrame(): Promise<void> {
-    return new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
-}
-
 /** 将 unix 时间戳（秒）转为中文相对时间 */
 export function timeAgo(unixSec: number): string {
     const diff = Math.floor(Date.now() / 1000) - unixSec;

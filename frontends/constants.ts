@@ -22,10 +22,5 @@ export const KeywordStatus = {
 
 export const DeviceState = {
     OFFLINE: 'Offline',
-} as const;
-
-export const RunStatus = {
-    COMPLETED: 'completed',
-    STOPPED: 'stopped',
-    PAUSED: 'paused',
+    DEVICE: 'Device',
 } as const;

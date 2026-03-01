@@ -187,7 +187,7 @@ function renderDeviceCards(devs: DeviceRow[]) {
     let html = '';
 
     html += `<div class="dev-section${runningDevs.length ? '' : ' collapsed'}">
-      <div class="dev-section-header bg-[#eff6ff] px-3 py-1.5 flex items-center gap-2 sticky top-0 z-10 border-b border-blue-100" onclick="this.parentElement.classList.toggle('collapsed')">
+      <div class="dev-section-header bg-blue-50 px-3 py-1.5 flex items-center gap-2 sticky top-0 z-10 border-b border-blue-100" onclick="this.parentElement.classList.toggle('collapsed')">
         <span class="material-symbols-outlined section-arrow text-sm text-blue-400">expand_more</span>
         <span class="text-[11px] font-black text-slate-500 uppercase tracking-normal">运行中</span>
       </div>
@@ -195,7 +195,7 @@ function renderDeviceCards(devs: DeviceRow[]) {
     </div>`;
 
     html += `<div class="dev-section${readyDevs.length ? '' : ' collapsed'}">
-      <div class="dev-section-header bg-[#f8fafc] px-3 py-1.5 flex items-center gap-2 sticky top-0 z-10 border-b border-slate-100 mt-1" onclick="this.parentElement.classList.toggle('collapsed')">
+      <div class="dev-section-header bg-slate-50 px-3 py-1.5 flex items-center gap-2 sticky top-0 z-10 border-b border-slate-100 mt-1" onclick="this.parentElement.classList.toggle('collapsed')">
         <span class="material-symbols-outlined section-arrow text-sm text-slate-400">expand_more</span>
         <span class="text-[11px] font-black text-slate-500 uppercase tracking-normal">就绪</span>
       </div>
@@ -203,7 +203,7 @@ function renderDeviceCards(devs: DeviceRow[]) {
     </div>`;
 
     html += `<div class="dev-section${offlineDevs.length ? '' : ' collapsed'}">
-      <div class="dev-section-header bg-[#f8fafc] px-3 py-1.5 flex items-center gap-2 sticky top-0 z-10 border-b border-slate-100 mt-1" onclick="this.parentElement.classList.toggle('collapsed')">
+      <div class="dev-section-header bg-slate-50 px-3 py-1.5 flex items-center gap-2 sticky top-0 z-10 border-b border-slate-100 mt-1" onclick="this.parentElement.classList.toggle('collapsed')">
         <span class="material-symbols-outlined section-arrow text-sm text-slate-400">expand_more</span>
         <span class="text-[11px] font-black text-slate-500 uppercase tracking-normal">离线</span>
       </div>
