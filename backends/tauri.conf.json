@@ -13,7 +13,7 @@
         "withGlobalTauri": true,
         "windows": [
             {
-                "title": "",
+                "title": "AutomateX",
                 "width": 1600,
                 "height": 1000
             }

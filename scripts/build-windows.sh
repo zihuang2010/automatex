@@ -16,8 +16,8 @@ set -euo pipefail
 APP_NAME="AutomateX"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET="x86_64-pc-windows-msvc"
-ADB_BIN="$ROOT_DIR/src-tauri/binaries/adb-${TARGET}.exe"
-RELEASE_DIR="$ROOT_DIR/src-tauri/target/$TARGET/release"
+ADB_BIN="$ROOT_DIR/backends/binaries/adb-${TARGET}.exe"
+RELEASE_DIR="$ROOT_DIR/backends/target/$TARGET/release"
 OUTPUT_DIR="$ROOT_DIR/output/windows-x64"
 XWIN_CACHE="$HOME/.xwin-cache"
 XWIN_SPLAT="$XWIN_CACHE/splat"
@@ -100,7 +100,7 @@ npm run build
 
 # ── 交叉编译 Rust ──
 info "交叉编译 $APP_NAME for Windows..."
-cd "$ROOT_DIR/src-tauri"
+cd "$ROOT_DIR/backends"
 
 # 设置 xwin 缓存路径，cargo-xwin 会自动使用已下载的 SDK
 export XWIN_CACHE_DIR="$XWIN_CACHE"

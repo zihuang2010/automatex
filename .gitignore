@@ -24,8 +24,8 @@ dist-ssr
 *.sw?
 
 # Tauri
-src-tauri/binaries/*
-src-tauri/target/*
+backends/binaries/*
+backends/target/*
 
 # Output
 output

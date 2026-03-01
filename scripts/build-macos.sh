@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────
 #  AutomateX — macOS 构建脚本
-#  产物：.dmg / .app (位于 src-tauri/target/release/bundle/)
+#  产物：.dmg / .app (位于 backends/target/release/bundle/)
 # ──────────────────────────────────────────────────────────
 set -euo pipefail
 
 APP_NAME="AutomateX"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-BUNDLE_DIR="$ROOT_DIR/src-tauri/target/release/bundle"
+BUNDLE_DIR="$ROOT_DIR/backends/target/release/bundle"
 
 # 颜色输出
 GREEN='\033[0;32m'
@@ -52,20 +52,33 @@ npm ci --prefer-offline 2>/dev/null || npm install
 info "开始构建 $APP_NAME (Release)..."
 npx tauri build --target "$TARGET"
 
-# ── 输出产物 ──
+# ── 收集产物到 output/ ──
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-info "构建完成！产物位置:"
-echo ""
+info "构建完成！收集产物..."
+
+ARCH_LABEL=$([ "$ARCH" = "arm64" ] && echo "arm64" || echo "x64")
+OUTPUT_DIR="$ROOT_DIR/output/macos-${ARCH_LABEL}"
+rm -rf "$OUTPUT_DIR"
+mkdir -p "$OUTPUT_DIR"
 
 if [ -d "$BUNDLE_DIR/dmg" ]; then
     DMG=$(find "$BUNDLE_DIR/dmg" -name "*.dmg" 2>/dev/null | head -1)
-    [ -n "$DMG" ] && info "DMG: $DMG"
+    if [ -n "$DMG" ]; then
+        cp "$DMG" "$OUTPUT_DIR/"
+        info "DMG: $(basename "$DMG")"
+    fi
 fi
 
 if [ -d "$BUNDLE_DIR/macos" ]; then
     APP=$(find "$BUNDLE_DIR/macos" -name "*.app" -maxdepth 1 2>/dev/null | head -1)
-    [ -n "$APP" ] && info "APP: $APP"
+    if [ -n "$APP" ]; then
+        cp -R "$APP" "$OUTPUT_DIR/"
+        info "APP: $(basename "$APP")"
+    fi
 fi
 
+echo ""
+info "产物目录: $OUTPUT_DIR"
+ls -lh "$OUTPUT_DIR"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

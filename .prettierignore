@@ -1,4 +1,4 @@
 dist
 node_modules
-src-tauri/target
+backends/target
 *.woff2
