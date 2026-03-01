@@ -142,6 +142,9 @@ impl Database {
             "ALTER TABLE a_task_runs ADD COLUMN keywords_baseline INTEGER NOT NULL DEFAULT 0;",
         );
 
+        // 迁移：添加 city_order 列（用户自定义城市排序）
+        let _ = writer.execute_batch("ALTER TABLE a_task_cache ADD COLUMN city_order TEXT;");
+
         Ok(Self { writer: Mutex::new(writer), reader: Mutex::new(reader) })
     }
 
@@ -387,6 +390,32 @@ impl Database {
             ),
             "delete_task_state",
         );
+    }
+
+    /// 保存用户自定义的城市排序
+    pub fn save_city_order(&self, task_id: &str, order: &[String]) {
+        let conn = self.w();
+        let json = serde_json::to_string(order).unwrap_or_default();
+        log_exec(
+            conn.execute(
+                "UPDATE a_task_cache SET city_order = ?2 WHERE task_id = ?1",
+                params![task_id, json],
+            ),
+            "save_city_order",
+        );
+    }
+
+    /// 加载用户自定义的城市排序
+    pub fn load_city_order(&self, task_id: &str) -> Option<Vec<String>> {
+        let conn = self.r();
+        let json: Option<String> = conn
+            .query_row(
+                "SELECT city_order FROM a_task_cache WHERE task_id = ?1",
+                params![task_id],
+                |row| row.get(0),
+            )
+            .ok()?;
+        json.and_then(|s| serde_json::from_str(&s).ok())
     }
 
     #[allow(dead_code)]

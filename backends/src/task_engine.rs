@@ -634,4 +634,43 @@ impl TaskEngine {
         let snapshot = TaskSnapshot { tasks: tasks.clone() };
         let _ = self.app_handle.emit("task://update", &snapshot);
     }
+
+    /// 重排城市顺序（仅 pending 城市）
+    pub async fn reorder_cities(
+        &self,
+        task_id: &str,
+        new_order: Vec<String>,
+    ) -> Result<(), String> {
+        {
+            let mut tasks = self.tasks.write().await;
+            let task = tasks.iter_mut().find(|t| t.id == task_id).ok_or("任务不存在")?;
+
+            // 分离：固定部分（done/active）和可排序部分（pending）
+            let (fixed, mut pending): (Vec<_>, Vec<_>) = task
+                .cities
+                .drain(..)
+                .partition(|c| c.status != crate::constants::city_status::PENDING);
+
+            // 按 new_order 排序 pending
+            pending.sort_by_key(|c| {
+                new_order.iter().position(|name| name == &c.name).unwrap_or(usize::MAX)
+            });
+
+            // 合并写回
+            task.cities = fixed.into_iter().chain(pending).collect();
+        }
+
+        // 落盘
+        let db = Arc::clone(&self.storage);
+        let order = new_order.clone();
+        let tid = task_id.to_string();
+        let _ = tokio::task::spawn_blocking(move || {
+            db.save_city_order(&tid, &order);
+        })
+        .await;
+
+        // 推送更新
+        self.emit_update().await;
+        Ok(())
+    }
 }

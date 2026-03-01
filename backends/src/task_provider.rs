@@ -131,6 +131,18 @@ fn build_task(db: &Database, def: MockTaskDef) -> Task {
             keywords,
         });
     }
+    // 按用户自定义顺序重排 pending 城市
+    if let Some(order) = db.load_city_order(&def.id) {
+        // 分离 done 和 pending 城市
+        let (done, mut pending): (Vec<_>, Vec<_>) =
+            cities.into_iter().partition(|c| c.status == city_status::DONE);
+
+        // 按 order 排序 pending（未在 order 中的排最后）
+        pending
+            .sort_by_key(|c| order.iter().position(|name| name == &c.name).unwrap_or(usize::MAX));
+
+        cities = done.into_iter().chain(pending).collect();
+    }
 
     // 激活第一个未完成的城市
     if let Some(first_pending) = cities.iter_mut().find(|c| c.status == city_status::PENDING) {

@@ -15,7 +15,10 @@
             {
                 "title": "AutomateX",
                 "width": 1600,
-                "height": 1000
+                "height": 1000,
+                "hiddenTitle": true,
+                "titleBarStyle": "Overlay",
+                "backgroundColor": "#050202"
             }
         ],
         "security": {

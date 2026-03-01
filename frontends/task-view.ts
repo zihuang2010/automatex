@@ -130,6 +130,7 @@ export async function renderTaskView() {
     // ── City Cards ──
     const cityCardsHtml = buildCityCards(task);
     _prevCityHtml = patchHtml('tv-cities', cityCardsHtml, _prevCityHtml);
+    bindCityDragEvents(task.id);
 
     // ── Keywords Info Bar ──
     const kwInfoHtml = `
@@ -336,6 +337,7 @@ function buildCityCards(task: { cities: TaskCity[] }): string {
     return task.cities
         .map((c: TaskCity, i: number) => {
             const isActive = i === activeCityIdx;
+            const isPending = c.status === CityStatus.PENDING;
             const borderCls = isActive
                 ? 'border-2 border-blue-500 shadow-md'
                 : 'border border-slate-200';
@@ -379,10 +381,16 @@ function buildCityCards(task: { cities: TaskCity[] }): string {
                     : c.status === CityStatus.ACTIVE
                       ? 'bg-blue-50/40'
                       : 'bg-slate-50/50';
+            const dragAttr = '';
+            const dragCls = isPending ? 'city-draggable' : '';
+            const dragHandle = isPending
+                ? '<span class="material-symbols-outlined text-slate-300 text-sm cursor-grab city-drag-handle">drag_indicator</span>'
+                : '';
             return `
-      <div class="${cardBg} rounded-md ${borderCls} p-3 cursor-pointer ${!isActive ? 'hover:bg-slate-50' : ''} transition-all relative overflow-hidden" style="width:220px;min-width:220px;flex-shrink:0" onclick="window.__switchCity(${i})">
+      <div class="city-card ${cardBg} rounded-md ${borderCls} p-3 cursor-pointer ${!isActive ? 'hover:bg-slate-50' : ''} transition-all relative overflow-hidden ${dragCls}" style="width:220px;min-width:220px;flex-shrink:0" data-city-name="${esc(c.name)}" data-city-idx="${i}" ${dragAttr} onclick="window.__switchCity(${i})">
         <div class="flex items-center justify-between mb-2">
           <div class="flex items-center space-x-2">
+            ${dragHandle}
             <span class="material-symbols-outlined icon-sm text-blue-400">location_city</span>
             <span class="text-[13px] ${nameWeight}">${c.name}</span>
           </div>
@@ -401,6 +409,44 @@ function buildCityCards(task: { cities: TaskCity[] }): string {
       </div>`;
         })
         .join('');
+}
+
+/** 绑定城市卡片拖拽事件（SortableJS） */
+import Sortable from 'sortablejs';
+
+let _sortableInstance: Sortable | null = null;
+
+function bindCityDragEvents(taskId: string) {
+    const container = document.getElementById('tv-cities');
+    if (!container) return;
+
+    // 销毁旧实例（防止重复绑定）
+    _sortableInstance?.destroy();
+
+    _sortableInstance = Sortable.create(container, {
+        animation: 200,
+        easing: 'cubic-bezier(0.25, 1, 0.5, 1)',
+        handle: '.city-drag-handle',
+        draggable: '.city-draggable',
+        ghostClass: 'city-ghost',
+        chosenClass: 'city-chosen',
+        dragClass: 'city-drag',
+        filter: '.city-card:not(.city-draggable)',
+        preventOnFilter: false,
+        forceFallback: true,
+        fallbackClass: 'city-fallback',
+        fallbackOnBody: false,
+        onEnd: () => {
+            // 收集 pending 城市新顺序
+            const newOrder = ([...container.querySelectorAll('.city-draggable')] as HTMLElement[])
+                .map(c => c.dataset.cityName || '')
+                .filter(Boolean);
+
+            invoke('engine_reorder_cities', { taskId, newOrder }).catch(err =>
+                console.error('[sortable] reorder failed:', err),
+            );
+        },
+    });
 }
 
 function buildKeywordGrid(city: TaskCity): string {

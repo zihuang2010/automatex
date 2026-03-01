@@ -629,6 +629,15 @@ async fn engine_release_offline(
     Ok(state.engine.release_offline_devices(&online_serials).await)
 }
 
+#[tauri::command]
+async fn engine_reorder_cities(
+    task_id: String,
+    new_order: Vec<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    state.engine.reorder_cities(&task_id, new_order).await
+}
+
 // ─── App Entry ─────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -697,6 +706,7 @@ pub fn run() {
             engine_retry_task,
             engine_get_ready_serials,
             engine_release_offline,
+            engine_reorder_cities,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

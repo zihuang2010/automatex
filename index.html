@@ -264,9 +264,10 @@
 
         <!-- ===== 主应用 ===== -->
         <div class="app h-screen flex flex-col overflow-hidden" id="app">
-            <!-- Header (code.html style) -->
+            <!-- Header -->
             <header
-                class="bg-[var(--premium-bg)] border-b border-slate-200 px-5 flex items-center justify-between shrink-0 z-30 h-10"
+                class="bg-[var(--premium-bg)] border-b border-slate-200 pl-4 pr-5 pt-8 pb-2 flex items-center justify-between shrink-0 z-30"
+                data-tauri-drag-region
             >
                 <div class="flex items-center space-x-2">
                     <div class="flex items-baseline space-x-2">
@@ -279,19 +280,22 @@
                         >
                     </div>
                 </div>
-                <div class="flex items-center gap-3">
-                    <div
-                        class="flex items-center text-slate-500 font-bold text-[10px] uppercase tracking-widest"
+                <div class="flex items-center gap-1">
+                    <button
                         id="topbar-status"
+                        class="w-6 h-6 flex items-center justify-center rounded-md hover:bg-slate-100 transition-colors text-green-500"
+                        title="网络状态"
                     >
-                        <span class="pulsing-dot" id="net-status-text">检测中</span>
-                    </div>
+                        <span class="material-symbols-outlined icon-sm" id="net-status-icon"
+                            >wifi</span
+                        >
+                    </button>
                     <button
                         id="btn-theme-toggle"
-                        class="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-slate-100 transition-colors text-slate-400 hover:text-slate-600"
+                        class="w-6 h-6 flex items-center justify-center rounded-md hover:bg-slate-100 transition-colors text-slate-400 hover:text-slate-600"
                         title="切换主题"
                     >
-                        <span class="material-symbols-outlined text-base" id="theme-icon"
+                        <span class="material-symbols-outlined icon-sm" id="theme-icon"
                             >dark_mode</span
                         >
                     </button>

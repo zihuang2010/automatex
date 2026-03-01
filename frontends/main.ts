@@ -195,14 +195,19 @@ window.addEventListener('DOMContentLoaded', () => {
 
     // ── Step 7: 网络状态检测 ──
     function updateNetworkStatus() {
-        const dot = document.getElementById('net-status-text');
-        if (!dot) return;
+        const icon = document.getElementById('net-status-icon');
+        const btn = document.getElementById('topbar-status');
+        if (!icon || !btn) return;
         if (navigator.onLine) {
-            dot.textContent = '已连接';
-            dot.classList.remove('offline');
+            icon.textContent = 'wifi';
+            btn.classList.remove('text-red-500');
+            btn.classList.add('text-green-500');
+            btn.title = '网络已连接';
         } else {
-            dot.textContent = '已断开';
-            dot.classList.add('offline');
+            icon.textContent = 'wifi_off';
+            btn.classList.remove('text-green-500');
+            btn.classList.add('text-red-500');
+            btn.title = '网络已断开';
         }
     }
     updateNetworkStatus();

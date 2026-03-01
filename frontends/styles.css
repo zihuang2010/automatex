@@ -762,6 +762,38 @@
     animation: btn-pulse 1.2s ease-in-out infinite;
 }
 
+/* ══════ CITY DRAG & DROP (SortableJS) ══════ */
+.city-draggable {
+    cursor: default;
+}
+
+.city-drag-handle {
+    cursor: grab;
+    touch-action: none;
+}
+
+.city-ghost {
+    opacity: 0.3;
+    border: 2px dashed #3b82f6 !important;
+    background-color: rgba(59, 130, 246, 0.05) !important;
+}
+
+.city-chosen {
+    box-shadow: 0 4px 20px rgba(37, 99, 235, 0.2);
+}
+
+.city-drag {
+    opacity: 0.95;
+    transform: scale(1.02);
+    box-shadow: 0 8px 30px rgba(37, 99, 235, 0.25);
+    z-index: 50;
+}
+
+.city-fallback {
+    opacity: 0.95;
+    box-shadow: 0 8px 30px rgba(37, 99, 235, 0.25);
+}
+
 /* ══════ EMPTY HINT ══════ */
 .empty-hint {
     @apply text-center py-8 px-4 text-xs text-s300 font-medium;
