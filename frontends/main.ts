@@ -4,6 +4,8 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { platform } from '@tauri-apps/plugin-os';
 import { DeviceState } from './constants';
 import { setActiveTask, setActiveCityIdx, globalQueue, activeTask, selectedDevice } from './state';
 import { $ } from './utils';
@@ -32,6 +34,20 @@ import { initSettings, updateMqttStatusUI } from './settings';
 
 /* ===== Theme Toggle ===== */
 
+/** 同步 Tauri 窗口背景色与当前主题 */
+function syncWindowBg() {
+    try {
+        const isDark = document.documentElement.classList.contains('dark');
+        const color = isDark ? '#0f1117' : '#f8fafc';
+        // 使用 Tauri webview 的 setBackgroundColor API（如果可用）
+        const win = getCurrentWindow();
+        // Tauri v2 支持 RGBA 格式
+        win.setBackgroundColor(color).catch(() => {});
+    } catch {
+        // 非 Tauri 环境忽略
+    }
+}
+
 function initTheme() {
     const saved = localStorage.getItem('theme');
     // 默认暗色，仅用户明确选择 light 时才用亮色
@@ -39,12 +55,14 @@ function initTheme() {
         document.documentElement.classList.add('dark');
     }
     updateThemeIcon();
+    syncWindowBg();
 }
 
 function toggleTheme() {
     const isDark = document.documentElement.classList.toggle('dark');
     localStorage.setItem('theme', isDark ? 'dark' : 'light');
     updateThemeIcon();
+    syncWindowBg();
 }
 
 function updateThemeIcon() {
@@ -92,6 +110,42 @@ window.addEventListener('DOMContentLoaded', () => {
     // ── Step 0: 初始化主题 ──
     initTheme();
     $('#btn-theme-toggle')?.addEventListener('click', toggleTheme);
+
+    // ── Step 0.5: 自定义窗口控件（全平台 decorations: false）──
+    const currentPlatform = platform();
+    const appWindow = getCurrentWindow();
+
+    if (currentPlatform === 'macos') {
+        // macOS: 显示交通灯按钮
+        const macControls = document.getElementById('mac-controls');
+        if (macControls) {
+            macControls.classList.remove('hidden');
+            macControls.classList.add('flex');
+        }
+        $('#btn-mac-close')?.addEventListener('click', () => appWindow.close());
+        $('#btn-mac-minimize')?.addEventListener('click', () => appWindow.minimize());
+        $('#btn-mac-maximize')?.addEventListener('click', () => appWindow.toggleMaximize());
+    } else if (currentPlatform === 'windows') {
+        // Windows: 显示方块按钮
+        const winControls = document.getElementById('window-controls');
+        if (winControls) {
+            winControls.classList.remove('hidden');
+            winControls.classList.add('flex');
+        }
+        // Windows 调整顶部 padding
+        const header = document.querySelector('header');
+        if (header) {
+            header.classList.remove('pt-3');
+            header.classList.add('pt-1');
+        }
+        // Windows 不需要圆角
+        document.documentElement.style.borderRadius = '0';
+        document.body.style.borderRadius = '0';
+
+        $('#btn-win-minimize')?.addEventListener('click', () => appWindow.minimize());
+        $('#btn-win-maximize')?.addEventListener('click', () => appWindow.toggleMaximize());
+        $('#btn-win-close')?.addEventListener('click', () => appWindow.close());
+    }
 
     // ── Step 1: 注册跨模块回调（打破循环依赖）──
     setRefreshCallbacks(() => fullRefresh());

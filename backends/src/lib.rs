@@ -644,6 +644,7 @@ async fn engine_reorder_cities(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_os::init())
         .setup(|app| {
             let app_data_dir =
                 app.path().app_data_dir().map_err(|e| format!("获取数据目录失败: {}", e))?;

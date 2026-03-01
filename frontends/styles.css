@@ -163,10 +163,17 @@
 
 /* ─── Base Resets ─── */
 @layer base {
+    html {
+        @apply h-full;
+        border-radius: 10px;
+        overflow: hidden;
+    }
+
     body {
         font-family: 'Inter', sans-serif;
         color: var(--deep-charcoal);
         background-color: var(--premium-bg);
+        border-radius: 10px;
         @apply h-full text-[13px] leading-normal overflow-hidden antialiased;
     }
 }
@@ -445,6 +452,7 @@
 .splash {
     @apply fixed inset-0 z-[9999] flex items-center justify-center overflow-hidden;
     background: radial-gradient(ellipse at center, #1a0a0a 0%, #0a0505 40%, #050202 100%);
+    border-radius: 10px;
     transition:
         opacity 0.6s var(--ease-smooth),
         filter 0.6s var(--ease-smooth);
@@ -687,10 +695,12 @@
 
 /* ── 标题文字（暗底亮字） ── */
 .splash-name {
-    @apply text-[32px] font-extrabold tracking-wider mt-5;
-    color: #fecaca;
+    @apply text-[36px] font-black tracking-[6px] uppercase mt-6;
+    color: rgba(255, 255, 255, 0.9);
     animation: s-fade-in 0.6s var(--ease-smooth) 0.3s both;
-    text-shadow: 0 0 40px rgba(220, 38, 38, 0.4);
+    text-shadow:
+        0 0 30px rgba(220, 38, 38, 0.5),
+        0 0 60px rgba(185, 28, 28, 0.2);
 }
 
 .splash.loaded .splash-name {
