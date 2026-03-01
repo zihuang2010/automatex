@@ -27,5 +27,3 @@ dist-ssr
 backends/binaries/*
 backends/target/*
 
-# Output
-output

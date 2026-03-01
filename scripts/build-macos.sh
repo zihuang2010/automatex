@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────
 #  AutomateX — macOS 构建脚本
-#  产物：.dmg / .app (位于 backends/target/release/bundle/)
+#  产物：.dmg / .app (位于 backends/target/output/)
 # ──────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -52,13 +52,13 @@ npm ci --prefer-offline 2>/dev/null || npm install
 info "开始构建 $APP_NAME (Release)..."
 npx tauri build --target "$TARGET"
 
-# ── 收集产物到 output/ ──
+# ── 收集产物到 backends/target/output/ ──
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 info "构建完成！收集产物..."
 
 ARCH_LABEL=$([ "$ARCH" = "arm64" ] && echo "arm64" || echo "x64")
-OUTPUT_DIR="$ROOT_DIR/output/macos-${ARCH_LABEL}"
+OUTPUT_DIR="$ROOT_DIR/backends/target/output/macos-${ARCH_LABEL}"
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 
