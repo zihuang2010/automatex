@@ -144,11 +144,6 @@ fn build_task(db: &Database, def: MockTaskDef) -> Task {
         cities = done.into_iter().chain(pending).collect();
     }
 
-    // 激活第一个未完成的城市
-    if let Some(first_pending) = cities.iter_mut().find(|c| c.status == city_status::PENDING) {
-        first_pending.status = city_status::ACTIVE.to_string();
-    }
-
     // 默认状态：从进度推断
     let inferred_status = if all_done && !completed.is_empty() {
         task_status::SUCCESS
@@ -175,6 +170,15 @@ fn build_task(db: &Database, def: MockTaskDef) -> Task {
         },
         None => inferred_status.to_string(),
     };
+
+    // 只有任务在 EXECUTING 或 PAUSED 时，才激活第一个 pending 城市
+    // WAITING 状态下所有城市保持 pending，允许用户自由排序
+    if final_status != task_status::WAITING && final_status != task_status::SUCCESS {
+        if let Some(first_pending) = cities.iter_mut().find(|c| c.status == city_status::PENDING) {
+            first_pending.status = city_status::ACTIVE.to_string();
+        }
+    }
+
     // 重启后统一释放设备绑定（与手动暂停/停止行为一致）
     let assigned_device: Option<String> = None;
 

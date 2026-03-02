@@ -307,13 +307,14 @@ fn fetch_device_row(serial: &str, state: &str) -> DeviceRow {
     let device_type = if serial.contains(':') { "wifi" } else { "usb" };
     let address = if device_type == "wifi" { Some(serial.to_string()) } else { None };
 
-    let raw = connection::adb_command()
-        .args(["-s", serial, "shell", BATCH_PROPS_CMD])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-        .unwrap_or_default();
+    let raw = connection::run_adb_timed(
+        connection::adb_command().args(["-s", serial, "shell", BATCH_PROPS_CMD]),
+        constants::timing::ADB_COMMAND_TIMEOUT_SECS,
+    )
+    .ok()
+    .filter(|o| o.status.success())
+    .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+    .unwrap_or_default();
 
     let model = get_tagged_field(&raw, "__MODEL__=");
     let brand = get_tagged_field(&raw, "__BRAND__=");

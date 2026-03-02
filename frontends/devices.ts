@@ -1,13 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { DeviceState } from './constants';
 import { DeviceRow } from './types';
-import {
-  selectedDevice,
-  globalQueue,
-  setSelectedDevice,
-  setCachedDevices,
-  getAssignedDeviceSerials,
-} from './state';
+import { selectedDevice, globalQueue, setSelectedDevice, getAssignedDeviceSerials } from './state';
 import { $, esc, timeAgo, getDeviceName } from './utils';
 
 // 回调注册（由 main.ts 初始化后设置，避免循环依赖）
@@ -29,7 +23,6 @@ export async function refreshDevices(): Promise<DeviceRow[]> {
 
   try {
     const devs: DeviceRow[] = await invoke('list_devices');
-    setCachedDevices(devs);
     renderDeviceCards(devs);
 
     if (selectedDevice && !devs.some(d => d.serial === selectedDevice)) {

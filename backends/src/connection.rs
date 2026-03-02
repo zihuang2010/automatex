@@ -176,7 +176,7 @@ fn parse_wifi_address(addr: &str) -> Result<std::net::SocketAddr, String> {
 }
 
 /// FIX #4: 带超时的 ADB 命令执行（防止进程永久阻塞）
-fn run_adb_timed(
+pub(crate) fn run_adb_timed(
     cmd: &mut std::process::Command,
     timeout_secs: u64,
 ) -> Result<std::process::Output, String> {

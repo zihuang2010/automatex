@@ -127,7 +127,10 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_progress_task ON a_task_progress(task_id);
             CREATE INDEX IF NOT EXISTS idx_progress_sync ON a_task_progress(sync_status);
             CREATE INDEX IF NOT EXISTS idx_runs_date ON a_task_runs(run_date, task_id);
-            CREATE INDEX IF NOT EXISTS idx_runs_sync ON a_task_runs(sync_status);",
+            CREATE INDEX IF NOT EXISTS idx_runs_sync ON a_task_runs(sync_status);
+            CREATE INDEX IF NOT EXISTS idx_runs_task_started ON a_task_runs(task_id, started_at);
+            CREATE INDEX IF NOT EXISTS idx_runs_task_date ON a_task_runs(task_id, run_date);
+            CREATE INDEX IF NOT EXISTS idx_runs_device_date ON a_task_runs(device_serial, run_date);",
             )
             .map_err(|e| format!("建表失败: {}", e))?;
 

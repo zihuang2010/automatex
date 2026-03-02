@@ -135,17 +135,19 @@ impl MqttManager {
         Ok("MQTT 连接中...".to_string())
     }
 
-    /// FIX #8: 先 cancel → 等待事件循环退出 → 再 disconnect
+    /// FIX #12: 先 disconnect（发送 DISCONNECT 包）→ cancel → 等待事件循环退出
     pub async fn disconnect(&self) -> Result<String, String> {
+        // 1. 先发送 DISCONNECT 包（eventloop 仍在运行，可以 poll 发出去）
+        if let Some(client) = self.client.lock().await.take() {
+            let _ = client.disconnect().await;
+        }
+        // 2. 通知事件循环停止
         if let Some(tx) = self.cancel_tx.lock().await.take() {
             let _ = tx.send(true);
         }
-        // 等待事件循环任务退出（最多 2s）
+        // 3. 等待事件循环任务退出（最多 2s）
         if let Some(handle) = self.loop_handle.lock().await.take() {
             let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
-        }
-        if let Some(client) = self.client.lock().await.take() {
-            client.disconnect().await.map_err(|e| format!("断开失败: {}", e))?;
         }
         *self.status.lock().await = MqttStatus::Disconnected;
         Ok("MQTT 已断开".to_string())

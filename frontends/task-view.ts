@@ -206,7 +206,7 @@ function buildHeader(task: {
       bg: 'bg-red-100',
       text: 'text-red-700',
       border: 'border-red-200',
-      label: '异常',
+      label: '异常暂停',
     },
   };
   const badge = badgeMap[task.status] || badgeMap[TaskStatus.WAITING];
@@ -227,7 +227,9 @@ function buildHeader(task: {
       ? `<button onclick="window.__taskResume('${task.id}')" class="flex items-center gap-2.5 px-5 py-2 bg-emerald-500 hover:bg-emerald-600 text-white font-medium rounded-xl transition-all shadow-lg shadow-emerald-500/20 text-xs"><span class="material-symbols-outlined text-base">play_arrow</span><span class="font-bold" style="letter-spacing:0.15em">继续</span></button>`
       : '';
   const btnRetry =
-    task.status === TaskStatus.ERROR || task.status === TaskStatus.SUCCESS
+    task.status === TaskStatus.ERROR ||
+    task.status === TaskStatus.SUCCESS ||
+    task.status === TaskStatus.PAUSED
       ? `<button onclick="window.__taskRetry('${task.id}')" class="flex items-center gap-2.5 px-5 py-2 bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-xl transition-all shadow-lg shadow-blue-500/20 text-xs"><span class="material-symbols-outlined text-base">replay</span><span class="font-bold" style="letter-spacing:0.15em">重跑</span></button>`
       : '';
   const btnStop =
@@ -334,16 +336,21 @@ async function buildMetrics(task: {
 function buildCityCards(task: { cities: TaskCity[] }): string {
   return task.cities
     .map((c: TaskCity, i: number) => {
-      const isActive = i === activeCityIdx;
       const isPending = c.status === CityStatus.PENDING;
-      const borderCls = isActive ? 'border-2 border-blue-500 shadow-md' : 'border border-s200';
+      const isSelected = i === activeCityIdx;
+      const isExecuting = c.status === CityStatus.ACTIVE;
+      const borderCls = isSelected
+        ? isExecuting
+          ? 'border-2 border-blue-500 shadow-md'
+          : 'border-2 border-green-400 shadow-md'
+        : 'border border-s200';
       const statusIcon =
         c.status === CityStatus.DONE
           ? '<span class="material-symbols-outlined text-green-500 icon-sm fill-1">check_circle</span>'
           : c.status === CityStatus.ACTIVE
             ? '<div class="h-1.5 w-1.5 rounded-full bg-blue-500"></div>'
             : '<span class="material-symbols-outlined text-s300 icon-sm">schedule</span>';
-      const nameWeight = isActive ? 'font-bold text-s900' : 'font-semibold text-s500';
+      const nameWeight = isSelected ? 'font-bold text-s900' : 'font-semibold text-s500';
       const barBg =
         c.status === CityStatus.DONE
           ? 'bg-green-50'
@@ -381,7 +388,7 @@ function buildCityCards(task: { cities: TaskCity[] }): string {
         ? '<span class="material-symbols-outlined text-s300 text-sm cursor-grab city-drag-handle">drag_indicator</span>'
         : '';
       return `
-      <div class="city-card ${cardBg} rounded-md ${borderCls} p-3 cursor-pointer ${!isActive ? 'hover:bg-s50' : ''} transition-all relative overflow-hidden ${dragCls}" style="width:220px;min-width:220px;flex-shrink:0" data-city-name="${esc(c.name)}" data-city-idx="${i}" ${dragAttr} onclick="window.__switchCity(${i})">
+      <div class="city-card ${cardBg} rounded-md ${borderCls} p-3 cursor-pointer ${!isSelected ? 'hover:bg-s50' : ''} transition-all relative overflow-hidden ${dragCls}" style="width:220px;min-width:220px;flex-shrink:0" data-city-name="${esc(c.name)}" data-city-idx="${i}" ${dragAttr} onclick="window.__switchCity(${i})">
         <div class="flex items-center justify-between mb-2">
           <div class="flex items-center space-x-2">
             ${dragHandle}

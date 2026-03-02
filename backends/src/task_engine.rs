@@ -14,6 +14,17 @@ use rand::RngExt;
 
 // ─── 运行中任务的状态 ──────────────────────────────────────────
 
+/// 回退任务中所有 RUN 状态的关键词为 PENDING
+fn rollback_running_keywords(task: &mut Task) {
+    for city in &mut task.cities {
+        for kw in &mut city.keywords {
+            if kw.status == keyword_status::RUN {
+                kw.status = keyword_status::PENDING.to_string();
+            }
+        }
+    }
+}
+
 struct RunningTask {
     cancel: CancellationToken,
     started_at: i64,
@@ -179,13 +190,7 @@ impl TaskEngine {
             let mut tasks = self.tasks.write().await;
             if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
                 // RUN → PENDING（未执行完的关键词回退）
-                for city in &mut task.cities {
-                    for kw in &mut city.keywords {
-                        if kw.status == keyword_status::RUN {
-                            kw.status = keyword_status::PENDING.to_string();
-                        }
-                    }
-                }
+                rollback_running_keywords(task);
                 task.status = task_status::PAUSED.to_string();
                 task.assigned_device = None;
             }
@@ -371,9 +376,9 @@ impl TaskEngine {
         let online_set: HashSet<&str> = online_serials.iter().map(|s| s.as_str()).collect();
         let mut released = 0u32;
 
-        let to_release: Vec<(String, Option<RunningTask>)> = {
+        // Step 1: 读锁收集需要释放的任务 ID（不持有 running 锁）
+        let task_ids_to_release: Vec<String> = {
             let tasks = self.tasks.read().await;
-            let mut running = self.running.write().await;
             tasks
                 .iter()
                 .filter(|t| {
@@ -381,17 +386,27 @@ impl TaskEngine {
                         && (t.status == task_status::EXECUTING || t.status == task_status::PAUSED)
                         && !online_set.contains(t.assigned_device.as_deref().unwrap_or(""))
                 })
-                .map(|t| {
-                    // FIX #3: 先 cancel 再 remove
-                    if let Some(entry) = running.get(&t.id) {
+                .map(|t| t.id.clone())
+                .collect()
+        };
+
+        // Step 2: 单独获取 running 写锁，cancel + remove
+        let run_infos: Vec<(String, Option<RunningTask>)> = {
+            let mut running = self.running.write().await;
+            task_ids_to_release
+                .into_iter()
+                .map(|tid| {
+                    if let Some(entry) = running.get(&tid) {
                         entry.cancel.cancel();
                     }
-                    (t.id.clone(), running.remove(&t.id))
+                    let info = running.remove(&tid);
+                    (tid, info)
                 })
                 .collect()
         };
 
-        for (task_id, run_info) in to_release {
+        // Step 3: DB 操作 + 批量更新 tasks 状态
+        for (task_id, run_info) in &run_infos {
             if let Some(run) = run_info {
                 let db = Arc::clone(&self.storage);
                 let tid = task_id.clone();
@@ -402,14 +417,6 @@ impl TaskEngine {
                 .await
                 {
                     eprintln!("[engine] finish_task_run 失败: {}", e);
-                }
-            }
-
-            {
-                let mut tasks = self.tasks.write().await;
-                if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
-                    task.status = task_status::ERROR.to_string();
-                    task.assigned_device = None;
                 }
             }
 
@@ -426,7 +433,17 @@ impl TaskEngine {
             released += 1;
         }
 
+        // Step 4: 批量更新 tasks 写锁（只获取一次）
         if released > 0 {
+            {
+                let mut tasks = self.tasks.write().await;
+                for (task_id, _) in &run_infos {
+                    if let Some(task) = tasks.iter_mut().find(|t| t.id == *task_id) {
+                        task.status = task_status::ERROR.to_string();
+                        task.assigned_device = None;
+                    }
+                }
+            }
             self.emit_update().await;
         }
         released
@@ -501,6 +518,22 @@ impl TaskEngine {
     /// FIX #1: done 计数移到 RUN→OK 时
     /// FIX #2: 所有 TaskSuccess 都走 effect 通道（labeled block）
     async fn tick(&self, task_id: &str) -> bool {
+        // Step 1: DB 查询在写锁外执行（避免在持有 RwLock 时阻塞在同步 Mutex 上）
+        let device_serial_for_check = {
+            let tasks = self.tasks.read().await;
+            tasks.iter().find(|t| t.id == task_id).and_then(|t| t.assigned_device.clone())
+        };
+        let device_online = device_serial_for_check
+            .as_deref()
+            .map(|serial| {
+                self.storage
+                    .get_device_by_serial(serial)
+                    .map(|d| d.state == crate::constants::device_state::DEVICE)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+
+        // Step 2: 获取写锁执行状态变更
         let effect = 'effect: {
             let mut tasks = self.tasks.write().await;
             let task = match tasks.iter_mut().find(|t| t.id == task_id) {
@@ -514,21 +547,9 @@ impl TaskEngine {
 
             let device_serial = task.assigned_device.clone().unwrap_or_default();
 
-            // 检测设备是否仍在线，避免产生虚假进度
-            let device_online = self
-                .storage
-                .get_device_by_serial(&device_serial)
-                .map(|d| d.state == crate::constants::device_state::DEVICE)
-                .unwrap_or(false);
+            // 使用锁外查询的结果
             if !device_online {
-                // 回退 RUN 状态的关键词
-                for city in &mut task.cities {
-                    for kw in &mut city.keywords {
-                        if kw.status == keyword_status::RUN {
-                            kw.status = keyword_status::PENDING.to_string();
-                        }
-                    }
-                }
+                rollback_running_keywords(task);
                 task.status = task_status::ERROR.to_string();
                 task.assigned_device = None;
                 break 'effect TickEffect::DeviceOffline { task_id: task_id.to_string() };
@@ -536,23 +557,17 @@ impl TaskEngine {
 
             // ── 风控模拟 ──────────────────────────────────────────
             // TODO: 这里未来替换为真实的 ADB 操作检测逻辑
-            // 当前以 50% 概率随机触发风控，模拟操作设备时发现无法
+            // 当前以 10% 概率随机触发风控，模拟操作设备时发现无法
             // 找到元素、应用崩溃等不可控异常
             {
                 let mut rng = rand::rng();
-                if rng.random_bool(0.5) {
+                if rng.random_bool(0.05) {
                     eprintln!(
                         "[engine] risk-control triggered (simulated): task={}, device={}",
                         task_id, device_serial
                     );
                     // 回退 RUN 状态的关键词
-                    for city in &mut task.cities {
-                        for kw in &mut city.keywords {
-                            if kw.status == keyword_status::RUN {
-                                kw.status = keyword_status::PENDING.to_string();
-                            }
-                        }
-                    }
+                    rollback_running_keywords(task);
                     task.status = task_status::ERROR.to_string();
                     task.assigned_device = None;
                     break 'effect TickEffect::RiskControl {
