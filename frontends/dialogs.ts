@@ -7,109 +7,112 @@ import { refreshDevices, updateCardSelection } from './devices';
 /* ===== Add Device Dialog ===== */
 
 export function showAddDeviceDialog() {
-    const modal = $('#add-device-modal')!;
-    const addrInput = $('#add-device-addr') as HTMLInputElement;
-    const nameInput = $('#add-device-name') as HTMLInputElement;
-    const errorDiv = $('#add-device-error')!;
-    modal.style.display = 'flex';
-    addrInput.value = '';
-    nameInput.value = '';
-    errorDiv.style.display = 'none';
-    addrInput.focus();
+  const modal = $('#add-device-modal')!;
+  const addrInput = $('#add-device-addr') as HTMLInputElement;
+  const nameInput = $('#add-device-name') as HTMLInputElement;
+  const errorDiv = $('#add-device-error')!;
+  modal.style.display = 'flex';
+  addrInput.value = '';
+  nameInput.value = '';
+  errorDiv.style.display = 'none';
+  addrInput.focus();
 }
 
 export function hideAddDeviceDialog() {
-    ($('#add-device-modal') as HTMLElement).style.display = 'none';
+  ($('#add-device-modal') as HTMLElement).style.display = 'none';
 }
 
 export async function submitAddDevice() {
-    const addrInput = $('#add-device-addr') as HTMLInputElement;
-    const nameInput = $('#add-device-name') as HTMLInputElement;
-    const errorDiv = $('#add-device-error')!;
-    const submitBtn = $('#add-device-submit') as HTMLButtonElement;
+  const addrInput = $('#add-device-addr') as HTMLInputElement;
+  const nameInput = $('#add-device-name') as HTMLInputElement;
+  const errorDiv = $('#add-device-error')!;
+  const submitBtn = $('#add-device-submit') as HTMLButtonElement;
 
-    const addr = addrInput.value.trim();
-    if (!addr) {
-        errorDiv.textContent = '请输入设备地址';
-        errorDiv.style.display = 'block';
-        return;
-    }
+  const addr = addrInput.value.trim();
+  if (!addr) {
+    errorDiv.textContent = '请输入设备地址';
+    errorDiv.style.display = 'block';
+    return;
+  }
 
-    submitBtn.disabled = true;
-    submitBtn.innerHTML = '<span class="spinner-sm"></span> 连接中…';
-    errorDiv.style.display = 'none';
+  submitBtn.disabled = true;
+  submitBtn.innerHTML = '<span class="spinner-sm"></span> 连接中…';
+  errorDiv.style.display = 'none';
 
-    try {
-        await invoke('add_device', { address: addr, name: nameInput.value.trim() });
-        hideAddDeviceDialog();
-        showToast('设备添加成功', 'info');
-        await refreshDevices();
-    } catch (e) {
-        errorDiv.textContent = String(e);
-        errorDiv.style.display = 'block';
-    } finally {
-        submitBtn.disabled = false;
-        submitBtn.innerHTML = '连接';
-    }
+  try {
+    await invoke('add_device', { address: addr, name: nameInput.value.trim() });
+    hideAddDeviceDialog();
+    showToast('设备添加成功', 'info');
+    await refreshDevices();
+  } catch (e) {
+    errorDiv.textContent = String(e);
+    errorDiv.style.display = 'block';
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.innerHTML = '连接';
+  }
 }
 
 /* ===== Remove Device ===== */
 
 export async function removeSelectedDevice() {
-    if (!selectedDevice) return;
-    try {
-        await invoke('remove_device', { serial: selectedDevice });
-        setSelectedDevice(null);
-        updateCardSelection();
-        showToast('设备已移除', 'info');
-        await refreshDevices();
-    } catch (e) {
-        showToast(`移除失败: ${e}`, 'error');
-    }
+  if (!selectedDevice) return;
+  try {
+    await invoke('remove_device', { serial: selectedDevice });
+    setSelectedDevice(null);
+    updateCardSelection();
+    showToast('设备已移除', 'info');
+    await refreshDevices();
+  } catch (e) {
+    showToast(`移除失败: ${e}`, 'error');
+  }
 }
 
 /* ===== Unflag Device ===== */
 
 export async function unflagSelectedDevice() {
-    if (!selectedDevice) return;
-    try {
-        await invoke('unflag_device', { serial: selectedDevice });
-        showToast('设备风控标记已解除', 'info');
-        const unflagBtn = $('#btn-unflag-device') as HTMLButtonElement;
-        if (unflagBtn) unflagBtn.disabled = true;
-        await refreshDevices();
-    } catch (e) {
-        showToast(`解除失败: ${e}`, 'error');
-    }
+  if (!selectedDevice) return;
+  try {
+    await invoke('unflag_device', { serial: selectedDevice });
+    showToast('设备风控标记已解除', 'info');
+    setSelectedDevice(null);
+    const unflagBtn = $('#btn-unflag-device') as HTMLButtonElement;
+    const removeBtn = $('#btn-remove-selected') as HTMLButtonElement;
+    if (unflagBtn) unflagBtn.disabled = true;
+    if (removeBtn) removeBtn.disabled = true;
+    await refreshDevices();
+  } catch (e) {
+    showToast(`解除失败: ${e}`, 'error');
+  }
 }
 
 /* ===== Device Info Modal ===== */
 
 export async function showDeviceInfo(serial: string) {
-    const m = $('#modal')!;
-    const b = $('#modal-body')!;
-    m.style.display = 'flex';
-    b.innerHTML = '<div class="text-center p-4.5"><span class="spinner"></span></div>';
-    try {
-        const i: DeviceRow = await invoke('get_device_info', { serial });
-        const typeLabel = i.device_type === 'usb' ? 'USB' : 'WiFi';
-        const typeIcon =
-            i.device_type === 'usb'
-                ? '<span class="material-symbols-outlined text-base">usb</span>'
-                : '<span class="material-symbols-outlined text-base">wifi</span>';
-        const batteryPct = i.battery_level ?? 0;
-        const batteryColor = batteryPct < 30 ? 'text-orange-500' : 'text-green-600';
-        const tempVal = i.battery_temperature ?? 0;
-        const tempColor = tempVal > 40 ? 'text-orange-500' : 'text-s500';
+  const m = $('#modal')!;
+  const b = $('#modal-body')!;
+  m.style.display = 'flex';
+  b.innerHTML = '<div class="text-center p-4.5"><span class="spinner"></span></div>';
+  try {
+    const i: DeviceRow = await invoke('get_device_info', { serial });
+    const typeLabel = i.device_type === 'usb' ? 'USB' : 'WiFi';
+    const typeIcon =
+      i.device_type === 'usb'
+        ? '<span class="material-symbols-outlined text-base">usb</span>'
+        : '<span class="material-symbols-outlined text-base">wifi</span>';
+    const batteryPct = i.battery_level ?? 0;
+    const batteryColor = batteryPct < 30 ? 'text-orange-500' : 'text-green-600';
+    const tempVal = i.battery_temperature ?? 0;
+    const tempColor = tempVal > 40 ? 'text-orange-500' : 'text-s500';
 
-        const flaggedBanner = i.is_flagged
-            ? `<div class="flex items-center gap-2 px-3 py-2 bg-orange-50 border border-orange-200 rounded-lg mb-4">
-                <span class="material-symbols-outlined text-orange-500 text-base">warning</span>
-                <span class="text-[11px] font-bold text-orange-600">该设备已被标记为风控，无法分配任务。请检查后手动解除标记。</span>
+    const flaggedBanner = i.is_flagged
+      ? `<div class="flex items-center gap-2 px-3 py-2 bg-orange-50 border border-orange-200 rounded-lg mb-4">
+                <span class="material-symbols-outlined text-orange-500 icon-sm text-base">warning</span>
+                <span class="text-[12px] font-bold text-orange-600">设备已被标记为风控，请检查后手动解除标记。</span>
                </div>`
-            : '';
+      : '';
 
-        b.innerHTML = `
+    b.innerHTML = `
       ${flaggedBanner}
       <!-- Device Header -->
       <div class="flex items-center gap-3 mb-5">
@@ -165,7 +168,7 @@ export async function showDeviceInfo(serial: string) {
           <span class="text-[12px] font-mono font-medium text-s700">${esc(i.display_resolution)}</span>
         </div>
       </div>`;
-    } catch (e) {
-        b.innerHTML = `<p class="text-red-500 text-center py-4">获取失败: ${e}</p>`;
-    }
+  } catch (e) {
+    b.innerHTML = `<p class="text-red-500 text-center py-4">获取失败: ${e}</p>`;
+  }
 }

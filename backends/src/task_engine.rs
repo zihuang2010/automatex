@@ -536,11 +536,11 @@ impl TaskEngine {
 
             // ── 风控模拟 ──────────────────────────────────────────
             // TODO: 这里未来替换为真实的 ADB 操作检测逻辑
-            // 当前以 5% 概率随机触发风控，模拟操作设备时发现无法
+            // 当前以 50% 概率随机触发风控，模拟操作设备时发现无法
             // 找到元素、应用崩溃等不可控异常
             {
                 let mut rng = rand::rng();
-                if rng.random_bool(0.05) {
+                if rng.random_bool(0.5) {
                     eprintln!(
                         "[engine] risk-control triggered (simulated): task={}, device={}",
                         task_id, device_serial

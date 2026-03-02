@@ -9,44 +9,40 @@ export let activeCityIdx = 0;
 /* ===== State Mutation Functions ===== */
 
 export function setSelectedDevice(serial: string | null) {
-    selectedDevice = serial;
+  selectedDevice = serial;
 }
 
 export function setGlobalQueue(tasks: Task[]) {
-    globalQueue = tasks;
+  globalQueue = tasks;
 }
 
 export function setActiveTask(task: Task | null) {
-    activeTask = task;
+  activeTask = task;
 }
 
 export function setActiveCityIdx(idx: number) {
-    activeCityIdx = idx;
+  activeCityIdx = idx;
 }
 
 /* ===== Cached Device List (from last refresh) ===== */
 let cachedDevices: DeviceRow[] = [];
 
-export function getCachedDevices(): DeviceRow[] {
-    return cachedDevices;
-}
-
 export function setCachedDevices(devices: DeviceRow[]) {
-    cachedDevices = devices;
+  cachedDevices = devices;
 }
 
 /* ===== Derived State (单一来源，避免重复实现) ===== */
 
 /** 获取正在执行任务的已分配设备 serial 集合 */
 export function getAssignedDeviceSerials(): Set<string> {
-    return new Set(
-        globalQueue
-            .filter(t => t.assigned_device && t.status === TaskStatus.EXECUTING)
-            .map(t => t.assigned_device!),
-    );
+  return new Set(
+    globalQueue
+      .filter(t => t.assigned_device && t.status === TaskStatus.EXECUTING)
+      .map(t => t.assigned_device!),
+  );
 }
 
 /** 根据 serial 查找设备 */
 export function getDeviceBySerial(serial: string): DeviceRow | undefined {
-    return cachedDevices.find(d => d.serial === serial);
+  return cachedDevices.find(d => d.serial === serial);
 }

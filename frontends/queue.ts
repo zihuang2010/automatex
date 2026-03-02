@@ -10,40 +10,40 @@ let _lastQueueHtml = '';
 
 /** 解析设备显示标签（从 cachedDevices 查找，避免 DOM 耦合） */
 function resolveDeviceLabel(serial: string): string {
-    const dev = getDeviceBySerial(serial);
-    if (dev) {
-        const hwid = dev.hw_serial || dev.serial;
-        return hwid.length > 14 ? hwid.substring(0, 14) : hwid;
-    }
-    return serial.substring(0, 14);
+  const dev = getDeviceBySerial(serial);
+  if (dev) {
+    const hwid = dev.hw_serial || dev.serial;
+    return hwid.length > 14 ? hwid.substring(0, 14) : hwid;
+  }
+  return serial.substring(0, 14);
 }
 
 export function loadChainForDevice(_serial: string) {
-    const cards = $('#chain-cards')!;
+  const cards = $('#chain-cards')!;
 
-    const queueSub = document.querySelector('.queue-sub');
-    const executingCount = globalQueue.filter(t => t.status === TaskStatus.EXECUTING).length;
-    if (queueSub)
-        queueSub.textContent = `${executingCount} 个执行中 · 共 ${globalQueue.length} 个任务`;
+  const queueSub = document.querySelector('.queue-sub');
+  const executingCount = globalQueue.filter(t => t.status === TaskStatus.EXECUTING).length;
+  if (queueSub)
+    queueSub.textContent = `${executingCount} 个执行中 · 共 ${globalQueue.length} 个任务`;
 
-    const newHtml = globalQueue
-        .map((q: Task) => {
-            const isActive = q === activeTask;
-            const deviceSub = q.assigned_device ? resolveDeviceLabel(q.assigned_device) : '';
-            const kwTotal = q.cities.reduce((s: number, c: { total: number }) => s + c.total, 0);
-            const cityCount = q.cities.length;
-            const safeId = esc(q.id); // #8: XSS 转义
-            const ringColor =
-                q.status === TaskStatus.ERROR
-                    ? 'ring-red-200'
-                    : q.status === TaskStatus.PAUSED
-                      ? 'ring-amber-200'
-                      : q.status === TaskStatus.SUCCESS
-                        ? 'ring-green-200'
-                        : 'ring-blue-200';
-            const ring = isActive ? `ring-2 ${ringColor}` : '';
+  const newHtml = globalQueue
+    .map((q: Task) => {
+      const isActive = q === activeTask;
+      const deviceSub = q.assigned_device ? resolveDeviceLabel(q.assigned_device) : '';
+      const kwTotal = q.cities.reduce((s: number, c: { total: number }) => s + c.total, 0);
+      const cityCount = q.cities.length;
+      const safeId = esc(q.id); // #8: XSS 转义
+      const ringColor =
+        q.status === TaskStatus.ERROR
+          ? 'ring-red-200'
+          : q.status === TaskStatus.PAUSED
+            ? 'ring-amber-200'
+            : q.status === TaskStatus.SUCCESS
+              ? 'ring-green-200'
+              : 'ring-blue-200';
+      const ring = isActive ? `ring-2 ${ringColor}` : '';
 
-            const statsRow = `
+      const statsRow = `
         <div class="flex gap-4 text-s500">
           <div class="flex items-center gap-1">
             <span class="material-symbols-outlined icon-xs text-[14px]">domain</span>
@@ -55,10 +55,10 @@ export function loadChainForDevice(_serial: string) {
           </div>
         </div>`;
 
-            if (q.status === TaskStatus.EXECUTING) {
-                const kwDone = q.cities.reduce((s: number, c: { done: number }) => s + c.done, 0);
-                const pct = kwTotal > 0 ? Math.round((kwDone / kwTotal) * 100) : 0;
-                return `
+      if (q.status === TaskStatus.EXECUTING) {
+        const kwDone = q.cities.reduce((s: number, c: { done: number }) => s + c.done, 0);
+        const pct = kwTotal > 0 ? Math.round((kwDone / kwTotal) * 100) : 0;
+        return `
       <div class="bg-blue-50/40 border border-blue-100 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer transition-all hover:shadow-md ${ring}" onclick="window.__switchTask('${safeId}')">
         <div class="w-1 self-stretch bg-[#2563EB]"></div>
         <div class="flex-1 p-3 flex flex-col">
@@ -79,10 +79,10 @@ export function loadChainForDevice(_serial: string) {
           </div>
         </div>
       </div>`;
-            } else if (q.status === TaskStatus.PAUSED) {
-                const kwDone = q.cities.reduce((s: number, c: { done: number }) => s + c.done, 0);
-                const pct = kwTotal > 0 ? Math.round((kwDone / kwTotal) * 100) : 0;
-                return `
+      } else if (q.status === TaskStatus.PAUSED) {
+        const kwDone = q.cities.reduce((s: number, c: { done: number }) => s + c.done, 0);
+        const pct = kwTotal > 0 ? Math.round((kwDone / kwTotal) * 100) : 0;
+        return `
       <div class="bg-amber-50/40 border border-amber-100 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer transition-all hover:shadow-md ${ring}" onclick="window.__switchTask('${safeId}')">
         <div class="w-1 self-stretch bg-amber-400"></div>
         <div class="flex-1 p-3 flex flex-col">
@@ -102,8 +102,8 @@ export function loadChainForDevice(_serial: string) {
           </div>
         </div>
       </div>`;
-            } else if (q.status === TaskStatus.WAITING) {
-                return `
+      } else if (q.status === TaskStatus.WAITING) {
+        return `
       <div class="bg-s50/60 border border-s200 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer transition-all hover:shadow-md ${ring}" onclick="window.__switchTask('${safeId}')">
         <div class="w-1 self-stretch bg-[#64748B]"></div>
         <div class="flex-1 p-3">
@@ -116,8 +116,8 @@ export function loadChainForDevice(_serial: string) {
           ${statsRow}
         </div>
       </div>`;
-            } else if (q.status === TaskStatus.SUCCESS) {
-                return `
+      } else if (q.status === TaskStatus.SUCCESS) {
+        return `
       <div class="bg-green-50/40 border border-green-100 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer opacity-80 transition-all hover:opacity-100 ${ring}" onclick="window.__switchTask('${safeId}')">
         <div class="w-1 self-stretch bg-[#10B981]"></div>
         <div class="flex-1 p-3">
@@ -130,8 +130,8 @@ export function loadChainForDevice(_serial: string) {
           ${statsRow}
         </div>
       </div>`;
-            } else if (q.status === TaskStatus.ERROR) {
-                return `
+      } else if (q.status === TaskStatus.ERROR) {
+        return `
       <div class="bg-red-50/40 border border-red-100 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer transition-all hover:shadow-md ${ring}" onclick="window.__switchTask('${safeId}')">
         <div class="w-1 self-stretch bg-red-500"></div>
         <div class="flex-1 p-3">
@@ -145,15 +145,15 @@ export function loadChainForDevice(_serial: string) {
           <p class="text-[10px] text-red-500 font-medium">执行异常 · 等待操作</p>
         </div>
       </div>`;
-            } else {
-                return '';
-            }
-        })
-        .join('');
+      } else {
+        return '';
+      }
+    })
+    .join('');
 
-    // #5: 内容未变化时跳过 DOM 更新
-    if (newHtml !== _lastQueueHtml) {
-        cards.innerHTML = newHtml;
-        _lastQueueHtml = newHtml;
-    }
+  // #5: 内容未变化时跳过 DOM 更新
+  if (newHtml !== _lastQueueHtml) {
+    cards.innerHTML = newHtml;
+    _lastQueueHtml = newHtml;
+  }
 }
