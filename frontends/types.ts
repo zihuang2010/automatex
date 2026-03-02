@@ -44,6 +44,7 @@ export interface DeviceRow {
     display_resolution: string;
     battery_level: number;
     battery_temperature: number;
+    is_flagged: boolean;
     updated_at: number;
 }
 

@@ -53,10 +53,11 @@ fn pick_ready_serial(devices: &[DeviceRow], tasks: &[Task]) -> Result<String, St
         .iter()
         .find(|d| {
             d.state == crate::constants::device_state::DEVICE
+                && !d.is_flagged
                 && !assigned.contains(d.serial.as_str())
         })
         .map(|d| d.serial.clone())
-        .ok_or_else(|| "当前没有就绪的设备，请检查设备状态".to_string())
+        .ok_or_else(|| "当前没有就绪安全的设备，请检查设备状态".to_string())
 }
 
 pub struct TaskEngine {
@@ -441,7 +442,9 @@ impl TaskEngine {
         devices
             .into_iter()
             .filter(|d| {
-                d.state == crate::constants::device_state::DEVICE && !assigned.contains(&d.serial)
+                d.state == crate::constants::device_state::DEVICE
+                    && !d.is_flagged
+                    && !assigned.contains(&d.serial)
             })
             .map(|d| d.serial)
             .collect()

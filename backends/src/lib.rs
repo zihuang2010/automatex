@@ -66,6 +66,7 @@ async fn add_device(
         display_resolution: constants::device_state::UNKNOWN.to_string(),
         battery_level: 0,
         battery_temperature: 0.0,
+        is_flagged: false,
         updated_at: now,
     });
 
@@ -363,6 +364,7 @@ fn fetch_device_row(serial: &str, state: &str) -> DeviceRow {
         display_resolution,
         battery_level,
         battery_temperature,
+        is_flagged: false,
         updated_at: now,
     }
 }
@@ -638,6 +640,30 @@ async fn engine_reorder_cities(
     state.engine.reorder_cities(&task_id, new_order).await
 }
 
+/// 标记设备为风控
+#[tauri::command]
+fn flag_device(
+    serial: String,
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    state.db.flag_device(&serial);
+    let _ = app.emit("devices-changed", ());
+    Ok(format!("设备 {} 已标记风控", serial))
+}
+
+/// 解除设备风控标记
+#[tauri::command]
+fn unflag_device(
+    serial: String,
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    state.db.unflag_device(&serial);
+    let _ = app.emit("devices-changed", ());
+    Ok(format!("设备 {} 已解除风控标记", serial))
+}
+
 // ─── App Entry ─────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -708,6 +734,8 @@ pub fn run() {
             engine_get_ready_serials,
             engine_release_offline,
             engine_reorder_cities,
+            flag_device,
+            unflag_device,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

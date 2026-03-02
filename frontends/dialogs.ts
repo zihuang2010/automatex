@@ -68,6 +68,21 @@ export async function removeSelectedDevice() {
     }
 }
 
+/* ===== Unflag Device ===== */
+
+export async function unflagSelectedDevice() {
+    if (!selectedDevice) return;
+    try {
+        await invoke('unflag_device', { serial: selectedDevice });
+        showToast('设备风控标记已解除', 'info');
+        const unflagBtn = $('#btn-unflag-device') as HTMLButtonElement;
+        if (unflagBtn) unflagBtn.disabled = true;
+        await refreshDevices();
+    } catch (e) {
+        showToast(`解除失败: ${e}`, 'error');
+    }
+}
+
 /* ===== Device Info Modal ===== */
 
 export async function showDeviceInfo(serial: string) {
@@ -87,7 +102,15 @@ export async function showDeviceInfo(serial: string) {
         const tempVal = i.battery_temperature ?? 0;
         const tempColor = tempVal > 40 ? 'text-orange-500' : 'text-s500';
 
+        const flaggedBanner = i.is_flagged
+            ? `<div class="flex items-center gap-2 px-3 py-2 bg-orange-50 border border-orange-200 rounded-lg mb-4">
+                <span class="material-symbols-outlined text-orange-500 text-base">warning</span>
+                <span class="text-[11px] font-bold text-orange-600">该设备已被标记为风控，无法分配任务。请检查后手动解除标记。</span>
+               </div>`
+            : '';
+
         b.innerHTML = `
+      ${flaggedBanner}
       <!-- Device Header -->
       <div class="flex items-center gap-3 mb-5">
         <div class="w-12 h-12 rounded-lg bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center shrink-0 shadow-[0_4px_12px_rgba(37,99,235,.3)]">

@@ -21,6 +21,7 @@ pub struct DeviceRow {
     pub display_resolution: String,
     pub battery_level: i32,
     pub battery_temperature: f64,
+    pub is_flagged: bool,
     pub updated_at: i64,
 }
 
@@ -145,6 +146,11 @@ impl Database {
         // 迁移：添加 city_order 列（用户自定义城市排序）
         let _ = writer.execute_batch("ALTER TABLE a_task_cache ADD COLUMN city_order TEXT;");
 
+        // 迁移：添加 is_flagged 列（设备风控标记）
+        let _ = writer.execute_batch(
+            "ALTER TABLE a_devices ADD COLUMN is_flagged INTEGER NOT NULL DEFAULT 0;",
+        );
+
         Ok(Self { writer: Mutex::new(writer), reader: Mutex::new(reader) })
     }
 
@@ -157,8 +163,8 @@ impl Database {
                 "INSERT OR REPLACE INTO a_devices
                     (serial, hw_serial, name, device_type, address, state,
                      model, brand, android_version, sdk_version, display_resolution,
-                     battery_level, battery_temperature, updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                     battery_level, battery_temperature, is_flagged, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
                 params![
                     row.serial,
                     row.hw_serial,
@@ -173,6 +179,7 @@ impl Database {
                     row.display_resolution,
                     row.battery_level,
                     row.battery_temperature,
+                    row.is_flagged as i32,
                     row.updated_at,
                 ],
             ),
@@ -243,6 +250,24 @@ impl Database {
         );
     }
 
+    /// 标记设备为风控
+    pub fn flag_device(&self, serial: &str) {
+        let conn = self.w();
+        log_exec(
+            conn.execute("UPDATE a_devices SET is_flagged = 1 WHERE serial = ?1", params![serial]),
+            "flag_device",
+        );
+    }
+
+    /// 解除设备风控标记
+    pub fn unflag_device(&self, serial: &str) {
+        let conn = self.w();
+        log_exec(
+            conn.execute("UPDATE a_devices SET is_flagged = 0 WHERE serial = ?1", params![serial]),
+            "unflag_device",
+        );
+    }
+
     pub fn set_setting(&self, key: &str, value: &str) {
         let conn = self.w();
         log_exec(
@@ -276,7 +301,7 @@ impl Database {
         let mut stmt = match conn.prepare(
             "SELECT serial, hw_serial, name, device_type, address, state,
                     model, brand, android_version, sdk_version, display_resolution,
-                    battery_level, battery_temperature, updated_at
+                    battery_level, battery_temperature, is_flagged, updated_at
              FROM a_devices
              ORDER BY CASE state WHEN 'Offline' THEN 1 ELSE 0 END, name",
         ) {
@@ -299,7 +324,8 @@ impl Database {
                 display_resolution: row.get(10)?,
                 battery_level: row.get(11)?,
                 battery_temperature: row.get(12)?,
-                updated_at: row.get(13)?,
+                is_flagged: row.get::<_, i32>(13).unwrap_or(0) != 0,
+                updated_at: row.get(14)?,
             })
         })
         .map(|rows| rows.filter_map(|r| r.ok()).collect())
@@ -311,7 +337,7 @@ impl Database {
         conn.query_row(
             "SELECT serial, hw_serial, name, device_type, address, state,
                     model, brand, android_version, sdk_version, display_resolution,
-                    battery_level, battery_temperature, updated_at
+                    battery_level, battery_temperature, is_flagged, updated_at
              FROM a_devices WHERE serial = ?1",
             params![serial],
             |row| {
@@ -329,7 +355,8 @@ impl Database {
                     display_resolution: row.get(10)?,
                     battery_level: row.get(11)?,
                     battery_temperature: row.get(12)?,
-                    updated_at: row.get(13)?,
+                    is_flagged: row.get::<_, i32>(13).unwrap_or(0) != 0,
+                    updated_at: row.get(14)?,
                 })
             },
         )

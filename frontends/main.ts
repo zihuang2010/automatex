@@ -28,6 +28,7 @@ import {
     hideAddDeviceDialog,
     submitAddDevice,
     removeSelectedDevice,
+    unflagSelectedDevice,
     showDeviceInfo,
 } from './dialogs';
 import { initSettings, updateMqttStatusUI } from './settings';
@@ -218,6 +219,8 @@ window.addEventListener('DOMContentLoaded', () => {
 
     // Remove Selected
     $('#btn-remove-selected')?.addEventListener('click', removeSelectedDevice);
+    // Unflag Device
+    $('#btn-unflag-device')?.addEventListener('click', unflagSelectedDevice);
 
     // Modal
     $('#modal-close')?.addEventListener('click', () => {

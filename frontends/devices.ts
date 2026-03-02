@@ -126,11 +126,22 @@ function renderDeviceCards(devs: DeviceRow[]) {
             battery > 80 ? 'text-green-600' : battery > 30 ? 'text-blue-600' : 'text-orange-500';
         const tempColor = temp > 40 ? 'text-orange-500' : 'text-s500';
         const isSel = d.serial === selectedDevice;
+        const flagged = d.is_flagged;
 
-        return `<div class="dev-card device-card-ready border rounded-md p-2.5 transition-all hover:border-blue-200 cursor-pointer relative ${isSel ? 'ring-2 ring-blue-200' : ''}" data-s="${esc(d.serial)}" data-state="ready">
-      <div class="absolute top-2.5 right-2.5 px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[12px] font-black rounded border border-blue-100 uppercase tracking-normal">就绪</div>
+        const badgeCls = flagged
+            ? 'bg-orange-50 text-orange-600 border-orange-200'
+            : 'bg-blue-50 text-blue-600 border-blue-100';
+        const badgeText = flagged ? '⚠ 风控' : '就绪';
+        const iconBorderCls = flagged
+            ? 'bg-orange-50 border-orange-200 text-orange-400'
+            : 'bg-s50 border-s100 text-s400';
+        const opacityCls = flagged ? 'opacity-70' : '';
+        const ringCls = isSel ? (flagged ? 'ring-2 ring-orange-300' : 'ring-2 ring-blue-200') : '';
+
+        return `<div class="dev-card device-card-ready border rounded-md p-2.5 transition-all hover:border-blue-200 cursor-pointer relative ${opacityCls} ${ringCls}" data-s="${esc(d.serial)}" data-state="ready" data-flagged="${flagged ? '1' : '0'}">
+      <div class="absolute top-2.5 right-2.5 px-1.5 py-0.5 ${badgeCls} text-[12px] font-black rounded border uppercase tracking-normal">${badgeText}</div>
       <div class="flex items-start gap-3">
-        <div class="h-9 w-9 rounded-lg bg-s50 border border-s100 flex items-center justify-center text-s400 shrink-0">
+        <div class="h-9 w-9 rounded-lg ${iconBorderCls} border flex items-center justify-center shrink-0">
           <span class="material-symbols-outlined text-xl fill-1">smartphone</span>
         </div>
         <div class="min-w-0 flex-1">
@@ -267,7 +278,9 @@ export function selectDevice(serial: string) {
         setSelectedDevice(null);
         updateCardSelection();
         const removeBtn = $('#btn-remove-selected') as HTMLButtonElement;
+        const unflagBtn = $('#btn-unflag-device') as HTMLButtonElement;
         if (removeBtn) removeBtn.disabled = true;
+        if (unflagBtn) unflagBtn.disabled = true;
         return;
     }
 
@@ -275,13 +288,18 @@ export function selectDevice(serial: string) {
     updateCardSelection();
 
     const removeBtn = $('#btn-remove-selected') as HTMLButtonElement;
+    const unflagBtn = $('#btn-unflag-device') as HTMLButtonElement;
     const card = document.querySelector(`.dev-card[data-s="${serial}"]`) as HTMLElement | null;
     const isOffline = card?.dataset.state === 'offline';
+    const isFlagged = card?.dataset.flagged === '1';
     if (removeBtn) {
         removeBtn.disabled = !isOffline;
     }
+    if (unflagBtn) {
+        unflagBtn.disabled = !isFlagged;
+    }
 
-    if (!isOffline) {
+    if (!isOffline && !isFlagged) {
         _onLoadTasksForDevice?.(serial);
     }
 }
@@ -290,10 +308,20 @@ export function updateCardSelection() {
     document.querySelectorAll('.dev-card').forEach(el => {
         const s = (el as HTMLElement).dataset.s;
         const state = (el as HTMLElement).dataset.state;
-        el.classList.remove('ring-2', 'ring-1', 'ring-blue-300', 'ring-blue-200', 'ring-s400');
+        const flagged = (el as HTMLElement).dataset.flagged === '1';
+        el.classList.remove(
+            'ring-2',
+            'ring-1',
+            'ring-blue-300',
+            'ring-blue-200',
+            'ring-orange-300',
+            'ring-s400',
+        );
         if (s === selectedDevice) {
             if (state === 'offline') {
                 el.classList.add('ring-2', 'ring-s400');
+            } else if (state === 'ready' && flagged) {
+                el.classList.add('ring-2', 'ring-orange-300');
             } else if (state === 'ready') {
                 el.classList.add('ring-2', 'ring-blue-200');
             } else {
