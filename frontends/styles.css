@@ -100,6 +100,18 @@
     --color-slate-800: #e8ecf2;
     --color-slate-900: #f1f4f8;
 
+    /* 自定义 s* 色板暗色覆盖（与 slate 一致） */
+    --color-s50: #1e2130;
+    --color-s100: #252836;
+    --color-s200: #2e3140;
+    --color-s300: #3a3d4a;
+    --color-s400: #7a8292;
+    --color-s500: #94a0b2;
+    --color-s600: #b8c0ce;
+    --color-s700: #d1d7e2;
+    --color-s800: #e8ecf2;
+    --color-s900: #f1f4f8;
+
     /* 功能色暗色调整 */
     --color-blue-50: rgba(37, 99, 235, 0.1);
     --color-blue-100: rgba(37, 99, 235, 0.18);
@@ -116,6 +128,7 @@
     --color-gray-400: #6b7280;
     --color-gray-500: #9ca3af;
     --color-gray-600: #d1d5db;
+    --color-gray-700: #e5e7eb;
     --color-gray-800: #f3f4f6;
 
     --color-indigo-500: #6366f1;
@@ -123,6 +136,13 @@
     --color-violet-100: rgba(139, 92, 246, 0.18);
     --color-emerald-50: rgba(16, 185, 129, 0.08);
     --color-emerald-100: rgba(16, 185, 129, 0.15);
+
+    /* 功能色文字暗色覆盖 */
+    --color-green-600: #34d399;
+    --color-orange-500: #fb923c;
+    --color-red-light: rgba(239, 68, 68, 0.1);
+    --color-blue-light: rgba(37, 99, 235, 0.1);
+    --color-green-light: rgba(16, 185, 129, 0.1);
 }
 
 /* 暗色滚动条 */

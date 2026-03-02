@@ -266,7 +266,7 @@
         <div class="app h-screen flex flex-col overflow-hidden" id="app">
             <!-- Header -->
             <header
-                class="bg-[var(--premium-bg)] border-b border-slate-200 pl-4 pr-5 pt-3 pb-2 flex items-center justify-between shrink-0 z-30"
+                class="bg-[var(--premium-bg)] border-b border-s200 pl-4 pr-5 pt-3 pb-2 flex items-center justify-between shrink-0 z-30"
                 data-tauri-drag-region
             >
                 <div class="flex items-center space-x-2">
@@ -350,11 +350,11 @@
                         </button>
                     </div>
                     <div class="flex items-baseline space-x-2">
-                        <h1 class="text-sm font-black tracking-tight text-slate-800 leading-none">
+                        <h1 class="text-sm font-black tracking-tight text-s800 leading-none">
                             AutomateX Workspace <span class="text-blue">PRO</span>
                         </h1>
                         <span
-                            class="text-[12px] text-slate-400 font-bold uppercase tracking-normal border-l border-slate-200 pl-2"
+                            class="text-[12px] text-s400 font-bold uppercase tracking-normal border-l border-s200 pl-2"
                             >企业客户端</span
                         >
                     </div>
@@ -362,7 +362,7 @@
                 <div class="flex items-center gap-1">
                     <button
                         id="topbar-status"
-                        class="w-6 h-6 flex items-center justify-center rounded-md hover:bg-slate-100 transition-colors text-green-500"
+                        class="w-6 h-6 flex items-center justify-center rounded-md hover:bg-s100 transition-colors text-green-500"
                         title="网络状态"
                     >
                         <span class="material-symbols-outlined icon-sm" id="net-status-icon"
@@ -371,7 +371,7 @@
                     </button>
                     <button
                         id="btn-theme-toggle"
-                        class="w-6 h-6 flex items-center justify-center rounded-md hover:bg-slate-100 transition-colors text-slate-400 hover:text-slate-600"
+                        class="w-6 h-6 flex items-center justify-center rounded-md hover:bg-s100 transition-colors text-s400 hover:text-s600"
                         title="切换主题"
                     >
                         <span class="material-symbols-outlined icon-sm" id="theme-icon"
@@ -382,7 +382,7 @@
                     <div id="window-controls" class="hidden items-center ml-1 -mr-3">
                         <button
                             id="btn-win-minimize"
-                            class="w-[46px] h-[32px] flex items-center justify-center hover:bg-slate-200/80 transition-colors text-slate-500"
+                            class="w-[46px] h-[32px] flex items-center justify-center hover:bg-s200/80 transition-colors text-s500"
                             title="最小化"
                         >
                             <svg width="10" height="1" viewBox="0 0 10 1">
@@ -398,7 +398,7 @@
                         </button>
                         <button
                             id="btn-win-maximize"
-                            class="w-[46px] h-[32px] flex items-center justify-center hover:bg-slate-200/80 transition-colors text-slate-500"
+                            class="w-[46px] h-[32px] flex items-center justify-center hover:bg-s200/80 transition-colors text-s500"
                             title="最大化"
                         >
                             <svg width="10" height="10" viewBox="0 0 10 10">
@@ -415,7 +415,7 @@
                         </button>
                         <button
                             id="btn-win-close"
-                            class="w-[46px] h-[32px] flex items-center justify-center hover:bg-[#c42b1c] hover:text-white transition-colors text-slate-500"
+                            class="w-[46px] h-[32px] flex items-center justify-center hover:bg-[#c42b1c] hover:text-white transition-colors text-s500"
                             title="关闭"
                         >
                             <svg width="10" height="10" viewBox="0 0 10 10">
@@ -448,21 +448,21 @@
                     class="w-[280px] bg-white rounded-md border border-[var(--panel-border)] shadow-sm flex flex-col h-full overflow-hidden shrink-0"
                 >
                     <div
-                        class="p-3 border-b border-slate-100 bg-slate-50/30 flex justify-between items-center"
+                        class="p-3 border-b border-s100 bg-s50/30 flex justify-between items-center"
                     >
                         <div>
                             <h2
-                                class="text-[13px] font-black text-slate-500 uppercase tracking-normal leading-none"
+                                class="text-[13px] font-black text-s500 uppercase tracking-normal leading-none"
                             >
                                 任务队列
                             </h2>
                             <p
-                                class="text-[10px] text-slate-400 font-bold mt-1 uppercase tracking-normal queue-sub"
+                                class="text-[10px] text-s400 font-bold mt-1 uppercase tracking-normal queue-sub"
                             >
                                 0 个进行中任务
                             </p>
                         </div>
-                        <button class="material-symbols-outlined text-slate-400 text-base">
+                        <button class="material-symbols-outlined text-s400 text-base">
                             filter_list
                         </button>
                     </div>
@@ -483,13 +483,13 @@
                     class="w-[280px] bg-white rounded-md border border-[var(--panel-border)] shadow-sm flex flex-col h-full overflow-hidden shrink-0"
                 >
                     <div
-                        class="p-3 border-b border-slate-100 flex justify-between items-center bg-slate-50/30"
+                        class="p-3 border-b border-s100 flex justify-between items-center bg-s50/30"
                     >
-                        <h2 class="text-[13px] font-black text-slate-500 uppercase tracking-normal">
+                        <h2 class="text-[13px] font-black text-s500 uppercase tracking-normal">
                             设备管理
                         </h2>
                         <span
-                            class="text-[11px] font-bold text-slate-400 bg-slate-200/50 px-1.5 py-0.5 rounded"
+                            class="text-[11px] font-bold text-s400 bg-s200/50 px-1.5 py-0.5 rounded"
                             id="dev-count"
                             >共 0 台</span
                         >
@@ -497,17 +497,17 @@
                     <div class="flex-1 overflow-y-auto" id="device-tree">
                         <div class="empty-hint">点击 <strong>WiFi</strong> 添加设备</div>
                     </div>
-                    <div class="p-3 border-t border-slate-100 bg-white space-y-2">
+                    <div class="p-3 border-t border-s100 bg-white space-y-2">
                         <div class="grid grid-cols-2 gap-1.5">
                             <button
-                                class="flex flex-col items-center justify-center py-2 bg-white border border-slate-200 text-slate-500 hover:border-blue-500 hover:text-blue-600 rounded-lg transition-all text-[9px] font-black uppercase"
+                                class="flex flex-col items-center justify-center py-2 bg-white border border-s200 text-s500 hover:border-blue-500 hover:text-blue-600 rounded-lg transition-all text-[9px] font-black uppercase"
                                 id="btn-add-device"
                             >
                                 <span class="material-symbols-outlined text-base mb-0.5">wifi</span
                                 >WiFi连接
                             </button>
                             <button
-                                class="flex flex-col items-center justify-center py-2 bg-white border border-slate-200 text-slate-300 rounded-lg transition-all text-[9px] font-black uppercase disabled:opacity-50 disabled:cursor-not-allowed enabled:text-red-500 enabled:border-red-200 enabled:hover:bg-red-50 enabled:hover:border-red-400"
+                                class="flex flex-col items-center justify-center py-2 bg-white border border-s200 text-s300 rounded-lg transition-all text-[9px] font-black uppercase disabled:opacity-50 disabled:cursor-not-allowed enabled:text-red-500 enabled:border-red-200 enabled:hover:bg-red-50 enabled:hover:border-red-400"
                                 id="btn-remove-selected"
                                 disabled
                             >
@@ -517,12 +517,11 @@
                             </button>
                         </div>
                         <div class="flex items-center justify-between pt-1">
-                            <span
-                                class="text-[8px] font-bold text-slate-400 uppercase tracking-widest"
+                            <span class="text-[8px] font-bold text-s400 uppercase tracking-widest"
                                 >v1.0.2-STABLE</span
                             >
                             <button
-                                class="text-slate-400 hover:text-slate-600 transition-colors"
+                                class="text-s400 hover:text-s600 transition-colors"
                                 id="btn-settings"
                             >
                                 <span class="material-symbols-outlined text-lg">settings</span>
@@ -612,18 +611,16 @@
         <!-- 设置弹窗 -->
         <div class="modal-mask" id="settings-overlay" style="display: none">
             <div
-                class="w-full max-w-lg bg-white rounded-[16px] overflow-hidden border border-gray-100 shadow-xl"
+                class="w-full max-w-lg bg-white rounded-[16px] overflow-hidden border border-s100 shadow-xl"
             >
                 <!-- Header -->
-                <div class="px-6 py-4 flex items-center justify-between border-b border-gray-100">
-                    <div class="flex items-center gap-2 text-gray-800">
-                        <span class="material-symbols-outlined text-gray-400 text-xl"
-                            >settings</span
-                        >
+                <div class="px-6 py-4 flex items-center justify-between border-b border-s100">
+                    <div class="flex items-center gap-2 text-s800">
+                        <span class="material-symbols-outlined text-s400 text-xl">settings</span>
                         <h1 class="text-lg font-semibold tracking-tight">设置</h1>
                     </div>
                     <button
-                        class="text-gray-400 hover:text-gray-600 transition-colors w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100"
+                        class="text-s400 hover:text-s600 transition-colors w-8 h-8 flex items-center justify-center rounded-full hover:bg-s100"
                         id="settings-close"
                     >
                         <span class="material-symbols-outlined text-xl">close</span>
@@ -633,52 +630,52 @@
                 <!-- Body -->
                 <div class="p-6 space-y-8">
                     <section class="space-y-4">
-                        <h2 class="text-xs font-bold uppercase tracking-wider text-gray-400 px-1">
+                        <h2 class="text-xs font-bold uppercase tracking-wider text-s400 px-1">
                             MQTT 服务器
                         </h2>
                         <div class="space-y-5">
                             <div class="grid grid-cols-12 gap-4">
                                 <div class="col-span-8 space-y-2">
-                                    <label class="block text-sm font-medium text-gray-600 px-1"
+                                    <label class="block text-sm font-medium text-s600 px-1"
                                         >主机</label
                                     >
                                     <input
                                         type="text"
                                         id="set-mqtt-host"
                                         placeholder="127.0.0.1"
-                                        class="w-full bg-gray-50/50 border border-gray-200 rounded-lg px-4 py-2.5 text-gray-700 focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all font-mono text-sm outline-none"
+                                        class="w-full bg-s50 border border-s200 rounded-lg px-4 py-2.5 text-s700 focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all font-mono text-sm outline-none"
                                     />
                                 </div>
                                 <div class="col-span-4 space-y-2">
-                                    <label class="block text-sm font-medium text-gray-600 px-1"
+                                    <label class="block text-sm font-medium text-s600 px-1"
                                         >端口</label
                                     >
                                     <input
                                         type="number"
                                         id="set-mqtt-port"
                                         placeholder="1883"
-                                        class="w-full bg-gray-50/50 border border-gray-200 rounded-lg px-4 py-2.5 text-gray-700 focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all font-mono text-sm outline-none"
+                                        class="w-full bg-s50 border border-s200 rounded-lg px-4 py-2.5 text-s700 focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all font-mono text-sm outline-none"
                                     />
                                 </div>
                             </div>
 
                             <div class="space-y-2">
-                                <label class="block text-sm font-medium text-gray-600 px-1"
+                                <label class="block text-sm font-medium text-s600 px-1"
                                     >客户端 ID</label
                                 >
                                 <input
                                     type="text"
                                     id="set-mqtt-client-id"
                                     placeholder="automatex-001"
-                                    class="w-full bg-gray-50/50 border border-gray-200 rounded-lg px-4 py-2.5 text-gray-700 focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all font-mono text-sm outline-none"
+                                    class="w-full bg-s50 border border-s200 rounded-lg px-4 py-2.5 text-s700 focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all font-mono text-sm outline-none"
                                 />
                             </div>
 
                             <div class="grid grid-cols-2 gap-4">
                                 <div class="space-y-2">
-                                    <label class="block text-sm font-medium text-gray-600 px-1"
+                                    <label class="block text-sm font-medium text-s600 px-1"
                                         >用户名
-                                        <span class="text-gray-400 font-normal text-xs"
+                                        <span class="text-s400 font-normal text-xs"
                                             >(可选)</span
                                         ></label
                                     >
@@ -686,13 +683,13 @@
                                         type="text"
                                         id="set-mqtt-username"
                                         placeholder="请输入用户名"
-                                        class="w-full bg-gray-50/50 border border-gray-200 rounded-lg px-4 py-2.5 text-gray-700 focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all text-sm outline-none"
+                                        class="w-full bg-s50 border border-s200 rounded-lg px-4 py-2.5 text-s700 focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all text-sm outline-none"
                                     />
                                 </div>
                                 <div class="space-y-2">
-                                    <label class="block text-sm font-medium text-gray-600 px-1"
+                                    <label class="block text-sm font-medium text-s600 px-1"
                                         >密码
-                                        <span class="text-gray-400 font-normal text-xs"
+                                        <span class="text-s400 font-normal text-xs"
                                             >(可选)</span
                                         ></label
                                     >
@@ -700,7 +697,7 @@
                                         type="password"
                                         id="set-mqtt-password"
                                         placeholder="请输入密码"
-                                        class="w-full bg-gray-50/50 border border-gray-200 rounded-lg px-4 py-2.5 text-gray-700 focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all text-sm outline-none"
+                                        class="w-full bg-s50 border border-s200 rounded-lg px-4 py-2.5 text-s700 focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all text-sm outline-none"
                                     />
                                 </div>
                             </div>
@@ -708,11 +705,11 @@
                     </section>
 
                     <section class="space-y-4">
-                        <h2 class="text-xs font-bold uppercase tracking-wider text-gray-400 px-1">
+                        <h2 class="text-xs font-bold uppercase tracking-wider text-s400 px-1">
                             MQTT 状态
                         </h2>
                         <div
-                            class="flex items-center justify-between p-4 bg-white rounded-xl border border-gray-100 shadow-sm"
+                            class="flex items-center justify-between p-4 bg-white rounded-xl border border-s100 shadow-sm"
                         >
                             <div class="flex items-center gap-3">
                                 <span class="relative flex h-2.5 w-2.5">
@@ -725,9 +722,7 @@
                                         id="mqtt-dot"
                                     ></span>
                                 </span>
-                                <span
-                                    class="text-sm font-semibold text-gray-500"
-                                    id="mqtt-status-text"
+                                <span class="text-sm font-semibold text-s500" id="mqtt-status-text"
                                     >未连接</span
                                 >
                             </div>
@@ -751,9 +746,9 @@
                 </div>
 
                 <!-- Footer -->
-                <div class="px-6 py-5 bg-gray-50 flex justify-end gap-3 border-t border-gray-100">
+                <div class="px-6 py-5 bg-s50 flex justify-end gap-3 border-t border-s100">
                     <button
-                        class="px-6 py-2 text-sm font-medium text-gray-600 border border-gray-300 rounded-lg hover:bg-white transition-all"
+                        class="px-6 py-2 text-sm font-medium text-s600 border border-s300 rounded-lg hover:bg-white transition-all"
                         id="settings-cancel"
                     >
                         取消

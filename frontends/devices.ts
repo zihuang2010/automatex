@@ -88,10 +88,10 @@ function renderDeviceCards(devs: DeviceRow[]) {
         </div>
         <div class="min-w-0 flex-1">
           <div class="flex justify-between items-center mb-0.5">
-            <h3 class="text-[11px] font-bold text-slate-900 truncate">${esc(displayName)}</h3>
+            <h3 class="text-[11px] font-bold text-s900 truncate">${esc(displayName)}</h3>
             <div class="pulsing-dot scale-90"></div>
           </div>
-          <p class="mono-technical text-[10px] text-slate-500 font-medium">${esc(shortHwid)}</p>
+          <p class="mono-technical text-[10px] text-s500 font-medium">${esc(shortHwid)}</p>
         </div>
       </div>
       <div class="mt-2.5">
@@ -107,7 +107,7 @@ function renderDeviceCards(devs: DeviceRow[]) {
         <span class="flex items-center gap-1 text-blue-600">
           <span class="material-symbols-outlined icon-sm fill-1">${batteryIcon}</span>${battery}%
         </span>
-        <span class="flex items-center gap-1 text-slate-500">
+        <span class="flex items-center gap-1 text-s500">
           <span class="material-symbols-outlined icon-sm">device_thermostat</span>${temp}°C
         </span>
       </div>
@@ -124,18 +124,18 @@ function renderDeviceCards(devs: DeviceRow[]) {
             battery > 80 ? 'battery_full' : battery > 50 ? 'battery_5_bar' : 'battery_3_bar';
         const batteryColor =
             battery > 80 ? 'text-green-600' : battery > 30 ? 'text-blue-600' : 'text-orange-500';
-        const tempColor = temp > 40 ? 'text-orange-500' : 'text-slate-500';
+        const tempColor = temp > 40 ? 'text-orange-500' : 'text-s500';
         const isSel = d.serial === selectedDevice;
 
         return `<div class="dev-card device-card-ready border rounded-md p-2.5 transition-all hover:border-blue-200 cursor-pointer relative ${isSel ? 'ring-2 ring-blue-200' : ''}" data-s="${esc(d.serial)}" data-state="ready">
       <div class="absolute top-2.5 right-2.5 px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[12px] font-black rounded border border-blue-100 uppercase tracking-normal">就绪</div>
       <div class="flex items-start gap-3">
-        <div class="h-9 w-9 rounded-lg bg-slate-50 border border-slate-100 flex items-center justify-center text-slate-400 shrink-0">
+        <div class="h-9 w-9 rounded-lg bg-s50 border border-s100 flex items-center justify-center text-s400 shrink-0">
           <span class="material-symbols-outlined text-xl fill-1">smartphone</span>
         </div>
         <div class="min-w-0 flex-1">
-          <h3 class="text-[11px] font-bold text-slate-700 truncate pr-8">${esc(displayName)}</h3>
-          <p class="mono-technical text-[10px] text-slate-500 mt-0.5 font-medium">${esc(shortHwid)}</p>
+          <h3 class="text-[11px] font-bold text-s700 truncate pr-8">${esc(displayName)}</h3>
+          <p class="mono-technical text-[10px] text-s500 mt-0.5 font-medium">${esc(shortHwid)}</p>
         </div>
       </div>
       <div class="mt-2.5 flex items-center gap-3 text-[10px] font-bold">
@@ -157,55 +157,55 @@ function renderDeviceCards(devs: DeviceRow[]) {
         const shortHwid = hwid.length > 16 ? hwid.substring(0, 16) + '…' : hwid;
         const isSel = d.serial === selectedDevice;
 
-        return `<div class="dev-card device-card-offline border rounded-md p-2.5 cursor-pointer relative ${isSel ? 'ring-2 ring-slate-400' : ''}" data-s="${esc(d.serial)}" data-state="offline">
-      <div class="absolute top-2.5 right-2.5 px-1.5 py-0.5 bg-slate-200 text-slate-500 text-[10px] font-black rounded border border-slate-300 uppercase tracking-normal">离线</div>
+        return `<div class="dev-card device-card-offline border rounded-md p-2.5 cursor-pointer relative ${isSel ? 'ring-2 ring-s400' : ''}" data-s="${esc(d.serial)}" data-state="offline">
+      <div class="absolute top-2.5 right-2.5 px-1.5 py-0.5 bg-s200 text-s500 text-[10px] font-black rounded border border-s300 uppercase tracking-normal">离线</div>
       <div class="flex items-start gap-3">
-        <div class="h-9 w-9 rounded-lg bg-slate-200 border border-slate-300 flex items-center justify-center text-slate-400 shrink-0">
+        <div class="h-9 w-9 rounded-lg bg-s200 border border-s300 flex items-center justify-center text-s400 shrink-0">
           <span class="material-symbols-outlined text-xl fill-1">smartphone</span>
         </div>
         <div class="min-w-0 flex-1">
-          <h3 class="text-[11px] font-bold text-slate-600 truncate pr-8">${esc(displayName)}</h3>
-          <p class="mono-technical text-[10px] text-slate-400 mt-0.5 font-medium">${esc(shortHwid)}</p>
+          <h3 class="text-[11px] font-bold text-s600 truncate pr-8">${esc(displayName)}</h3>
+          <p class="mono-technical text-[10px] text-s400 mt-0.5 font-medium">${esc(shortHwid)}</p>
         </div>
       </div>
       <div class="mt-2.5 flex items-center justify-between text-[10px] font-bold">
         <div class="flex gap-3">
-          <span class="flex items-center gap-1 text-slate-400">
+          <span class="flex items-center gap-1 text-s400">
             <span class="material-symbols-outlined icon-sm">battery_3_bar</span>${battery}%
           </span>
-          <span class="flex items-center gap-1 text-slate-400">
+          <span class="flex items-center gap-1 text-s400">
             <span class="material-symbols-outlined icon-sm">device_thermostat</span>${temp}°C
           </span>
         </div>
-        <span class="text-slate-400 uppercase text-[10px]">${timeAgo(d.updated_at)}</span>
+        <span class="text-s400 uppercase text-[10px]">${timeAgo(d.updated_at)}</span>
       </div>
     </div>`;
     };
 
     const emptyBody =
-        '<div class="text-center text-[9px] text-slate-300 py-3 font-semibold uppercase tracking-wider">暂无设备</div>';
+        '<div class="text-center text-[9px] text-s300 py-3 font-semibold uppercase tracking-wider">暂无设备</div>';
     let html = '';
 
     html += `<div class="dev-section${runningDevs.length ? '' : ' collapsed'}">
       <div class="dev-section-header bg-blue-50 px-3 py-1.5 flex items-center gap-2 sticky top-0 z-10 border-b border-blue-100" onclick="this.parentElement.classList.toggle('collapsed')">
         <span class="material-symbols-outlined section-arrow text-sm text-blue-400">expand_more</span>
-        <span class="text-[11px] font-black text-slate-500 uppercase tracking-normal">运行中</span>
+        <span class="text-[11px] font-black text-s500 uppercase tracking-normal">运行中</span>
       </div>
       <div class="dev-section-body p-2 space-y-2">${runningDevs.length ? runningDevs.map(renderRunningCard).join('') : emptyBody}</div>
     </div>`;
 
     html += `<div class="dev-section${readyDevs.length ? '' : ' collapsed'}">
-      <div class="dev-section-header bg-slate-50 px-3 py-1.5 flex items-center gap-2 sticky top-0 z-10 border-b border-slate-100 mt-1" onclick="this.parentElement.classList.toggle('collapsed')">
-        <span class="material-symbols-outlined section-arrow text-sm text-slate-400">expand_more</span>
-        <span class="text-[11px] font-black text-slate-500 uppercase tracking-normal">就绪</span>
+      <div class="dev-section-header bg-s50 px-3 py-1.5 flex items-center gap-2 sticky top-0 z-10 border-b border-s100 mt-1" onclick="this.parentElement.classList.toggle('collapsed')">
+        <span class="material-symbols-outlined section-arrow text-sm text-s400">expand_more</span>
+        <span class="text-[11px] font-black text-s500 uppercase tracking-normal">就绪</span>
       </div>
       <div class="dev-section-body p-2 space-y-2">${readyDevs.length ? readyDevs.map(renderReadyCard).join('') : emptyBody}</div>
     </div>`;
 
     html += `<div class="dev-section${offlineDevs.length ? '' : ' collapsed'}">
-      <div class="dev-section-header bg-slate-50 px-3 py-1.5 flex items-center gap-2 sticky top-0 z-10 border-b border-slate-100 mt-1" onclick="this.parentElement.classList.toggle('collapsed')">
-        <span class="material-symbols-outlined section-arrow text-sm text-slate-400">expand_more</span>
-        <span class="text-[11px] font-black text-slate-500 uppercase tracking-normal">离线</span>
+      <div class="dev-section-header bg-s50 px-3 py-1.5 flex items-center gap-2 sticky top-0 z-10 border-b border-s100 mt-1" onclick="this.parentElement.classList.toggle('collapsed')">
+        <span class="material-symbols-outlined section-arrow text-sm text-s400">expand_more</span>
+        <span class="text-[11px] font-black text-s500 uppercase tracking-normal">离线</span>
       </div>
       <div class="dev-section-body p-2 space-y-2">${offlineDevs.length ? offlineDevs.map(renderOfflineCard).join('') : emptyBody}</div>
     </div>`;
@@ -290,10 +290,10 @@ export function updateCardSelection() {
     document.querySelectorAll('.dev-card').forEach(el => {
         const s = (el as HTMLElement).dataset.s;
         const state = (el as HTMLElement).dataset.state;
-        el.classList.remove('ring-2', 'ring-1', 'ring-blue-300', 'ring-blue-200', 'ring-slate-400');
+        el.classList.remove('ring-2', 'ring-1', 'ring-blue-300', 'ring-blue-200', 'ring-s400');
         if (s === selectedDevice) {
             if (state === 'offline') {
-                el.classList.add('ring-2', 'ring-slate-400');
+                el.classList.add('ring-2', 'ring-s400');
             } else if (state === 'ready') {
                 el.classList.add('ring-2', 'ring-blue-200');
             } else {

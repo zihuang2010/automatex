@@ -52,8 +52,8 @@ function ensureSkeleton(mid: HTMLElement): boolean {
     mid.innerHTML = `
     <div id="tv-header" class="shrink-0"></div>
     <div id="tv-metrics" class="shrink-0"></div>
-    <div class="flex-1 bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col min-h-0">
-      <div class="px-4 pt-3 pb-0 shrink-0 border-b border-slate-100">
+    <div class="flex-1 bg-white rounded-xl border border-s200 shadow-sm overflow-hidden flex flex-col min-h-0">
+      <div class="px-4 pt-3 pb-0 shrink-0 border-b border-s100">
         <div id="tv-city-header" class="flex items-center justify-between mb-2.5"></div>
         <div id="tv-cities" class="flex gap-2 overflow-x-auto pb-3 scrollbar-hide"></div>
       </div>
@@ -120,9 +120,9 @@ export async function renderTaskView() {
     const cityHeaderHtml = `
     <div class="flex items-center gap-2">
       <span class="material-symbols-outlined icon-sm text-blue-400">location_city</span>
-      <span class="text-[11px] font-black text-slate-500 uppercase tracking-tight">覆盖城市</span>
+      <span class="text-[11px] font-black text-s500 uppercase tracking-tight">覆盖城市</span>
     </div>
-    <span class="text-[11px] font-bold text-slate-400">${citiesDone}/${task.cities.length} 已完成</span>`;
+    <span class="text-[11px] font-bold text-s400">${citiesDone}/${task.cities.length} 已完成</span>`;
     // city header 直接内联更新，不做 prev 缓存（轻量）
     const cityHeaderEl = document.getElementById('tv-city-header');
     if (cityHeaderEl) cityHeaderEl.innerHTML = cityHeaderHtml;
@@ -136,12 +136,12 @@ export async function renderTaskView() {
     const kwInfoHtml = `
     <div class="flex items-center gap-1.5">
       <span class="material-symbols-outlined icon-sm text-blue-400 fill-1">sell</span>
-      <span class="text-[11px] font-black text-slate-500 uppercase tracking-tight">关键词</span>
-      <span class="px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded text-[10px] font-bold">${city.done}/${city.total}</span>
+      <span class="text-[11px] font-black text-s500 uppercase tracking-tight">关键词</span>
+      <span class="px-1.5 py-0.5 bg-s100 text-s500 rounded text-[10px] font-bold">${city.done}/${city.total}</span>
     </div>
     <div class="relative">
-      <input class="w-40 pl-7 pr-2 py-1 bg-slate-50 border border-slate-200 rounded text-[11px] focus:ring-1 focus:ring-blue-200 focus:border-blue-400 focus:bg-white outline-none transition-all placeholder:text-slate-300" placeholder="搜索..." type="text" id="kw-filter-input" oninput="window.__filterKw(this.value)" />
-      <span class="material-symbols-outlined absolute left-2 top-1/2 -translate-y-1/2 text-slate-300 text-xs">search</span>
+      <input class="w-40 pl-7 pr-2 py-1 bg-s50 border border-s200 rounded text-[11px] focus:ring-1 focus:ring-blue-200 focus:border-blue-400 focus:bg-white outline-none transition-all placeholder:text-s300" placeholder="搜索..." type="text" id="kw-filter-input" oninput="window.__filterKw(this.value)" />
+      <span class="material-symbols-outlined absolute left-2 top-1/2 -translate-y-1/2 text-s300 text-xs">search</span>
     </div>`;
 
     // 保留搜索框的值和焦点
@@ -211,7 +211,7 @@ function buildHeader(task: {
     };
     const badge = badgeMap[task.status] || badgeMap[TaskStatus.WAITING];
     const deviceTag = task.assigned_device
-        ? `<p class="text-[11px] text-slate-400 font-semibold mt-1.5 h-4 leading-4"><span class="material-symbols-outlined text-sm icon-xs align-middle mr-0.5">smartphone</span>${esc(task.assigned_device)}</p>`
+        ? `<p class="text-[11px] text-s400 font-semibold mt-1.5 h-4 leading-4"><span class="material-symbols-outlined text-sm icon-xs align-middle mr-0.5">smartphone</span>${esc(task.assigned_device)}</p>`
         : `<p class="h-4 mt-1.5"></p>`;
 
     const btnStart =
@@ -236,14 +236,14 @@ function buildHeader(task: {
             : '';
 
     return `
-    <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 mb-4 flex items-center justify-between">
+    <div class="bg-white rounded-2xl shadow-sm border border-s200 p-5 mb-4 flex items-center justify-between">
       <div class="flex items-center gap-4 min-w-0">
         <div class="w-12 h-12 bg-indigo-500/10 flex items-center justify-center rounded-xl shrink-0">
           <span class="material-symbols-outlined text-indigo-500 text-2xl">hub</span>
         </div>
         <div class="min-w-0">
           <div class="flex items-center gap-2">
-            <h2 class="text-lg font-bold tracking-tight text-slate-800 truncate">${task.name}</h2>
+            <h2 class="text-lg font-bold tracking-tight text-s800 truncate">${task.name}</h2>
             <span class="px-2.5 py-0.5 ${badge.bg} ${badge.text} text-[11px] font-semibold rounded-full border ${badge.border} shrink-0">${badge.label}</span>
           </div>
           ${deviceTag}
@@ -301,8 +301,8 @@ async function buildMetrics(task: {
           <span class="material-symbols-outlined icon-sm text-emerald-400">check_circle</span>
           <span class="text-[11px] font-black text-emerald-600">${pctDone}%</span>
         </div>
-        <div class="text-[13px] font-bold text-slate-800">${kwDone} <span class="text-slate-400">/ ${kwTotal}</span></div>
-        <div class="text-[11px] text-slate-500 font-bold uppercase mt-1">完成进度</div>
+        <div class="text-[13px] font-bold text-s800">${kwDone} <span class="text-s400">/ ${kwTotal}</span></div>
+        <div class="text-[11px] text-s500 font-bold uppercase mt-1">完成进度</div>
         <div class="w-full h-2 bg-emerald-100 rounded-full overflow-hidden mt-1.5">
           <div class="h-full bg-emerald-500 rounded-full transition-all" style="width:${pctDone}%"></div>
         </div>
@@ -312,23 +312,23 @@ async function buildMetrics(task: {
           <span class="material-symbols-outlined icon-sm text-blue-400">trending_up</span>
           <span class="text-[11px] font-black text-blue-600">${ratePerHour > 0 ? `${ratePerHour}/h` : '--'}</span>
         </div>
-        <div class="text-[13px] font-bold text-slate-800">${todayKeywords} <span class="text-slate-400">词</span></div>
-        <div class="text-[11px] text-slate-500 font-bold uppercase mt-1">今日采集</div>
+        <div class="text-[13px] font-bold text-s800">${todayKeywords} <span class="text-s400">词</span></div>
+        <div class="text-[11px] text-s500 font-bold uppercase mt-1">今日采集</div>
       </div>
       <div class="bg-violet-50/50 rounded-md border border-violet-100 p-3">
         <div class="flex items-center justify-between mb-1.5">
           <span class="material-symbols-outlined icon-sm text-violet-400">timer</span>
           <span class="text-[11px] font-black text-violet-600">${todayRuns} 次</span>
         </div>
-        <div class="text-[13px] font-bold text-slate-800">${durationLabel}</div>
-        <div class="text-[11px] text-slate-500 font-bold uppercase mt-1">今日时长</div>
+        <div class="text-[13px] font-bold text-s800">${durationLabel}</div>
+        <div class="text-[11px] text-s500 font-bold uppercase mt-1">今日时长</div>
       </div>
       <div class="bg-amber-50/50 rounded-md border border-amber-100 p-3">
         <div class="flex items-center justify-between mb-1.5">
           <span class="material-symbols-outlined icon-sm text-amber-400">schedule</span>
         </div>
-        <div class="text-[13px] font-bold text-slate-800">${lastRunLabel}</div>
-        <div class="text-[11px] text-slate-500 font-bold uppercase mt-1">上次执行</div>
+        <div class="text-[13px] font-bold text-s800">${lastRunLabel}</div>
+        <div class="text-[11px] text-s500 font-bold uppercase mt-1">上次执行</div>
       </div>
     </div>`;
 }
@@ -340,35 +340,33 @@ function buildCityCards(task: { cities: TaskCity[] }): string {
             const isPending = c.status === CityStatus.PENDING;
             const borderCls = isActive
                 ? 'border-2 border-blue-500 shadow-md'
-                : 'border border-slate-200';
+                : 'border border-s200';
             const statusIcon =
                 c.status === CityStatus.DONE
                     ? '<span class="material-symbols-outlined text-green-500 icon-sm fill-1">check_circle</span>'
                     : c.status === CityStatus.ACTIVE
                       ? '<div class="h-1.5 w-1.5 rounded-full bg-blue-500"></div>'
-                      : '<span class="material-symbols-outlined text-slate-300 icon-sm">schedule</span>';
-            const nameWeight = isActive
-                ? 'font-bold text-slate-900'
-                : 'font-semibold text-slate-500';
+                      : '<span class="material-symbols-outlined text-s300 icon-sm">schedule</span>';
+            const nameWeight = isActive ? 'font-bold text-s900' : 'font-semibold text-s500';
             const barBg =
                 c.status === CityStatus.DONE
                     ? 'bg-green-50'
                     : c.status === CityStatus.ACTIVE
-                      ? 'bg-slate-100'
-                      : 'bg-slate-50';
+                      ? 'bg-s100'
+                      : 'bg-s50';
             const barFill =
                 c.status === CityStatus.DONE
                     ? 'bg-green-500'
                     : c.status === CityStatus.ACTIVE
                       ? 'bg-blue-500'
-                      : 'bg-slate-200';
+                      : 'bg-s200';
             const pct = c.status === CityStatus.DONE ? 100 : c.progress;
             const statsLabel =
                 c.status === CityStatus.DONE
-                    ? '<span class="text-[11px] text-slate-400 font-bold uppercase">已完成</span>'
+                    ? '<span class="text-[11px] text-s400 font-bold uppercase">已完成</span>'
                     : c.status === CityStatus.ACTIVE
-                      ? `<span class="text-[11px] text-slate-400 font-bold uppercase">${c.done}/${c.total} 关键词</span>`
-                      : '<span class="text-[11px] text-slate-400 font-bold uppercase">等待中</span>';
+                      ? `<span class="text-[11px] text-s400 font-bold uppercase">${c.done}/${c.total} 关键词</span>`
+                      : '<span class="text-[11px] text-s400 font-bold uppercase">等待中</span>';
             const pctLabel =
                 c.status === CityStatus.DONE
                     ? '<span class="text-[11px] font-black text-green-600">100%</span>'
@@ -380,14 +378,14 @@ function buildCityCards(task: { cities: TaskCity[] }): string {
                     ? 'bg-green-50/50'
                     : c.status === CityStatus.ACTIVE
                       ? 'bg-blue-50/40'
-                      : 'bg-slate-50/50';
+                      : 'bg-s50/50';
             const dragAttr = '';
             const dragCls = isPending ? 'city-draggable' : '';
             const dragHandle = isPending
-                ? '<span class="material-symbols-outlined text-slate-300 text-sm cursor-grab city-drag-handle">drag_indicator</span>'
+                ? '<span class="material-symbols-outlined text-s300 text-sm cursor-grab city-drag-handle">drag_indicator</span>'
                 : '';
             return `
-      <div class="city-card ${cardBg} rounded-md ${borderCls} p-3 cursor-pointer ${!isActive ? 'hover:bg-slate-50' : ''} transition-all relative overflow-hidden ${dragCls}" style="width:220px;min-width:220px;flex-shrink:0" data-city-name="${esc(c.name)}" data-city-idx="${i}" ${dragAttr} onclick="window.__switchCity(${i})">
+      <div class="city-card ${cardBg} rounded-md ${borderCls} p-3 cursor-pointer ${!isActive ? 'hover:bg-s50' : ''} transition-all relative overflow-hidden ${dragCls}" style="width:220px;min-width:220px;flex-shrink:0" data-city-name="${esc(c.name)}" data-city-idx="${i}" ${dragAttr} onclick="window.__switchCity(${i})">
         <div class="flex items-center justify-between mb-2">
           <div class="flex items-center space-x-2">
             ${dragHandle}
@@ -396,8 +394,8 @@ function buildCityCards(task: { cities: TaskCity[] }): string {
           </div>
           ${statusIcon}
         </div>
-        <div class="text-[10px] text-slate-500 truncate mb-2" title="${c.poi}">
-          <span class="material-symbols-outlined icon-xs text-slate-300 align-middle mr-0.5">location_on</span>${c.poi}
+        <div class="text-[10px] text-s500 truncate mb-2" title="${c.poi}">
+          <span class="material-symbols-outlined icon-xs text-s300 align-middle mr-0.5">location_on</span>${c.poi}
         </div>
         <div class="w-full h-2 ${barBg} rounded-full overflow-hidden">
           <div class="h-full ${barFill} rounded-full" style="width: ${pct}%"></div>
@@ -456,7 +454,7 @@ function buildKeywordGrid(city: TaskCity): string {
                 return `<div class="kw-item flex items-center justify-between p-2 rounded bg-green-100/50 border border-green-200 transition-all hover:bg-green-100">
         <div class="flex items-center min-w-0">
           <span class="material-symbols-outlined icon-sm text-green-500 mr-1.5 fill-1">check_circle</span>
-          <span class="text-[12px] font-semibold text-slate-600 truncate">${k.name}</span>
+          <span class="text-[12px] font-semibold text-s600 truncate">${k.name}</span>
         </div>
       </div>`;
             } else if (k.status === KeywordStatus.RUN) {
@@ -465,8 +463,8 @@ function buildKeywordGrid(city: TaskCity): string {
         <span class="text-[12px] font-bold text-blue-700 truncate">${k.name}</span>
       </div>`;
             } else {
-                return `<div class="kw-item flex items-center p-2 rounded bg-slate-100/50 border border-slate-200 hover:border-slate-300 transition-all cursor-pointer">
-        <span class="text-[12px] font-medium text-slate-500 truncate">${k.name}</span>
+                return `<div class="kw-item flex items-center p-2 rounded bg-s100/50 border border-s200 hover:border-s300 transition-all cursor-pointer">
+        <span class="text-[12px] font-medium text-s500 truncate">${k.name}</span>
       </div>`;
             }
         })
