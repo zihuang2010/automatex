@@ -8,7 +8,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { platform } from '@tauri-apps/plugin-os';
 import { DeviceState } from './constants';
 import { setActiveTask, setActiveCityIdx, globalQueue, activeTask, selectedDevice } from './state';
-import { $ } from './utils';
+import { $, showToast } from './utils';
 import {
     refreshDevices,
     filterDeviceCards,
@@ -247,6 +247,12 @@ window.addEventListener('DOMContentLoaded', () => {
                 .map(d => d.serial);
             invoke('engine_release_offline', { onlineSerials }).catch(() => {});
         }, 300);
+    });
+
+    // 监听风控触发事件
+    listen<{ task_id: string; device_serial: string; message: string }>('risk-control', event => {
+        const { device_serial, message } = event.payload;
+        showToast(`⚠ ${device_serial}: ${message}`, 'error');
     });
 
     listen<string>('mqtt-status', event => {

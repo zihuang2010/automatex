@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 use crate::constants::{city_status, keyword_status, run_status, task_status};
 use crate::storage::{Database, DeviceRow};
 use crate::task_provider::{self, Task};
+use rand::RngExt;
 
 // ─── 运行中任务的状态 ──────────────────────────────────────────
 
@@ -35,6 +36,8 @@ enum TickEffect {
     TaskSuccess { task_id: String },
     /// 设备离线，任务需要标记 ERROR
     DeviceOffline { task_id: String },
+    /// 风控触发：标记设备 + 任务 ERROR
+    RiskControl { task_id: String, device_serial: String },
     /// 无需任何 DB 操作（城市切换、RUN→OK 等）
     None,
 }
@@ -531,6 +534,34 @@ impl TaskEngine {
                 break 'effect TickEffect::DeviceOffline { task_id: task_id.to_string() };
             }
 
+            // ── 风控模拟 ──────────────────────────────────────────
+            // TODO: 这里未来替换为真实的 ADB 操作检测逻辑
+            // 当前以 5% 概率随机触发风控，模拟操作设备时发现无法
+            // 找到元素、应用崩溃等不可控异常
+            {
+                let mut rng = rand::rng();
+                if rng.random_bool(0.05) {
+                    eprintln!(
+                        "[engine] risk-control triggered (simulated): task={}, device={}",
+                        task_id, device_serial
+                    );
+                    // 回退 RUN 状态的关键词
+                    for city in &mut task.cities {
+                        for kw in &mut city.keywords {
+                            if kw.status == keyword_status::RUN {
+                                kw.status = keyword_status::PENDING.to_string();
+                            }
+                        }
+                    }
+                    task.status = task_status::ERROR.to_string();
+                    task.assigned_device = None;
+                    break 'effect TickEffect::RiskControl {
+                        task_id: task_id.to_string(),
+                        device_serial,
+                    };
+                }
+            }
+
             // 找活跃城市或激活第一个 pending
             let active_idx =
                 task.cities.iter().position(|c| c.status == city_status::ACTIVE).or_else(|| {
@@ -626,6 +657,29 @@ impl TaskEngine {
                     eprintln!("[engine] save_task_state(ERROR/DeviceOffline) 失败: {}", e);
                 }
                 true // 返回 true 停止执行循环
+            },
+            TickEffect::RiskControl { task_id, device_serial } => {
+                let db = Arc::clone(&self.storage);
+                let app = self.app_handle.clone();
+                if let Err(e) = tokio::task::spawn_blocking(move || {
+                    db.save_task_state(&task_id, task_status::ERROR, None);
+                    db.flag_device(&device_serial);
+                    // 通知前端：风控触发
+                    let _ = app.emit(
+                        "risk-control",
+                        serde_json::json!({
+                            "task_id": task_id,
+                            "device_serial": device_serial,
+                            "message": "设备风控触发，任务已停止，设备已标记"
+                        }),
+                    );
+                    let _ = app.emit("devices-changed", ());
+                })
+                .await
+                {
+                    eprintln!("[engine] RiskControl 处理失败: {}", e);
+                }
+                true // 停止执行循环
             },
             TickEffect::None => false,
         }
