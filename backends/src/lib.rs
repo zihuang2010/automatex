@@ -1,5 +1,6 @@
 mod connection;
 pub mod constants;
+mod http_client;
 mod mqtt;
 mod storage;
 mod task_engine;
@@ -10,10 +11,11 @@ use connection::ShellResult;
 use mqtt::{MqttConfig, MqttManager, MqttStatus};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use storage::{DailyStatRow, DailySummary, DeviceRow, TaskRunStats};
 use task_engine::TaskEngine;
 use task_provider::Task;
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Listener, Manager};
 
 // ─── State ─────────────────────────────────────────────────────
 
@@ -21,6 +23,7 @@ struct AppState {
     db: Arc<storage::Database>,
     mqtt: Arc<MqttManager>,
     engine: Arc<TaskEngine>,
+    http: Arc<http_client::HttpClient>,
 }
 
 // FIX #1: 全局线程计数器（限制并发属性获取线程数）
@@ -192,7 +195,7 @@ async fn mqtt_connect(
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
     let host = state.db.get_setting("mqtt_host").unwrap_or_else(|| "127.0.0.1".to_string());
-    let port: u16 = state.db.get_setting("mqtt_port").and_then(|s| s.parse().ok()).unwrap_or(1883);
+    let port: u16 = state.db.get_setting("mqtt_port").and_then(|s| s.parse().ok()).unwrap_or(30002);
     let client_id = state
         .db
         .get_setting("mqtt_client_id")
@@ -695,9 +698,136 @@ pub fn run() {
             let mqtt = Arc::new(MqttManager::new());
             let engine = TaskEngine::new(Arc::clone(&db), app.handle().clone());
 
+            // HTTP 客户端（base_url 为空时自动启用 mock 模式）
+            let http_base_url = db.get_setting("api_base_url").unwrap_or_default();
+            let http = Arc::new(http_client::HttpClient::new(&http_base_url));
+
             spawn_device_monitor(app.handle().clone(), Arc::clone(&db));
 
-            app.manage(AppState { db, mqtt, engine });
+            // ── 启动时设备归属同步 ──
+            {
+                let db_sync = Arc::clone(&db);
+                let http_sync = Arc::clone(&http);
+                let engine_sync = Arc::clone(&engine);
+                let handle_sync = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    // 收集本地在线和离线设备
+                    let devices = db_sync.load_all_devices();
+                    let online: Vec<http_client::DeviceSyncItem> = devices
+                        .iter()
+                        .filter(|d| d.state == constants::device_state::DEVICE)
+                        .map(|d| http_client::DeviceSyncItem {
+                            hw_serial: d.hw_serial.clone(),
+                            serial: d.serial.clone(),
+                            state: d.state.clone(),
+                        })
+                        .collect();
+                    let offline_local: Vec<String> = devices
+                        .iter()
+                        .filter(|d| d.state != constants::device_state::DEVICE)
+                        .map(|d| d.hw_serial.clone())
+                        .collect();
+
+                    let client_id = db_sync
+                        .get_setting("mqtt_client_id")
+                        .unwrap_or_else(|| format!("automatex-{}", std::process::id()));
+
+                    let req = http_client::DeviceSyncRequest { client_id, online, offline_local };
+
+                    match http_sync.device_sync(&req).await {
+                        Ok(resp) => {
+                            if !resp.to_remove.is_empty() {
+                                eprintln!(
+                                    "[startup] 清理被其他客户端占用的设备: {:?}",
+                                    resp.to_remove
+                                );
+                                let n = engine_sync.handle_device_kick(resp.to_remove).await;
+                                eprintln!("[startup] 已清理 {} 台设备", n);
+                                let _ = handle_sync.emit("devices-changed", ());
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("[startup] 设备归属同步失败: {}", e);
+                        },
+                    }
+                });
+            }
+
+            // ── MQTT 事件监听 ──
+            {
+                let engine_kick = Arc::clone(&engine);
+                app.listen("mqtt-device-kick", move |event| {
+                    let engine = Arc::clone(&engine_kick);
+                    tauri::async_runtime::spawn(async move {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(event.payload())
+                        {
+                            if let Some(hw_serials) =
+                                val.get("hw_serials").and_then(|v| v.as_array())
+                            {
+                                let serials: Vec<String> = hw_serials
+                                    .iter()
+                                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                    .collect();
+                                let n = engine.handle_device_kick(serials).await;
+                                eprintln!("[mqtt-listener] 踢设备完成: {} 台", n);
+                            }
+                        }
+                    });
+                });
+
+                let engine_reload = Arc::clone(&engine);
+                app.listen("mqtt-task-reload", move |event| {
+                    let engine = Arc::clone(&engine_reload);
+                    tauri::async_runtime::spawn(async move {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(event.payload())
+                        {
+                            let action = val.get("action").and_then(|v| v.as_str()).unwrap_or("");
+                            let task_id = val.get("task_id").and_then(|v| v.as_str());
+                            engine.handle_task_reload(action, task_id).await;
+                        }
+                    });
+                });
+            }
+
+            // ── MQTT 心跳定时器 ──
+            {
+                let mqtt_hb = Arc::clone(&mqtt);
+                let db_hb = Arc::clone(&db);
+                let engine_hb = Arc::clone(&engine);
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        tokio::time::sleep(Duration::from_secs(
+                            constants::mqtt_topic::HEARTBEAT_INTERVAL_SECS,
+                        ))
+                        .await;
+
+                        // 收集在线设备 hw_serial
+                        let devices = db_hb.load_all_devices();
+                        let hw_serials: Vec<String> = devices
+                            .iter()
+                            .filter(|d| d.state == constants::device_state::DEVICE)
+                            .map(|d| d.hw_serial.clone())
+                            .collect();
+
+                        // 收集执行中任务 ID
+                        let tasks = engine_hb.get_tasks().await;
+                        let executing: Vec<String> = tasks
+                            .iter()
+                            .filter(|t| t.status == constants::task_status::EXECUTING)
+                            .map(|t| t.id.clone())
+                            .collect();
+
+                        if let Err(e) = mqtt_hb.publish_heartbeat(hw_serials, executing).await {
+                            // 静默失败（MQTT 未连接时不报错）
+                            if !e.contains("未连接") {
+                                eprintln!("[heartbeat] 发送失败: {}", e);
+                            }
+                        }
+                    }
+                });
+            }
+
+            app.manage(AppState { db, mqtt, engine, http });
 
             Ok(())
         })

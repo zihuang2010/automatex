@@ -130,7 +130,8 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_runs_sync ON a_task_runs(sync_status);
             CREATE INDEX IF NOT EXISTS idx_runs_task_started ON a_task_runs(task_id, started_at);
             CREATE INDEX IF NOT EXISTS idx_runs_task_date ON a_task_runs(task_id, run_date);
-            CREATE INDEX IF NOT EXISTS idx_runs_device_date ON a_task_runs(device_serial, run_date);",
+            CREATE INDEX IF NOT EXISTS idx_runs_device_date ON a_task_runs(device_serial, run_date);
+            CREATE INDEX IF NOT EXISTS idx_devices_hw_serial ON a_devices(hw_serial);",
             )
             .map_err(|e| format!("建表失败: {}", e))?;
 
@@ -343,6 +344,38 @@ impl Database {
                     battery_level, battery_temperature, is_flagged, updated_at
              FROM a_devices WHERE serial = ?1",
             params![serial],
+            |row| {
+                Ok(DeviceRow {
+                    serial: row.get(0)?,
+                    hw_serial: row.get(1)?,
+                    name: row.get(2)?,
+                    device_type: row.get(3)?,
+                    address: row.get(4)?,
+                    state: row.get(5)?,
+                    model: row.get(6)?,
+                    brand: row.get(7)?,
+                    android_version: row.get(8)?,
+                    sdk_version: row.get(9)?,
+                    display_resolution: row.get(10)?,
+                    battery_level: row.get(11)?,
+                    battery_temperature: row.get(12)?,
+                    is_flagged: row.get::<_, i32>(13).unwrap_or(0) != 0,
+                    updated_at: row.get(14)?,
+                })
+            },
+        )
+        .ok()
+    }
+
+    /// 通过硬件序列号查找设备（用于 MQTT 踢设备场景）
+    pub fn get_device_by_hw_serial(&self, hw_serial: &str) -> Option<DeviceRow> {
+        let conn = self.r();
+        conn.query_row(
+            "SELECT serial, hw_serial, name, device_type, address, state,
+                    model, brand, android_version, sdk_version, display_resolution,
+                    battery_level, battery_temperature, is_flagged, updated_at
+             FROM a_devices WHERE hw_serial = ?1",
+            params![hw_serial],
             |row| {
                 Ok(DeviceRow {
                     serial: row.get(0)?,

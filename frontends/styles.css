@@ -836,3 +836,16 @@
 .empty-hint {
   @apply text-center py-8 px-4 text-xs text-s300 font-medium;
 }
+
+/* ══════ SETTINGS NAV ══════ */
+.settings-nav-item {
+  @apply text-s500 font-medium;
+}
+
+.settings-nav-item:hover {
+  @apply bg-s100 text-s700;
+}
+
+.settings-nav-item.active {
+  @apply bg-blue-50 text-blue-600 font-semibold;
+}

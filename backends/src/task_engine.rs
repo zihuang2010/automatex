@@ -745,4 +745,103 @@ impl TaskEngine {
         self.emit_update().await;
         Ok(())
     }
+
+    // ─── MQTT 消息处理 ─────────────────────────────────────────
+
+    /// 处理 MQTT 踢设备指令
+    /// 根据 hw_serial 找到本地设备，暂停关联任务并删除设备
+    pub async fn handle_device_kick(self: &Arc<Self>, hw_serials: Vec<String>) -> u32 {
+        let mut kicked = 0u32;
+
+        for hw_serial in &hw_serials {
+            // 通过 hw_serial 找到本地设备的 serial
+            let device = self.storage.get_device_by_hw_serial(hw_serial);
+            let Some(device) = device else { continue };
+            let serial = device.serial.clone();
+
+            // 检查是否有任务绑定在这个设备上
+            let task_to_pause: Option<String> = {
+                let tasks = self.tasks.read().await;
+                tasks
+                    .iter()
+                    .find(|t| {
+                        t.assigned_device.as_deref() == Some(&serial)
+                            && (t.status == task_status::EXECUTING
+                                || t.status == task_status::PAUSED)
+                    })
+                    .map(|t| t.id.clone())
+            };
+
+            // 如果有任务在执行 → 暂停
+            if let Some(task_id) = task_to_pause {
+                if let Err(e) = self.pause_task(&task_id).await {
+                    eprintln!("[engine] 踢设备时暂停任务失败: task={}, err={}", task_id, e);
+                }
+            }
+
+            // 从 DB 删除设备
+            self.storage.delete_device(&serial);
+            eprintln!("[engine] 设备已踢下线: hw_serial={}, serial={}", hw_serial, serial);
+            kicked += 1;
+        }
+
+        if kicked > 0 {
+            let _ = self.app_handle.emit("devices-changed", ());
+            self.emit_update().await;
+        }
+        kicked
+    }
+
+    /// 处理 MQTT 任务数据变更通知
+    pub async fn handle_task_reload(self: &Arc<Self>, action: &str, task_id: Option<&str>) {
+        match action {
+            "reload_all" => {
+                eprintln!("[engine] 收到 reload_all，重新加载所有任务");
+                self.reload_tasks().await;
+                self.emit_update().await;
+            },
+            "reload_task" => {
+                if let Some(tid) = task_id {
+                    eprintln!("[engine] 收到 reload_task: {}", tid);
+                    // 目前简单处理：全量重载
+                    // TODO: 后续可以实现单任务增量更新
+                    self.reload_tasks().await;
+                    self.emit_update().await;
+                }
+            },
+            "delete_task" => {
+                if let Some(tid) = task_id {
+                    eprintln!("[engine] 收到 delete_task: {}", tid);
+                    // 如果任务正在执行 → 先停止
+                    let is_running = {
+                        let tasks = self.tasks.read().await;
+                        tasks.iter().any(|t| {
+                            t.id == tid
+                                && (t.status == task_status::EXECUTING
+                                    || t.status == task_status::PAUSED)
+                        })
+                    };
+                    if is_running {
+                        let _ = self.stop_task(tid).await;
+                    }
+                    // 从内存中移除
+                    {
+                        let mut tasks = self.tasks.write().await;
+                        tasks.retain(|t| t.id != tid);
+                    }
+                    // 从 DB 移除缓存
+                    let db = Arc::clone(&self.storage);
+                    let tid_owned = tid.to_string();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        db.delete_task_cache(&tid_owned);
+                    })
+                    .await;
+                    self.emit_update().await;
+                }
+            },
+            _ => {
+                eprintln!("[engine] 未知的 task reload action: {}", action);
+            },
+        }
+    }
 }
