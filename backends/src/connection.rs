@@ -151,8 +151,9 @@ impl DeviceManager {
             }
         }
 
-        let output =
-            child.wait_with_output().map_err(|e| format!("读取 adb connect 输出失败: {}", e))?;
+        let output = child
+            .wait_with_output()
+            .map_err(|e| format!("读取 adb connect 输出失败: {}", e))?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         if output.status.success() && !stdout.contains("failed") {
             Ok(format!("WiFi 设备已连接: {}", addr_str))

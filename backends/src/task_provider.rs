@@ -166,8 +166,11 @@ pub async fn build_task(db: &Database, def: TaskDef) -> Task {
             city_status::PENDING.to_string()
         };
 
-        let progress =
-            if total > 0 { ((done as f64 / total as f64) * 100.0).round() as i32 } else { 0 };
+        let progress = if total > 0 {
+            ((done as f64 / total as f64) * 100.0).round() as i32
+        } else {
+            0
+        };
 
         cities.push(TaskCity {
             name: city_def.name.clone(),

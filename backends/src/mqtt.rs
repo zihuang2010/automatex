@@ -195,7 +195,10 @@ impl MqttManager {
             let guard = self.client.lock().await;
             guard.as_ref().ok_or("MQTT 未连接".to_string())?.clone()
         };
-        client.subscribe(topic, QoS::AtLeastOnce).await.map_err(|e| format!("订阅失败: {}", e))?;
+        client
+            .subscribe(topic, QoS::AtLeastOnce)
+            .await
+            .map_err(|e| format!("订阅失败: {}", e))?;
         Ok(format!("已订阅: {}", topic))
     }
 

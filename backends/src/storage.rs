@@ -85,8 +85,10 @@ impl Database {
         std::fs::create_dir_all(app_data_dir).map_err(|e| format!("创建数据目录失败: {}", e))?;
 
         let db_path = app_data_dir.join("automatex.db");
-        let db_path_str =
-            db_path.to_str().ok_or_else(|| "数据库路径包含非 UTF-8 字符".to_string())?.to_string();
+        let db_path_str = db_path
+            .to_str()
+            .ok_or_else(|| "数据库路径包含非 UTF-8 字符".to_string())?
+            .to_string();
 
         // Phase 1: 用裸 Connection 同步执行建表 + 迁移（一次性操作）
         {

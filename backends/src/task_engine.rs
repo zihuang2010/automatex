@@ -44,13 +44,24 @@ pub struct TaskSnapshot {
 /// tick 产生的副作用，在释放 tasks 写锁后执行
 enum TickEffect {
     /// 推进了一个关键词
-    KeywordDone { task_id: String, city_name: String, kw_name: String, device_serial: String },
+    KeywordDone {
+        task_id: String,
+        city_name: String,
+        kw_name: String,
+        device_serial: String,
+    },
     /// 整个任务执行完成
     TaskSuccess { task_id: String },
     /// 设备离线，任务需要标记 ERROR
-    DeviceOffline { task_id: String, device_serial: String },
+    DeviceOffline {
+        task_id: String,
+        device_serial: String,
+    },
     /// 风控触发：标记设备 + 任务 ERROR
-    RiskControl { task_id: String, device_serial: String },
+    RiskControl {
+        task_id: String,
+        device_serial: String,
+    },
     /// 无需任何 DB 操作（城市切换、RUN→OK 等）
     None,
 }
@@ -142,7 +153,9 @@ impl TaskEngine {
             serial
         };
 
-        self.storage.save_task_state(task_id, task_status::EXECUTING, Some(&serial)).await;
+        self.storage
+            .save_task_state(task_id, task_status::EXECUTING, Some(&serial))
+            .await;
         let started_at = self.storage.start_task_run(task_id, &serial).await;
 
         self.spawn_loop(task_id, started_at).await;
@@ -213,7 +226,9 @@ impl TaskEngine {
             serial
         };
 
-        self.storage.save_task_state(task_id, task_status::EXECUTING, Some(&serial)).await;
+        self.storage
+            .save_task_state(task_id, task_status::EXECUTING, Some(&serial))
+            .await;
         let started_at = self.storage.start_task_run(task_id, &serial).await;
 
         self.spawn_loop(task_id, started_at).await;
@@ -282,7 +297,9 @@ impl TaskEngine {
             serial
         };
 
-        self.storage.save_task_state(task_id, task_status::EXECUTING, Some(&serial)).await;
+        self.storage
+            .save_task_state(task_id, task_status::EXECUTING, Some(&serial))
+            .await;
         let started_at = self.storage.start_task_run(task_id, &serial).await;
 
         self.spawn_loop(task_id, started_at).await;

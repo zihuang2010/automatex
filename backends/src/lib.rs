@@ -116,7 +116,11 @@ async fn get_device_info(
     serial: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<DeviceRow, String> {
-    state.db.get_device_by_serial(&serial).await.ok_or_else(|| format!("设备 {} 不存在", serial))
+    state
+        .db
+        .get_device_by_serial(&serial)
+        .await
+        .ok_or_else(|| format!("设备 {} 不存在", serial))
 }
 
 #[tauri::command]
@@ -411,8 +415,11 @@ fn fetch_device_row(serial: &str, state: &str) -> DeviceRow {
     } else {
         constants::device_type::USB
     };
-    let address =
-        if device_type == constants::device_type::WIFI { Some(serial.to_string()) } else { None };
+    let address = if device_type == constants::device_type::WIFI {
+        Some(serial.to_string())
+    } else {
+        None
+    };
 
     let raw = connection::run_adb_timed(
         connection::adb_command().args(["-s", serial, "shell", BATCH_PROPS_CMD]),
@@ -651,8 +658,10 @@ fn spawn_device_monitor(
         ));
 
         let devices = db_block_on(&rt_battery, db_battery.load_all_devices());
-        let online_devices: Vec<&DeviceRow> =
-            devices.iter().filter(|dev| dev.state == constants::device_state::DEVICE).collect();
+        let online_devices: Vec<&DeviceRow> = devices
+            .iter()
+            .filter(|dev| dev.state == constants::device_state::DEVICE)
+            .collect();
 
         if online_devices.is_empty() {
             continue;
