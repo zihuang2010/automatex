@@ -326,23 +326,25 @@ impl Database {
         let Ok(conn) = self.pool.get().await else { return };
         let _ = conn.interact(move |conn| {
             let now = now_unix();
+            let offline = crate::constants::device_state::OFFLINE;
             if online_serials.is_empty() {
                 log_exec(
                     conn.execute(
-                        "UPDATE a_devices SET state = 'Offline', updated_at = ?1 WHERE state != 'Offline'",
-                        params![now],
+                        "UPDATE a_devices SET state = ?1, updated_at = ?2 WHERE state != ?1",
+                        params![offline, now],
                     ),
                     "mark_all_offline",
                 );
             } else {
                 let placeholders: Vec<String> =
-                    (0..online_serials.len()).map(|i| format!("?{}", i + 2)).collect();
+                    (0..online_serials.len()).map(|i| format!("?{}", i + 3)).collect();
                 let sql = format!(
-                    "UPDATE a_devices SET state = 'Offline', updated_at = ?1 WHERE state != 'Offline' AND serial NOT IN ({})",
+                    "UPDATE a_devices SET state = ?1, updated_at = ?2 WHERE state != ?1 AND serial NOT IN ({})",
                     placeholders.join(",")
                 );
                 let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> =
-                    Vec::with_capacity(online_serials.len() + 1);
+                    Vec::with_capacity(online_serials.len() + 2);
+                param_values.push(Box::new(offline.to_string()));
                 param_values.push(Box::new(now));
                 for s in &online_serials {
                     param_values.push(Box::new(s.clone()));
@@ -416,21 +418,31 @@ impl Database {
             .await;
     }
 
-    /// 批量设置（单连接内完成，减少池争用）
+    /// 批量设置（单连接事务内完成，减少池争用）
     pub async fn set_settings_batch(&self, pairs: &[(&str, &str)]) {
         let pairs: Vec<(String, String)> =
             pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         let Ok(conn) = self.pool.get().await else { return };
         let _ = conn
             .interact(move |conn| {
+                let tx = match conn.transaction() {
+                    Ok(tx) => tx,
+                    Err(e) => {
+                        eprintln!("[db] set_settings_batch 事务开始失败: {}", e);
+                        return;
+                    },
+                };
                 for (key, value) in &pairs {
                     log_exec(
-                        conn.execute(
+                        tx.execute(
                             "INSERT OR REPLACE INTO a_settings (key, value) VALUES (?1, ?2)",
                             params![key, value],
                         ),
                         "set_settings_batch",
                     );
+                }
+                if let Err(e) = tx.commit() {
+                    eprintln!("[db] set_settings_batch 事务提交失败: {}", e);
                 }
             })
             .await;
@@ -441,23 +453,29 @@ impl Database {
         let task_ids = task_ids.to_vec();
         let phones = phones.to_vec();
         let Ok(conn) = self.pool.get().await else { return };
-        let _ = conn.interact(move |conn| {
-            let tx = match conn.transaction() {
-                Ok(tx) => tx,
-                Err(e) => { eprintln!("[db] batch_cleanup_tasks 事务开始失败: {}", e); return; },
-            };
-            for tid in &task_ids {
-                let _ = tx.execute("DELETE FROM a_task_progress WHERE task_id = ?1", params![tid]);
-                let _ = tx.execute("UPDATE a_task_cache SET status = 'WAITING', assigned_device = NULL WHERE task_id = ?1", params![tid]);
-                let _ = tx.execute("DELETE FROM a_task_cache WHERE task_id = ?1", params![tid]);
-            }
-            for phone in &phones {
-                let _ = tx.execute("DELETE FROM a_phone_tasks WHERE phone = ?1", params![phone]);
-            }
-            if let Err(e) = tx.commit() {
-                eprintln!("[db] batch_cleanup_tasks 事务提交失败: {}", e);
-            }
-        }).await;
+        let _ = conn
+            .interact(move |conn| {
+                let tx = match conn.transaction() {
+                    Ok(tx) => tx,
+                    Err(e) => {
+                        eprintln!("[db] batch_cleanup_tasks 事务开始失败: {}", e);
+                        return;
+                    },
+                };
+                for tid in &task_ids {
+                    let _ =
+                        tx.execute("DELETE FROM a_task_progress WHERE task_id = ?1", params![tid]);
+                    let _ = tx.execute("DELETE FROM a_task_cache WHERE task_id = ?1", params![tid]);
+                }
+                for phone in &phones {
+                    let _ =
+                        tx.execute("DELETE FROM a_phone_tasks WHERE phone = ?1", params![phone]);
+                }
+                if let Err(e) = tx.commit() {
+                    eprintln!("[db] batch_cleanup_tasks 事务提交失败: {}", e);
+                }
+            })
+            .await;
     }
 
     // ─── 设备读操作 ─────────────────────────────────────────────
@@ -783,6 +801,87 @@ impl Database {
         }).await;
     }
 
+    /// 批量加载全部 task_progress（用于 load_tasks 消除 N+1）
+    pub async fn load_all_progress(&self) -> Vec<ProgressRow> {
+        let Ok(conn) = self.pool.get().await else { return Vec::new() };
+        conn.interact(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT task_id, city_name, keyword_name, status, completed_at, device_serial
+                 FROM a_task_progress",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok(ProgressRow {
+                    task_id: row.get(0)?,
+                    city_name: row.get(1)?,
+                    keyword_name: row.get(2)?,
+                    status: row.get(3)?,
+                    completed_at: row.get(4)?,
+                    device_serial: row.get(5)?,
+                })
+            })?;
+            Ok::<_, rusqlite::Error>(rows.filter_map(|r| r.ok()).collect())
+        })
+        .await
+        .unwrap_or_else(|_| Ok(Vec::new()))
+        .unwrap_or_default()
+    }
+
+    /// 批量加载全部 task_cache 的状态（用于 load_tasks 消除 N+1）
+    pub async fn load_all_task_states(
+        &self,
+    ) -> std::collections::HashMap<String, (String, Option<String>)> {
+        let Ok(conn) = self.pool.get().await else {
+            return Default::default();
+        };
+        conn.interact(|conn| {
+            let mut map = std::collections::HashMap::new();
+            if let Ok(mut stmt) =
+                conn.prepare("SELECT task_id, status, assigned_device FROM a_task_cache")
+            {
+                if let Ok(rows) = stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                }) {
+                    for row in rows.flatten() {
+                        map.insert(row.0, (row.1, row.2));
+                    }
+                }
+            }
+            map
+        })
+        .await
+        .unwrap_or_default()
+    }
+
+    /// 批量加载全部 city_order（用于 load_tasks 消除 N+1）
+    pub async fn load_all_city_orders(&self) -> std::collections::HashMap<String, Vec<String>> {
+        let Ok(conn) = self.pool.get().await else {
+            return Default::default();
+        };
+        conn.interact(|conn| {
+            let mut map = std::collections::HashMap::new();
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT task_id, city_order FROM a_task_cache WHERE city_order IS NOT NULL",
+            ) {
+                if let Ok(rows) = stmt
+                    .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+                {
+                    for row in rows.flatten() {
+                        if let Ok(order) = serde_json::from_str::<Vec<String>>(&row.1) {
+                            map.insert(row.0, order);
+                        }
+                    }
+                }
+            }
+            map
+        })
+        .await
+        .unwrap_or_default()
+    }
+
     pub async fn save_city_order(&self, task_id: &str, order: &[String]) {
         let task_id = task_id.to_string();
         let json = serde_json::to_string(order).unwrap_or_default();
@@ -1090,34 +1189,40 @@ impl Database {
 
     pub async fn cleanup_stale_assignments(&self) {
         let Ok(conn) = self.pool.get().await else { return };
-        let _ = conn.interact(|conn| {
-            let affected = conn.execute(
-                "UPDATE a_task_cache SET status = 'PAUSED', assigned_device = NULL WHERE status = 'EXECUTING'",
-                [],
-            );
-            match affected {
-                Ok(n) if n > 0 => eprintln!("[db] 清理了 {} 条残留 EXECUTING 任务", n),
-                Err(e) => eprintln!("[db] cleanup_stale_assignments 失败: {}", e),
-                _ => {},
-            }
-        }).await;
+        let _ = conn
+            .interact(|conn| {
+                let paused = crate::constants::task_status::PAUSED;
+                let executing = crate::constants::task_status::EXECUTING;
+                let affected = conn.execute(
+                    "UPDATE a_task_cache SET status = ?1, assigned_device = NULL WHERE status = ?2",
+                    params![paused, executing],
+                );
+                match affected {
+                    Ok(n) if n > 0 => eprintln!("[db] 清理了 {} 条残留 EXECUTING 任务", n),
+                    Err(e) => eprintln!("[db] cleanup_stale_assignments 失败: {}", e),
+                    _ => {},
+                }
+            })
+            .await;
     }
 
     pub async fn cleanup_orphan_runs(&self) {
         let Ok(conn) = self.pool.get().await else { return };
         let _ = conn.interact(|conn| {
             let now = now_unix();
+            let crashed = crate::constants::run_status::CRASHED;
+            let running = crate::constants::run_status::RUNNING;
             let affected = conn.execute(
                 "UPDATE a_task_runs
                  SET ended_at = ?1,
                      duration_sec = ?1 - started_at,
-                     status = 'crashed',
+                     status = ?2,
                      keywords_done = COALESCE(
                          (SELECT COUNT(*) FROM a_task_progress WHERE task_id = a_task_runs.task_id) - keywords_baseline,
                          0
                      )
-                 WHERE status = 'running'",
-                params![now],
+                 WHERE status = ?3",
+                params![now, crashed, running],
             );
             match affected {
                 Ok(n) if n > 0 => eprintln!("[db] 清理了 {} 条孤儿 run 记录", n),

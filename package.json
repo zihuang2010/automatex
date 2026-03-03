@@ -1,45 +1,47 @@
 {
-    "name": "tauri-app",
-    "private": true,
-    "version": "0.1.0",
-    "type": "module",
-    "scripts": {
-        "dev": "vite",
-        "build": "tsc && vite build",
-        "preview": "vite preview",
-        "tauri": "tauri",
-        "lint": "eslint frontends/",
-        "format": "prettier --write \"frontends/**/*.{ts,css,html}\" \"index.html\"",
-        "format:check": "prettier --check \"frontends/**/*.{ts,css,html}\" \"index.html\"",
-        "prepare": "husky"
-    },
-    "lint-staged": {
-        "*.{ts,tsx}": [
-            "eslint --fix",
-            "prettier --write"
-        ],
-        "*.{css,html,json,md}": [
-            "prettier --write"
-        ]
-    },
-    "dependencies": {
-        "@tailwindcss/vite": "^4.2.1",
-        "@tauri-apps/api": "^2",
-        "@tauri-apps/plugin-opener": "^2",
-        "@tauri-apps/plugin-os": "^2.3.2",
-        "sortablejs": "^1.15.7",
-        "tailwindcss": "^4.2.1"
-    },
-    "devDependencies": {
-        "@eslint/js": "^10.0.1",
-        "@tauri-apps/cli": "^2",
-        "@types/sortablejs": "^1.15.9",
-        "eslint": "^10.0.2",
-        "husky": "^9.1.7",
-        "lint-staged": "^16.2.7",
-        "prettier": "^3.8.1",
-        "typescript": "~5.6.2",
-        "typescript-eslint": "^8.56.1",
-        "vite": "^6.0.3"
-    }
+  "name": "tauri-app",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "lint": "eslint frontends/",
+    "format": "prettier --write \"frontends/**/*.{ts,css,html}\" \"index.html\"",
+    "format:check": "prettier --check \"frontends/**/*.{ts,css,html}\" \"index.html\"",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{css,html,json,md}": [
+      "prettier --write"
+    ]
+  },
+  "dependencies": {
+    "@tailwindcss/vite": "^4.2.1",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/plugin-os": "^2.3.2",
+    "sortablejs": "^1.15.7",
+    "tailwindcss": "^4.2.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@tauri-apps/cli": "^2",
+    "@trivago/prettier-plugin-sort-imports": "^6.0.2",
+    "@types/sortablejs": "^1.15.9",
+    "eslint": "^10.0.2",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.7",
+    "prettier": "^3.8.1",
+    "prettier-plugin-tailwindcss": "^0.7.2",
+    "typescript": "~5.6.2",
+    "typescript-eslint": "^8.56.1",
+    "vite": "^6.0.3"
+  }
 }

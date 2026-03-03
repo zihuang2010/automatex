@@ -324,9 +324,9 @@ async fn mqtt_publish(
 async fn mqtt_status(state: tauri::State<'_, AppState>) -> Result<String, String> {
     let status = state.mqtt.get_status().await;
     match status {
-        MqttStatus::Connected => Ok("connected".to_string()),
-        MqttStatus::Connecting => Ok("connecting".to_string()),
-        MqttStatus::Disconnected => Ok("disconnected".to_string()),
+        MqttStatus::Connected => Ok(constants::mqtt_emit_status::CONNECTED.to_string()),
+        MqttStatus::Connecting => Ok(constants::mqtt_emit_status::CONNECTING.to_string()),
+        MqttStatus::Disconnected => Ok(constants::mqtt_emit_status::DISCONNECTED.to_string()),
         MqttStatus::Error(e) => Ok(format!("error:{}", e)),
     }
 }
@@ -503,7 +503,7 @@ fn device_state_str(state: &adb_client::server::DeviceState) -> &'static str {
     match state {
         DeviceState::Device => constants::device_state::DEVICE,
         DeviceState::Offline => constants::device_state::OFFLINE,
-        DeviceState::Unauthorized => "Unauthorized",
+        DeviceState::Unauthorized => constants::device_state::UNAUTHORIZED,
         _ => constants::device_state::OFFLINE,
     }
 }
@@ -599,17 +599,6 @@ fn spawn_device_monitor(
                                 }));
                             match result {
                                 Ok(row) => {
-                                    if let Some(current) = db_block_on(
-                                        &rt_inner,
-                                        db_inner.get_device_by_serial(&row.serial),
-                                    ) {
-                                        if current.state == constants::device_state::OFFLINE
-                                            && row.state == constants::device_state::DEVICE
-                                        {
-                                            PROP_FETCH_THREADS.fetch_sub(1, Ordering::Relaxed);
-                                            return;
-                                        }
-                                    }
                                     db_block_on(&rt_inner, db_inner.upsert_device(&row));
                                     let _ = handle_inner
                                         .emit(constants::tauri_event::DEVICES_CHANGED, ());
@@ -618,7 +607,7 @@ fn spawn_device_monitor(
                                     eprintln!("[monitor] fetch_device_row panic: {}", serial);
                                 },
                             }
-                            PROP_FETCH_THREADS.fetch_sub(1, Ordering::Relaxed);
+                            PROP_FETCH_THREADS.fetch_sub(1, Ordering::SeqCst);
                         });
                     } else {
                         db_block_on(&rt_cb, db_cb.update_device_state(&serial, state));
@@ -690,6 +679,7 @@ fn spawn_device_monitor(
             let _ = handle_battery.emit(constants::tauri_event::DEVICES_CHANGED, ());
         }
 
+        // WiFi 设备并行重连（避免串行阻塞电池刷新线程）
         let wifi_devices: Vec<String> = devices
             .iter()
             .filter(|d| {
@@ -699,20 +689,26 @@ fn spawn_device_monitor(
             })
             .map(|d| d.serial.clone())
             .collect();
-        for addr in &wifi_devices {
-            let output = connection::run_adb_timed(
-                connection::adb_command().args(["connect", addr]),
-                constants::timing::WIFI_CONNECT_TIMEOUT_SECS,
-            );
-            match output {
-                Ok(o) if o.status.success() => {
-                    let stdout = String::from_utf8_lossy(&o.stdout);
-                    if !stdout.contains("failed") {
-                        eprintln!("[wifi-reconnect] 重连成功: {}", addr);
-                    }
-                },
-                _ => {},
-            }
+        if !wifi_devices.is_empty() {
+            std::thread::scope(|s| {
+                for addr in &wifi_devices {
+                    s.spawn(move || {
+                        let output = connection::run_adb_timed(
+                            connection::adb_command().args(["connect", addr]),
+                            constants::timing::WIFI_CONNECT_TIMEOUT_SECS,
+                        );
+                        match output {
+                            Ok(o) if o.status.success() => {
+                                let stdout = String::from_utf8_lossy(&o.stdout);
+                                if !stdout.contains("failed") {
+                                    eprintln!("[wifi-reconnect] 重连成功: {}", addr);
+                                }
+                            },
+                            _ => {},
+                        }
+                    });
+                }
+            });
         }
     });
 }

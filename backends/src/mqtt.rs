@@ -358,7 +358,7 @@ fn route_message(topic: &str, payload: &str, app_handle: &tauri::AppHandle, conn
     } else {
         // 未知 Topic，转发到通用事件
         let _ = app_handle.emit(
-            "mqtt-message",
+            tauri_event::MQTT_MESSAGE,
             serde_json::json!({
                 "topic": topic,
                 "payload": payload,

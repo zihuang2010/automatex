@@ -28,6 +28,7 @@ pub mod keyword_status {
 pub mod device_state {
     pub const OFFLINE: &str = "Offline";
     pub const DEVICE: &str = "Device";
+    pub const UNAUTHORIZED: &str = "Unauthorized";
     pub const UNKNOWN: &str = "unknown";
 }
 
@@ -44,11 +45,15 @@ pub mod tauri_event {
     pub const MQTT_DEVICE_KICK: &str = "mqtt-device-kick";
     pub const MQTT_TASK_RELOAD: &str = "mqtt-task-reload";
     pub const MQTT_PHONES_UNBIND: &str = "mqtt-phones-unbind";
+    pub const MQTT_MESSAGE: &str = "mqtt-message";
+    pub const TASK_UPDATE: &str = "task://update";
+    pub const RISK_CONTROL: &str = "risk-control";
 }
 
 /// MQTT 状态推送到前端的字符串值
 pub mod mqtt_emit_status {
     pub const CONNECTED: &str = "connected";
+    pub const CONNECTING: &str = "connecting";
     pub const DISCONNECTED: &str = "disconnected";
 }
 
@@ -69,6 +74,7 @@ pub mod run_status {
     pub const COMPLETED: &str = "completed";
     pub const STOPPED: &str = "stopped";
     pub const PAUSED: &str = "paused";
+    pub const CRASHED: &str = "crashed";
 }
 
 /// 时间间隔常量（秒）

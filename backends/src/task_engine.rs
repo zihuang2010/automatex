@@ -557,7 +557,13 @@ impl TaskEngine {
                     .map(|d| d.state != crate::constants::device_state::DEVICE)
                     .unwrap_or(true);
                 if !still_offline {
-                    eprintln!("[engine] 设备已恢复在线，跳过 DeviceOffline 标记: {}", task_id);
+                    // 设备已恢复在线，回滚内存状态
+                    let mut tasks = self.tasks.write().await;
+                    if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
+                        task.status = task_status::EXECUTING.to_string();
+                        task.assigned_device = Some(device_serial.clone());
+                    }
+                    eprintln!("[engine] 设备已恢复在线，回滚任务状态: {}", task_id);
                     return false;
                 }
                 self.storage.save_task_state(&task_id, task_status::ERROR, None).await;
@@ -567,7 +573,7 @@ impl TaskEngine {
                 self.storage.save_task_state(&task_id, task_status::ERROR, None).await;
                 self.storage.flag_device(&device_serial).await;
                 let _ = self.app_handle.emit(
-                    "risk-control",
+                    crate::constants::tauri_event::RISK_CONTROL,
                     serde_json::json!({
                         "task_id": task_id,
                         "device_serial": device_serial,
@@ -593,7 +599,7 @@ impl TaskEngine {
         }
         let tasks = self.tasks.read().await;
         let snapshot = TaskSnapshot { tasks: tasks.clone() };
-        let _ = self.app_handle.emit("task://update", &snapshot);
+        let _ = self.app_handle.emit(crate::constants::tauri_event::TASK_UPDATE, &snapshot);
     }
 
     /// 重排城市顺序（仅 pending 城市）

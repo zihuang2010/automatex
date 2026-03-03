@@ -51,7 +51,13 @@ pub struct CityDef {
 // ─── 任务提供者 ─────────────────────────────────────────────────
 
 /// 同步任务缓存到数据库（仅在启动时调用一次）
+/// 仅当 DB 中没有任何缓存任务时才写入 mock 数据，避免覆盖真实数据
 pub async fn sync_task_cache(db: &Database) {
+    let existing = db.load_all_task_defs().await;
+    if !existing.is_empty() {
+        eprintln!("[task_provider] DB 已有 {} 条任务缓存，跳过 mock 写入", existing.len());
+        return;
+    }
     let defs: Vec<TaskDef> = load_mock_definitions();
     for def in defs {
         let payload = serde_json::to_string(&def.cities).unwrap_or_default();
@@ -60,7 +66,8 @@ pub async fn sync_task_cache(db: &Database) {
 }
 
 /// 从 DB 缓存加载任务定义，合并进度，返回 Task 列表
-/// 优先从e a_task_cache 读取，若 DB 为空则 fallback 到 mock
+/// 优先从 a_task_cache 读取，若 DB 为空则 fallback 到 mock
+/// 使用批量加载（3 次查询）代替 N+1 模式
 pub async fn load_tasks(db: &Database) -> Vec<Task> {
     let cached = db.load_all_task_defs().await;
     let defs: Vec<TaskDef> = if cached.is_empty() {
@@ -75,9 +82,25 @@ pub async fn load_tasks(db: &Database) -> Vec<Task> {
             })
             .collect()
     };
+
+    // 批量预加载所有数据（3 次 DB 查询替代 3N 次）
+    let all_progress = db.load_all_progress().await;
+    let all_states = db.load_all_task_states().await;
+    let all_orders = db.load_all_city_orders().await;
+
+    // 按 task_id 分组进度记录
+    let mut progress_map: std::collections::HashMap<String, Vec<crate::storage::ProgressRow>> =
+        std::collections::HashMap::new();
+    for p in all_progress {
+        progress_map.entry(p.task_id.clone()).or_default().push(p);
+    }
+
     let mut tasks = Vec::new();
     for def in defs {
-        tasks.push(build_task(db, def).await);
+        let progress = progress_map.remove(&def.id).unwrap_or_default();
+        let state = all_states.get(&def.id).cloned();
+        let order = all_orders.get(&def.id).cloned();
+        tasks.push(build_task_batched(def, progress, state, order));
     }
     tasks
 }
@@ -129,6 +152,18 @@ fn load_override_task_def(task_id: &str) -> Option<TaskDef> {
 pub async fn build_task(db: &Database, def: TaskDef) -> Task {
     // 加载已完成记录
     let progress = db.load_task_progress(&def.id).await;
+    let state = db.load_task_state(&def.id).await;
+    let order = db.load_city_order(&def.id).await;
+    build_task_batched(def, progress, state, order)
+}
+
+/// 从预加载数据构建单个 Task（无 DB 访问）
+fn build_task_batched(
+    def: TaskDef,
+    progress: Vec<crate::storage::ProgressRow>,
+    saved_state: Option<(String, Option<String>)>,
+    city_order: Option<Vec<String>>,
+) -> Task {
     let completed: HashSet<(String, String)> = progress
         .iter()
         .filter(|p| p.status == keyword_status::OK)
@@ -183,7 +218,7 @@ pub async fn build_task(db: &Database, def: TaskDef) -> Task {
         });
     }
     // 按用户自定义顺序重排 pending 城市
-    if let Some(order) = db.load_city_order(&def.id).await {
+    if let Some(order) = city_order {
         let (done, mut pending): (Vec<_>, Vec<_>) =
             cities.into_iter().partition(|c| c.status == city_status::DONE);
 
@@ -202,8 +237,8 @@ pub async fn build_task(db: &Database, def: TaskDef) -> Task {
         task_status::WAITING
     };
 
-    // 从 DB 加载保存的运行时状态（覆盖推断值）
-    let final_status = match db.load_task_state(&def.id).await {
+    // 从保存的运行时状态（覆盖推断值）
+    let final_status = match saved_state {
         Some((saved_status, _)) => {
             if saved_status == task_status::EXECUTING {
                 task_status::PAUSED.to_string()
