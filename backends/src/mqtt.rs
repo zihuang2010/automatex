@@ -69,6 +69,8 @@ impl MqttManager {
 
         let mut opts = MqttOptions::new(&config.client_id, &config.broker_host, config.broker_port);
         opts.set_keep_alive(Duration::from_secs(crate::constants::timing::MQTT_KEEP_ALIVE_SECS));
+        // 确保干净会话，不接收离线期间缓存的消息
+        opts.set_clean_session(true);
 
         if let (Some(ref user), Some(ref pass)) = (&config.username, &config.password) {
             if !user.is_empty() {
@@ -101,6 +103,8 @@ impl MqttManager {
         let cid = config.client_id.clone();
 
         let handle = tokio::spawn(async move {
+            // 连接时间戳：ConnAck 时更新，用于过滤旧消息
+            let mut connect_ts: i64 = now_unix();
             loop {
                 tokio::select! {
                     _ = cancel_rx.changed() => {
@@ -117,6 +121,9 @@ impl MqttManager {
                                         *status.lock().await = MqttStatus::Connected;
                                         let _ = app_handle.emit("mqtt-status", "connected");
 
+                                        // 更新连接时间戳
+                                        connect_ts = now_unix();
+
                                         // ── 自动订阅下行 Topic ──
                                         let sub_downstream = mqtt_topic::client_topic(&cid, mqtt_topic::DOWN_WILDCARD);
                                         let sub_broadcast = mqtt_topic::broadcast_topic(mqtt_topic::BROADCAST_WILDCARD);
@@ -131,13 +138,15 @@ impl MqttManager {
                                         } else {
                                             eprintln!("[mqtt] 已订阅: {}", sub_broadcast);
                                         }
+
+                                        eprintln!("[mqtt] 连接成功，connect_ts={}, 早于此时间的消息将被过滤", connect_ts);
                                     }
                                     Event::Incoming(Incoming::Publish(publish)) => {
                                         let topic = publish.topic.clone();
                                         let payload = String::from_utf8_lossy(&publish.payload).to_string();
 
-                                        // ── 按 Topic 路由到不同事件 ──
-                                        route_message(&topic, &payload, &app_handle);
+                                        // ── 按 Topic 路由到不同事件（带时间戳过滤） ──
+                                        route_message(&topic, &payload, &app_handle, connect_ts);
                                     }
                                     Event::Incoming(Incoming::Disconnect) => {
                                         *status.lock().await = MqttStatus::Disconnected;
@@ -201,6 +210,7 @@ impl MqttManager {
     // ─── 业务发布方法 ─────────────────────────────────────────────
 
     /// 发布设备上线事件
+    #[allow(dead_code)]
     pub async fn publish_device_online(
         &self,
         hw_serial: &str,
@@ -224,6 +234,7 @@ impl MqttManager {
     }
 
     /// 发布设备下线事件
+    #[allow(dead_code)]
     pub async fn publish_device_offline(
         &self,
         hw_serial: &str,
@@ -266,6 +277,7 @@ impl MqttManager {
     }
 
     /// 发布任务状态事件
+    #[allow(dead_code)]
     pub async fn publish_task_event(
         &self,
         task_id: &str,
@@ -298,7 +310,8 @@ impl MqttManager {
 // ─── 消息路由 ─────────────────────────────────────────────
 
 /// 根据 Topic 后缀将消息路由到不同的 Tauri 前端事件
-fn route_message(topic: &str, payload: &str, app_handle: &tauri::AppHandle) {
+/// `connect_ts`: 本次连接的时间戳，早于此时间戳的消息将被过滤
+fn route_message(topic: &str, payload: &str, app_handle: &tauri::AppHandle, connect_ts: i64) {
     // 解析 JSON payload
     let json_value: serde_json::Value = match serde_json::from_str(payload) {
         Ok(v) => v,
@@ -307,6 +320,17 @@ fn route_message(topic: &str, payload: &str, app_handle: &tauri::AppHandle) {
             return;
         },
     };
+
+    // 过滤旧消息：如果消息携带 ts 字段且早于本次连接时间，跳过
+    if let Some(ts) = json_value.get("ts").and_then(|v| v.as_i64()) {
+        if ts < connect_ts {
+            eprintln!(
+                "[mqtt] 过滤旧消息: topic={}, msg_ts={}, connect_ts={}",
+                topic, ts, connect_ts
+            );
+            return;
+        }
+    }
 
     if topic.ends_with(mqtt_topic::DOWN_DEVICE_KICK) {
         // ── 踢设备下线 ──

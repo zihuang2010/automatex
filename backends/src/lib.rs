@@ -23,6 +23,7 @@ struct AppState {
     db: Arc<storage::Database>,
     mqtt: Arc<MqttManager>,
     engine: Arc<TaskEngine>,
+    #[allow(dead_code)]
     http: Arc<http_client::HttpClient>,
 }
 
@@ -189,20 +190,24 @@ fn save_settings(
 
 // ─── MQTT Commands ─────────────────────────────────────────────
 
+/// 从 DB 设置中构建 MQTT 配置（mqtt_connect 和自动连接共用）
+fn build_mqtt_config(db: &storage::Database) -> MqttConfig {
+    let host = db.get_setting("mqtt_host").unwrap_or_else(|| "127.0.0.1".to_string());
+    let port: u16 = db.get_setting("mqtt_port").and_then(|s| s.parse().ok()).unwrap_or(30002);
+    let client_id = db
+        .get_setting("mqtt_client_id")
+        .unwrap_or_else(|| format!("automatex-{}", std::process::id()));
+    let username = db.get_setting("mqtt_username").filter(|s| !s.is_empty());
+    let password = db.get_setting("mqtt_password").filter(|s| !s.is_empty());
+    MqttConfig { broker_host: host, broker_port: port, client_id, username, password }
+}
+
 #[tauri::command]
 async fn mqtt_connect(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
-    let host = state.db.get_setting("mqtt_host").unwrap_or_else(|| "127.0.0.1".to_string());
-    let port: u16 = state.db.get_setting("mqtt_port").and_then(|s| s.parse().ok()).unwrap_or(30002);
-    let client_id = state
-        .db
-        .get_setting("mqtt_client_id")
-        .unwrap_or_else(|| format!("automatex-{}", std::process::id()));
-    let username = state.db.get_setting("mqtt_username").filter(|s| !s.is_empty());
-    let password = state.db.get_setting("mqtt_password").filter(|s| !s.is_empty());
-    let config = MqttConfig { broker_host: host, broker_port: port, client_id, username, password };
+    let config = build_mqtt_config(&state.db);
     state.mqtt.connect(config, app).await
 }
 
@@ -241,9 +246,13 @@ async fn mqtt_status(state: tauri::State<'_, AppState>) -> Result<String, String
 
 // ─── Task Commands ─────────────────────────────────────────────
 
+// FIX #6: 改为 async + spawn_blocking，避免阻塞 IPC 线程
 #[tauri::command]
-fn list_tasks(state: tauri::State<'_, AppState>) -> Vec<Task> {
-    task_provider::load_tasks(&state.db)
+async fn list_tasks(state: tauri::State<'_, AppState>) -> Result<Vec<Task>, String> {
+    let db = Arc::clone(&state.db);
+    tokio::task::spawn_blocking(move || task_provider::load_tasks(&db))
+        .await
+        .map_err(|e| format!("DB 操作失败: {}", e))
 }
 
 #[tauri::command]
@@ -288,6 +297,7 @@ const BATCH_PROPS_CMD: &str = "echo \"__MODEL__=$(getprop ro.product.model)\" &&
     echo \"__ANDROID__=$(getprop ro.build.version.release)\" && \
     echo \"__SDK__=$(getprop ro.build.version.sdk)\" && \
     echo \"__SERIAL__=$(getprop ro.serialno)\" && \
+    echo \"__BOOTSERIAL__=$(getprop ro.boot.serialno)\" && \
     wm size && \
     dumpsys battery";
 
@@ -324,10 +334,16 @@ fn fetch_device_row(serial: &str, state: &str) -> DeviceRow {
     let android_version = get_tagged_field(&raw, "__ANDROID__=");
     let sdk_version = get_tagged_field(&raw, "__SDK__=");
     let hw_serial_raw = get_tagged_field(&raw, "__SERIAL__=");
-    let hw_serial = if hw_serial_raw == constants::device_state::UNKNOWN {
-        serial.to_string()
-    } else {
+    // FIX #5: ro.serialno 为空时 fallback 到 ro.boot.serialno，再 fallback 到 serial
+    let hw_serial = if hw_serial_raw != constants::device_state::UNKNOWN {
         hw_serial_raw
+    } else {
+        let boot_serial = get_tagged_field(&raw, "__BOOTSERIAL__=");
+        if boot_serial != constants::device_state::UNKNOWN {
+            boot_serial
+        } else {
+            serial.to_string()
+        }
     };
 
     let display_resolution = raw
@@ -336,9 +352,11 @@ fn fetch_device_row(serial: &str, state: &str) -> DeviceRow {
         .map(|l| l.trim().to_string())
         .unwrap_or_else(|| constants::device_state::UNKNOWN.to_string());
 
-    let battery_level = parse_battery_field(&raw, "level").unwrap_or(0);
-    let battery_temp_raw = parse_battery_field(&raw, "temperature").unwrap_or(250);
-    let battery_temperature = battery_temp_raw as f64 / 10.0;
+    // FIX #7: 获取失败时 fallback 为 -1，明确标识异常，而不是伪装成 25℃
+    let battery_level = parse_battery_field(&raw, "level").unwrap_or(-1);
+    let battery_temp_raw = parse_battery_field(&raw, "temperature").unwrap_or(-1);
+    let battery_temperature =
+        if battery_temp_raw >= 0 { battery_temp_raw as f64 / 10.0 } else { -1.0 };
 
     let name =
         if brand != constants::device_state::UNKNOWN && model != constants::device_state::UNKNOWN {
@@ -374,13 +392,15 @@ fn fetch_device_row(serial: &str, state: &str) -> DeviceRow {
 }
 
 fn refresh_battery(serial: &str, db: &storage::Database) -> bool {
-    let raw = connection::adb_command()
-        .args(["-s", serial, "shell", "dumpsys battery"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-        .unwrap_or_default();
+    // FIX #3: 使用超时保护，防止设备半死不活时永久阻塞
+    let raw = connection::run_adb_timed(
+        connection::adb_command().args(["-s", serial, "shell", "dumpsys battery"]),
+        constants::timing::ADB_COMMAND_TIMEOUT_SECS,
+    )
+    .ok()
+    .filter(|o| o.status.success())
+    .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+    .unwrap_or_default();
 
     let battery_level = parse_battery_field(&raw, "level").unwrap_or(-1);
     let battery_temp_raw = parse_battery_field(&raw, "temperature").unwrap_or(-1);
@@ -405,7 +425,12 @@ fn device_state_str(state: &adb_client::server::DeviceState) -> &'static str {
 }
 
 /// 启动后台设备监控
-fn spawn_device_monitor(handle: tauri::AppHandle, db: Arc<storage::Database>) {
+/// `device_ready`: 首次设备扫描完成后发出信号
+fn spawn_device_monitor(
+    handle: tauri::AppHandle,
+    db: Arc<storage::Database>,
+    device_ready: Arc<tokio::sync::Notify>,
+) {
     let db_track = Arc::clone(&db);
     let handle_track = handle.clone();
 
@@ -417,6 +442,7 @@ fn spawn_device_monitor(handle: tauri::AppHandle, db: Arc<storage::Database>) {
                 let mut server = adb_client::server::ADBServer::new(addr);
                 let db_cb = Arc::clone(&db_track);
                 let handle_cb = handle_track.clone();
+                let ready = Arc::clone(&device_ready);
 
                 // FIX #7: 缓存 TTL 从 300ms → 3s
                 let devices_cache: std::sync::Mutex<(std::time::Instant, Vec<String>)> =
@@ -442,21 +468,34 @@ fn spawn_device_monitor(handle: tauri::AppHandle, db: Arc<storage::Database>) {
                                 5037,
                             );
                             let mut fresh_server = adb_client::server::ADBServer::new(fresh_addr);
-                            let serials: Vec<String> = fresh_server
-                                .devices()
-                                .unwrap_or_default()
-                                .into_iter()
-                                .filter(|d| {
-                                    matches!(d.state, adb_client::server::DeviceState::Device)
-                                })
-                                .map(|d| d.identifier)
-                                .collect();
-                            *cache = (std::time::Instant::now(), serials);
+                            // FIX #6: devices() 失败时保留上次缓存，不清空在线列表
+                            match fresh_server.devices() {
+                                Ok(devices) => {
+                                    let serials: Vec<String> = devices
+                                        .into_iter()
+                                        .filter(|d| {
+                                            matches!(
+                                                d.state,
+                                                adb_client::server::DeviceState::Device
+                                            )
+                                        })
+                                        .map(|d| d.identifier)
+                                        .collect();
+                                    *cache = (std::time::Instant::now(), serials);
 
-                            // 只在缓存刷新时才执行 mark_offline_except
-                            let online_refs: Vec<&str> =
-                                cache.1.iter().map(|s| s.as_str()).collect();
-                            db_cb.mark_offline_except(&online_refs);
+                                    let online_refs: Vec<&str> =
+                                        cache.1.iter().map(|s| s.as_str()).collect();
+                                    db_cb.mark_offline_except(&online_refs);
+
+                                    // 首次扫描完成 → 通知 device_sync 可以开始
+                                    ready.notify_one();
+                                },
+                                Err(e) => {
+                                    eprintln!("[monitor] devices() 查询失败，保留上次缓存: {}", e);
+                                    // 仅更新时间戳避免频繁重试
+                                    cache.0 = std::time::Instant::now();
+                                },
+                            }
                         }
                     }
 
@@ -475,22 +514,35 @@ fn spawn_device_monitor(handle: tauri::AppHandle, db: Arc<storage::Database>) {
                                 }
                             },
                         );
+                        // FIX #1: catch_unwind 保护，panic 时也能释放线程计数器
                         if acquired.is_ok() {
                             let db_inner = Arc::clone(&db_cb);
                             let handle_inner = handle_cb.clone();
                             std::thread::spawn(move || {
-                                let row = fetch_device_row(&serial, state);
-                                // 如果设备在属性获取期间已被标记为 Offline，丢弃本次更新
-                                if let Some(current) = db_inner.get_device_by_serial(&row.serial) {
-                                    if current.state == constants::device_state::OFFLINE
-                                        && row.state == constants::device_state::DEVICE
-                                    {
-                                        PROP_FETCH_THREADS.fetch_sub(1, Ordering::Relaxed);
-                                        return;
-                                    }
+                                let result =
+                                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                        fetch_device_row(&serial, state)
+                                    }));
+                                match result {
+                                    Ok(row) => {
+                                        // 如果设备在属性获取期间已被标记为 Offline，丢弃本次更新
+                                        if let Some(current) =
+                                            db_inner.get_device_by_serial(&row.serial)
+                                        {
+                                            if current.state == constants::device_state::OFFLINE
+                                                && row.state == constants::device_state::DEVICE
+                                            {
+                                                PROP_FETCH_THREADS.fetch_sub(1, Ordering::Relaxed);
+                                                return;
+                                            }
+                                        }
+                                        db_inner.upsert_device(&row);
+                                        let _ = handle_inner.emit("devices-changed", ());
+                                    },
+                                    Err(_) => {
+                                        eprintln!("[monitor] fetch_device_row panic: {}", serial);
+                                    },
                                 }
-                                db_inner.upsert_device(&row);
-                                let _ = handle_inner.emit("devices-changed", ());
                                 PROP_FETCH_THREADS.fetch_sub(1, Ordering::Relaxed);
                             });
                         } else {
@@ -563,6 +615,33 @@ fn spawn_device_monitor(handle: tauri::AppHandle, db: Arc<storage::Database>) {
 
             if changed.load(Ordering::Relaxed) {
                 let _ = handle_battery.emit("devices-changed", ());
+            }
+
+            // FIX #2: WiFi 设备定期自动重连
+            let wifi_devices: Vec<String> = db_battery
+                .load_all_devices()
+                .into_iter()
+                .filter(|d| {
+                    d.device_type == "wifi"
+                        && d.state == constants::device_state::OFFLINE
+                        && d.serial.contains(':')
+                })
+                .map(|d| d.serial)
+                .collect();
+            for addr in &wifi_devices {
+                let output = connection::run_adb_timed(
+                    connection::adb_command().args(["connect", addr]),
+                    constants::timing::WIFI_CONNECT_TIMEOUT_SECS,
+                );
+                match output {
+                    Ok(o) if o.status.success() => {
+                        let stdout = String::from_utf8_lossy(&o.stdout);
+                        if !stdout.contains("failed") {
+                            eprintln!("[wifi-reconnect] 重连成功: {}", addr);
+                        }
+                    },
+                    _ => {}, // 静默失败，下一轮重试
+                }
             }
         }
     });
@@ -696,22 +775,32 @@ pub fn run() {
             db.cleanup_stale_assignments();
 
             let mqtt = Arc::new(MqttManager::new());
-            let engine = TaskEngine::new(Arc::clone(&db), app.handle().clone());
 
             // HTTP 客户端（base_url 为空时自动启用 mock 模式）
             let http_base_url = db.get_setting("api_base_url").unwrap_or_default();
             let http = Arc::new(http_client::HttpClient::new(&http_base_url));
 
-            spawn_device_monitor(app.handle().clone(), Arc::clone(&db));
+            // FIX #14: 将 HttpClient 传入 TaskEngine
+            let engine = TaskEngine::new(Arc::clone(&db), Arc::clone(&http), app.handle().clone());
 
-            // ── 启动时设备归属同步 ──
+            // 设备就绪信号量
+            let device_ready = Arc::new(tokio::sync::Notify::new());
+
+            spawn_device_monitor(app.handle().clone(), Arc::clone(&db), Arc::clone(&device_ready));
+
+            // ── 启动时设备归属同步（等设备就绪后再执行） ──
             {
                 let db_sync = Arc::clone(&db);
                 let http_sync = Arc::clone(&http);
                 let engine_sync = Arc::clone(&engine);
                 let handle_sync = app.handle().clone();
+                let ready = Arc::clone(&device_ready);
                 tauri::async_runtime::spawn(async move {
-                    // 收集本地在线和离线设备
+                    // 等待 track_devices 首次完成设备扫描
+                    eprintln!("[startup] 等待设备就绪...");
+                    ready.notified().await;
+                    eprintln!("[startup] 设备就绪，开始归属同步");
+
                     let devices = db_sync.load_all_devices();
                     let online: Vec<http_client::DeviceSyncItem> = devices
                         .iter()
@@ -825,6 +914,32 @@ pub fn run() {
                         }
                     }
                 });
+            }
+
+            // ── MQTT 自动连接 ──
+            // 有 mqtt_host 配置就自动连接，除非 mqtt_auto_connect 显式设为 "false"
+            {
+                let has_host = db.get_setting("mqtt_host").is_some();
+                let auto_off =
+                    db.get_setting("mqtt_auto_connect").map(|v| v == "false").unwrap_or(false);
+
+                if has_host && !auto_off {
+                    let mqtt_ac = Arc::clone(&mqtt);
+                    let app_handle_ac = app.handle().clone();
+                    let config = build_mqtt_config(&db);
+                    tauri::async_runtime::spawn(async move {
+                        // 延迟 1s，等 app.manage 完成
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        eprintln!(
+                            "[startup] MQTT 自动连接: {}:{}",
+                            config.broker_host, config.broker_port
+                        );
+                        match mqtt_ac.connect(config, app_handle_ac).await {
+                            Ok(msg) => eprintln!("[startup] {}", msg),
+                            Err(e) => eprintln!("[startup] MQTT 自动连接失败: {}", e),
+                        }
+                    });
+                }
             }
 
             app.manage(AppState { db, mqtt, engine, http });

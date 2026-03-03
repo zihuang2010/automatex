@@ -32,27 +32,27 @@ pub struct Task {
     pub cities: Vec<TaskCity>,
 }
 
-// ─── Mock 定义格式 ──────────────────────────────────────────────
+// ─── 任务定义格式（Mock / HTTP 共用）───────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-struct MockTaskDef {
-    id: String,
-    name: String,
-    cities: Vec<MockCityDef>,
+pub struct TaskDef {
+    pub id: String,
+    pub name: String,
+    pub cities: Vec<CityDef>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-struct MockCityDef {
-    name: String,
-    poi: String,
-    keywords: Vec<String>,
+pub struct CityDef {
+    pub name: String,
+    pub poi: String,
+    pub keywords: Vec<String>,
 }
 
 // ─── 任务提供者 ─────────────────────────────────────────────────
 
 /// 同步任务缓存到数据库（仅在启动时调用一次）
 pub fn sync_task_cache(db: &Database) {
-    let defs = load_mock_definitions();
+    let defs: Vec<TaskDef> = load_mock_definitions();
     for def in defs {
         let payload = serde_json::to_string(&def.cities).unwrap_or_default();
         db.upsert_task_cache(&def.id, &def.name, &payload, 1);
@@ -61,7 +61,7 @@ pub fn sync_task_cache(db: &Database) {
 
 /// 加载 Mock JSON 任务定义，合并 DB 中的已完成进度，返回恢复后的任务列表（纯读操作）
 pub fn load_tasks(db: &Database) -> Vec<Task> {
-    let defs = load_mock_definitions();
+    let defs: Vec<TaskDef> = load_mock_definitions();
     let mut tasks = Vec::new();
 
     for def in defs {
@@ -73,12 +73,40 @@ pub fn load_tasks(db: &Database) -> Vec<Task> {
 
 /// #4: 加载单个任务（避免全量加载再过滤）
 pub fn load_task_by_id(db: &Database, target_id: &str) -> Option<Task> {
-    let defs = load_mock_definitions();
+    let defs: Vec<TaskDef> = load_mock_definitions();
     defs.into_iter().find(|d| d.id == target_id).map(|def| build_task(db, def))
 }
 
+/// Mock 模式下按 ID 查找任务定义（供 TaskEngine 增量合并使用）
+///
+/// 优先从 `~/.automatex/mock_tasks_override.json` 读取（每次读磁盘，不缓存），
+/// 这样修改外部文件不会触发 dev 重编译。找不到则 fallback 到内嵌的默认值。
+pub fn load_mock_task_def_by_id(task_id: &str) -> Option<TaskDef> {
+    // 尝试从运行时外部文件读取
+    if let Some(def) = load_override_task_def(task_id) {
+        eprintln!("[task_provider] 从外部 override 文件加载任务定义: {}", task_id);
+        return Some(def);
+    }
+    // Fallback: 内嵌的默认定义
+    load_mock_definitions().into_iter().find(|d| d.id == task_id)
+}
+
+/// 从 ~/.automatex/mock_tasks_override.json 读取指定 task 的定义
+/// 每次调用都重新读磁盘（不缓存），方便测试时随时修改
+fn load_override_task_def(task_id: &str) -> Option<TaskDef> {
+    // 跨平台获取用户目录：macOS/Linux → HOME，Windows → USERPROFILE
+    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).ok()?;
+    let path = std::path::Path::new(&home).join(".automatex").join("mock_tasks_override.json");
+    if !path.exists() {
+        return None;
+    }
+    let content = std::fs::read_to_string(&path).ok()?;
+    let defs: Vec<TaskDef> = serde_json::from_str(&content).ok()?;
+    defs.into_iter().find(|d| d.id == task_id)
+}
+
 /// 内部：从 Mock 定义 + DB 进度 + DB 状态 构建单个 Task
-fn build_task(db: &Database, def: MockTaskDef) -> Task {
+pub fn build_task(db: &Database, def: TaskDef) -> Task {
     // 加载已完成记录
     let progress = db.load_task_progress(&def.id);
     let completed: HashSet<(String, String)> = progress
@@ -159,6 +187,11 @@ fn build_task(db: &Database, def: MockTaskDef) -> Task {
             // EXECUTING → PAUSED（重启后设备不再绑定）
             if saved_status == task_status::EXECUTING {
                 task_status::PAUSED.to_string()
+            } else if saved_status == task_status::SUCCESS
+                && inferred_status != task_status::SUCCESS
+            {
+                // 已完成但新定义有未完成的组合 → 降级为等待中
+                task_status::WAITING.to_string()
             } else if saved_status == task_status::WAITING
                 && inferred_status != task_status::WAITING
             {
@@ -186,9 +219,9 @@ fn build_task(db: &Database, def: MockTaskDef) -> Task {
 }
 
 /// 从嵌入资源读取 Mock 任务定义（OnceLock 缓存，只解析一次）
-fn load_mock_definitions() -> Vec<MockTaskDef> {
+fn load_mock_definitions() -> Vec<TaskDef> {
     use std::sync::OnceLock;
-    static DEFS: OnceLock<Vec<MockTaskDef>> = OnceLock::new();
+    static DEFS: OnceLock<Vec<TaskDef>> = OnceLock::new();
     DEFS.get_or_init(|| {
         let json = include_str!("../resources/mock_tasks.json");
         serde_json::from_str(json).unwrap_or_default()

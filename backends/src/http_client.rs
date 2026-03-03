@@ -5,6 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::task_provider::TaskDef;
+
 // ─── 请求/响应数据结构 ───────────────────────────────────────────
 
 /// 启动同步请求 — 检查设备归属
@@ -30,6 +32,7 @@ pub struct DeviceSyncResponse {
 }
 
 /// 进度上报请求
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 pub struct ProgressReportRequest {
     pub client_id: String,
@@ -42,6 +45,7 @@ pub struct ProgressReportRequest {
 }
 
 /// 通用 API 响应
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct ApiResponse {
     #[allow(dead_code)]
@@ -83,6 +87,7 @@ impl HttpClient {
     }
 
     /// 上报关键词完成进度
+    #[allow(dead_code)]
     pub async fn report_progress(
         &self,
         req: &ProgressReportRequest,
@@ -96,6 +101,25 @@ impl HttpClient {
     }
 
     // ─── Mock 实现 ───────────────────────────────────────────────
+
+    /// 拉取单个任务的最新定义
+    /// Mock 模式：从 mock_tasks.json 中查找；真实模式：GET /api/tasks/{task_id}
+    pub async fn fetch_task(&self, task_id: &str) -> Result<TaskDef, String> {
+        if self.mock_mode {
+            return self.mock_fetch_task(task_id);
+        }
+
+        // TODO: 真实 HTTP 请求
+        // let url = format!("{}/api/tasks/{}", self.base_url, task_id);
+        // let resp = reqwest::Client::new().get(&url).send().await...
+        Err("HTTP 客户端未实现真实请求".into())
+    }
+
+    fn mock_fetch_task(&self, task_id: &str) -> Result<TaskDef, String> {
+        use crate::task_provider::load_mock_task_def_by_id;
+        eprintln!("[http-mock] fetch_task: task_id={}", task_id);
+        load_mock_task_def_by_id(task_id).ok_or_else(|| format!("任务不存在: {}", task_id))
+    }
 
     fn mock_device_sync(&self, req: &DeviceSyncRequest) -> Result<DeviceSyncResponse, String> {
         eprintln!(

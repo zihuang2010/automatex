@@ -77,6 +77,7 @@ pub mod settings {
         "mqtt_client_id",
         "mqtt_username",
         "mqtt_password",
+        "mqtt_auto_connect",
         "api_base_url",
     ];
 }

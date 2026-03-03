@@ -245,7 +245,7 @@ function buildHeader(task: {
         </div>
         <div class="min-w-0">
           <div class="flex items-center gap-2">
-            <h2 class="text-lg font-bold tracking-tight text-s800 truncate">${task.name}</h2>
+            <h2 class="text-lg font-bold tracking-tight text-s800 truncate font-mono">${task.name}</h2>
             <span class="px-2.5 py-0.5 ${badge.bg} ${badge.text} text-[11px] font-semibold rounded-full border ${badge.border} shrink-0">${badge.label}</span>
           </div>
           ${deviceTag}
@@ -299,9 +299,9 @@ async function buildMetrics(task: {
       <div class="bg-emerald-50/50 rounded-md border border-emerald-100 p-3">
         <div class="flex items-center justify-between mb-1.5">
           <span class="material-symbols-outlined icon-sm text-emerald-400">check_circle</span>
-          <span class="text-[11px] font-black text-emerald-600">${pctDone}%</span>
+          <span class="text-[11px] font-black text-emerald-600 font-mono">${pctDone}%</span>
         </div>
-        <div class="text-[13px] font-bold text-s800">${kwDone} <span class="text-s400">/ ${kwTotal}</span></div>
+        <div class="text-[13px] font-bold text-s800 font-mono">${kwDone} <span class="text-s400">/ ${kwTotal}</span></div>
         <div class="text-[11px] text-s500 font-bold uppercase mt-1">完成进度</div>
         <div class="w-full h-2 bg-emerald-100 rounded-full overflow-hidden mt-1.5">
           <div class="h-full bg-emerald-500 rounded-full transition-all" style="width:${pctDone}%"></div>
@@ -310,24 +310,24 @@ async function buildMetrics(task: {
       <div class="bg-blue-50/50 rounded-md border border-blue-100 p-3">
         <div class="flex items-center justify-between mb-1.5">
           <span class="material-symbols-outlined icon-sm text-blue-400">trending_up</span>
-          <span class="text-[11px] font-black text-blue-600">${ratePerHour > 0 ? `${ratePerHour}/h` : '--'}</span>
+          <span class="text-[11px] font-black text-blue-600 font-mono">${ratePerHour > 0 ? `${ratePerHour}/h` : '--'}</span>
         </div>
-        <div class="text-[13px] font-bold text-s800">${todayKeywords} <span class="text-s400">词</span></div>
+        <div class="text-[13px] font-bold text-s800 font-mono">${todayKeywords} <span class="text-s400 font-sans">词</span></div>
         <div class="text-[11px] text-s500 font-bold uppercase mt-1">今日采集</div>
       </div>
       <div class="bg-violet-50/50 rounded-md border border-violet-100 p-3">
         <div class="flex items-center justify-between mb-1.5">
           <span class="material-symbols-outlined icon-sm text-violet-400">timer</span>
-          <span class="text-[11px] font-black text-violet-600">${todayRuns} 次</span>
+          <span class="text-[11px] font-black text-violet-600 font-mono">${todayRuns} 次</span>
         </div>
-        <div class="text-[13px] font-bold text-s800">${durationLabel}</div>
+        <div class="text-[13px] font-bold text-s800 font-mono">${durationLabel}</div>
         <div class="text-[11px] text-s500 font-bold uppercase mt-1">今日时长</div>
       </div>
       <div class="bg-amber-50/50 rounded-md border border-amber-100 p-3">
         <div class="flex items-center justify-between mb-1.5">
           <span class="material-symbols-outlined icon-sm text-amber-400">schedule</span>
         </div>
-        <div class="text-[13px] font-bold text-s800">${lastRunLabel}</div>
+        <div class="text-[13px] font-bold text-s800 font-mono">${lastRunLabel}</div>
         <div class="text-[11px] text-s500 font-bold uppercase mt-1">上次执行</div>
       </div>
     </div>`;
@@ -372,9 +372,9 @@ function buildCityCards(task: { cities: TaskCity[] }): string {
             : '<span class="text-[11px] text-s400 font-bold uppercase">等待中</span>';
       const pctLabel =
         c.status === CityStatus.DONE
-          ? '<span class="text-[11px] font-black text-green-600">100%</span>'
+          ? '<span class="text-[11px] font-black text-green-600 font-mono">100%</span>'
           : c.status === CityStatus.ACTIVE
-            ? `<span class="text-[11px] font-black text-blue-600">${c.progress}%</span>`
+            ? `<span class="text-[11px] font-black text-blue-600 font-mono">${c.progress}%</span>`
             : '';
       const cardBg =
         c.status === CityStatus.DONE

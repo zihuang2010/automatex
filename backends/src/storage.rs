@@ -26,6 +26,9 @@ pub struct DeviceRow {
 }
 
 /// SQLite 持久化数据库（读写分离，WAL 模式下支持并发读写）
+// TODO #10: 当前用 std::sync::Mutex 包装连接，重负载下可能耗尽 tokio blocking 线程池。
+//           后续考虑 r2d2/deadpool-sqlite 连接池替代。
+// TODO #12: 任务/城市/关键词状态用字符串常量比较，后续改为 enum + serde(rename) 提升类型安全。
 pub struct Database {
     writer: Mutex<Connection>,
     reader: Mutex<Connection>,
@@ -160,15 +163,30 @@ impl Database {
 
     // ─── 设备写操作 ────────────────────────────────────────────
 
+    // FIX #4: 使用 ON CONFLICT 保留用户手动设置的 is_flagged
     pub fn upsert_device(&self, row: &DeviceRow) {
         let conn = self.w();
         log_exec(
             conn.execute(
-                "INSERT OR REPLACE INTO a_devices
+                "INSERT INTO a_devices
                     (serial, hw_serial, name, device_type, address, state,
                      model, brand, android_version, sdk_version, display_resolution,
                      battery_level, battery_temperature, is_flagged, updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
+                 ON CONFLICT(serial) DO UPDATE SET
+                     hw_serial = excluded.hw_serial,
+                     name = excluded.name,
+                     device_type = excluded.device_type,
+                     address = excluded.address,
+                     state = excluded.state,
+                     model = excluded.model,
+                     brand = excluded.brand,
+                     android_version = excluded.android_version,
+                     sdk_version = excluded.sdk_version,
+                     display_resolution = excluded.display_resolution,
+                     battery_level = excluded.battery_level,
+                     battery_temperature = excluded.battery_temperature,
+                     updated_at = excluded.updated_at",
                 params![
                     row.serial,
                     row.hw_serial,
@@ -579,6 +597,40 @@ impl Database {
             conn.execute("DELETE FROM a_task_progress WHERE task_id = ?1", params![task_id]),
             "clear_task_progress",
         );
+    }
+
+    /// 清理孤儿进度：删除不在 valid_pairs 中的 (city_name, keyword_name) 记录
+    pub fn cleanup_orphan_progress(&self, task_id: &str, valid_pairs: &[(String, String)]) {
+        if valid_pairs.is_empty() {
+            // 没有合法组合 → 全部删除
+            self.clear_task_progress(task_id);
+            return;
+        }
+        let conn = self.w();
+        // 构造 (city_name, keyword_name) IN (...) 的条件
+        // SQLite 不支持元组 IN，用 city_name || '|' || keyword_name 拼接
+        let valid_keys: Vec<String> =
+            valid_pairs.iter().map(|(c, k)| format!("{}|{}", c, k)).collect();
+        let placeholders: Vec<String> =
+            (0..valid_keys.len()).map(|i| format!("?{}", i + 2)).collect();
+        let sql = format!(
+            "DELETE FROM a_task_progress WHERE task_id = ?1 AND (city_name || '|' || keyword_name) NOT IN ({})",
+            placeholders.join(",")
+        );
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> =
+            Vec::with_capacity(valid_keys.len() + 1);
+        param_values.push(Box::new(task_id.to_string()));
+        for key in &valid_keys {
+            param_values.push(Box::new(key.clone()));
+        }
+        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|p| p.as_ref()).collect();
+        let result = conn.execute(&sql, params_ref.as_slice());
+        match result {
+            Ok(n) if n > 0 => eprintln!("[db] 清理了 {} 条孤儿进度记录 (task={})", n, task_id),
+            Err(e) => eprintln!("[db] cleanup_orphan_progress 失败: {}", e),
+            _ => {},
+        }
     }
 
     #[allow(dead_code)]
