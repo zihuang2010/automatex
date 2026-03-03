@@ -69,6 +69,18 @@ pub mod limits {
     pub const MAX_BATTERY_REFRESH_THREADS: usize = 8;
 }
 
+/// Mock / 调试开关
+pub mod debug {
+    /// 模拟风控是否启用（正式版设为 false）
+    pub const MOCK_RISK_ENABLED: bool = false;
+    /// 模拟风控触发概率
+    pub const MOCK_RISK_PROBABILITY: f64 = 0.05;
+    /// 心跳 publish 超时秒数
+    pub const HEARTBEAT_PUBLISH_TIMEOUT_SECS: u64 = 5;
+    /// emit_update 最小间隔毫秒（节流）
+    pub const EMIT_THROTTLE_MS: u64 = 500;
+}
+
 /// 允许保存的设置键白名单
 pub mod settings {
     pub const ALLOWED_KEYS: &[&str] = &[
@@ -79,6 +91,8 @@ pub mod settings {
         "mqtt_password",
         "mqtt_auto_connect",
         "api_base_url",
+        "synced_phones",
+        "theme",
     ];
 }
 
@@ -99,6 +113,8 @@ pub mod mqtt_topic {
     pub const DOWN_DEVICE_KICK: &str = "downstream/device/kick";
     /// 任务数据变更通知
     pub const DOWN_TASK_RELOAD: &str = "downstream/task/reload";
+    /// 手机号被抢占/解绑通知
+    pub const DOWN_PHONES_UNBIND: &str = "downstream/phones/unbind";
     /// 下行通配订阅
     pub const DOWN_WILDCARD: &str = "downstream/#";
 
@@ -123,4 +139,15 @@ pub mod mqtt_topic {
 
     /// 心跳间隔（秒）
     pub const HEARTBEAT_INTERVAL_SECS: u64 = 30;
+}
+
+/// 当前 Unix 时间戳（秒）
+pub fn now_unix() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
+        as i64
+}
+
+/// 今日日期字符串 (YYYY-MM-DD)
+pub fn today_str() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
 }

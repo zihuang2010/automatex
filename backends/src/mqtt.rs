@@ -104,7 +104,8 @@ impl MqttManager {
 
         let handle = tokio::spawn(async move {
             // 连接时间戳：ConnAck 时更新，用于过滤旧消息
-            let mut connect_ts: i64 = now_unix();
+            let mut connect_ts: i64 = crate::constants::now_unix();
+            let mut backoff_secs: u64 = 5;
             loop {
                 tokio::select! {
                     _ = cancel_rx.changed() => {
@@ -116,13 +117,14 @@ impl MqttManager {
                     result = eventloop.poll() => {
                         match result {
                             Ok(event) => {
+                                backoff_secs = 5; // 成功事件重置退避
                                 match &event {
                                     Event::Incoming(Incoming::ConnAck(_)) => {
                                         *status.lock().await = MqttStatus::Connected;
                                         let _ = app_handle.emit("mqtt-status", "connected");
 
                                         // 更新连接时间戳
-                                        connect_ts = now_unix();
+                                        connect_ts = crate::constants::now_unix();
 
                                         // ── 自动订阅下行 Topic ──
                                         let sub_downstream = mqtt_topic::client_topic(&cid, mqtt_topic::DOWN_WILDCARD);
@@ -159,7 +161,9 @@ impl MqttManager {
                                 let err_msg = format!("{}", e);
                                 *status.lock().await = MqttStatus::Error(err_msg.clone());
                                 let _ = app_handle.emit("mqtt-status", format!("error:{}", err_msg));
-                                tokio::time::sleep(Duration::from_secs(5)).await;
+                                eprintln!("[mqtt] 连接错误，{}s 后重试: {}", backoff_secs, err_msg);
+                                tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                                backoff_secs = (backoff_secs * 2).min(60); // 指数退避，最大 60s
                             }
                         }
                     }
@@ -340,6 +344,10 @@ fn route_message(topic: &str, payload: &str, app_handle: &tauri::AppHandle, conn
         // ── 任务数据变更 ──
         eprintln!("[mqtt] 收到任务变更通知: {}", payload);
         let _ = app_handle.emit("mqtt-task-reload", json_value);
+    } else if topic.ends_with(mqtt_topic::DOWN_PHONES_UNBIND) {
+        // ── 手机号被抢占/解绑 ──
+        eprintln!("[mqtt] 收到手机号解绑通知: {}", payload);
+        let _ = app_handle.emit("mqtt-phones-unbind", json_value);
     } else if topic.contains(mqtt_topic::BROADCAST_TASK_UPDATE) {
         // ── 全局任务广播 ──
         eprintln!("[mqtt] 收到全局任务广播: {}", payload);
@@ -357,6 +365,5 @@ fn route_message(topic: &str, payload: &str, app_handle: &tauri::AppHandle, conn
 }
 
 fn now_unix() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
-        as i64
+    crate::constants::now_unix()
 }

@@ -141,4 +141,117 @@ impl HttpClient {
 
         Ok(ApiResponse { success: true, message: "mock: ok".to_string() })
     }
+
+    // ─── 手机号绑定接口 ───────────────────────────────────────────
+
+    /// 手机号绑定（互斥策略）
+    pub async fn bind_phones(&self, req: &PhoneBindRequest) -> Result<PhoneBindResponse, String> {
+        if self.mock_mode {
+            return self.mock_bind_phones(req);
+        }
+        // TODO: POST {base_url}/api/phones/bind
+        Err("HTTP 客户端未实现真实请求".into())
+    }
+
+    /// 按手机号获取任务列表
+    pub async fn fetch_tasks_by_phones(
+        &self,
+        client_id: &str,
+        phones: &[String],
+    ) -> Result<PhoneTasksResponse, String> {
+        if self.mock_mode {
+            return self.mock_fetch_tasks_by_phones(client_id, phones);
+        }
+        // TODO: POST {base_url}/api/tasks/by-phones
+        Err("HTTP 客户端未实现真实请求".into())
+    }
+
+    /// 解绑手机号
+    #[allow(dead_code)]
+    pub async fn unbind_phones(
+        &self,
+        client_id: &str,
+        phones: &[String],
+    ) -> Result<ApiResponse, String> {
+        if self.mock_mode {
+            return self.mock_unbind_phones(client_id, phones);
+        }
+        // TODO: POST {base_url}/api/phones/unbind
+        Err("HTTP 客户端未实现真实请求".into())
+    }
+
+    fn mock_bind_phones(&self, req: &PhoneBindRequest) -> Result<PhoneBindResponse, String> {
+        eprintln!(
+            "[http-mock] bind_phones: client={}, phones={}, force={}",
+            req.client_id,
+            req.phones.len(),
+            req.force
+        );
+        // Mock: 全部绑定成功，无冲突
+        Ok(PhoneBindResponse { bound: req.phones.clone(), conflicts: Vec::new() })
+    }
+
+    fn mock_fetch_tasks_by_phones(
+        &self,
+        client_id: &str,
+        phones: &[String],
+    ) -> Result<PhoneTasksResponse, String> {
+        use crate::task_provider::load_mock_definitions;
+        eprintln!(
+            "[http-mock] fetch_tasks_by_phones: client={}, phones={}",
+            client_id,
+            phones.len()
+        );
+        // Mock: 将所有 mock 任务平均分配给手机号
+        let all_defs = load_mock_definitions();
+        let mut phone_tasks: std::collections::HashMap<String, Vec<TaskDef>> =
+            std::collections::HashMap::new();
+        for (i, def) in all_defs.into_iter().enumerate() {
+            if !phones.is_empty() {
+                let phone = &phones[i % phones.len()];
+                phone_tasks.entry(phone.clone()).or_default().push(def);
+            }
+        }
+        Ok(PhoneTasksResponse { phone_tasks })
+    }
+
+    #[allow(dead_code)]
+    fn mock_unbind_phones(
+        &self,
+        client_id: &str,
+        phones: &[String],
+    ) -> Result<ApiResponse, String> {
+        eprintln!("[http-mock] unbind_phones: client={}, phones={}", client_id, phones.len());
+        Ok(ApiResponse { success: true, message: "mock: ok".to_string() })
+    }
+}
+
+// ─── 手机号绑定相关数据结构 ───────────────────────────────────────
+
+/// 手机号绑定请求
+#[derive(Debug, Serialize)]
+pub struct PhoneBindRequest {
+    pub client_id: String,
+    pub phones: Vec<String>,
+    pub force: bool,
+}
+
+/// 手机号绑定响应
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PhoneBindResponse {
+    pub bound: Vec<String>,
+    pub conflicts: Vec<PhoneConflict>,
+}
+
+/// 手机号冲突详情
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PhoneConflict {
+    pub phone: String,
+    pub current_client: String,
+}
+
+/// 按手机号获取任务列表响应
+#[derive(Debug, Deserialize)]
+pub struct PhoneTasksResponse {
+    pub phone_tasks: std::collections::HashMap<String, Vec<TaskDef>>,
 }

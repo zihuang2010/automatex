@@ -30,8 +30,10 @@ export async function submitAddDevice() {
 
   const addr = addrInput.value.trim();
   if (!addr) {
-    errorDiv.textContent = '请输入设备地址';
-    errorDiv.style.display = 'block';
+    const textSpan = errorDiv.querySelector('span:last-child');
+    if (textSpan) textSpan.textContent = '请输入设备地址';
+    else errorDiv.textContent = '请输入设备地址';
+    errorDiv.style.display = 'flex';
     return;
   }
 
@@ -45,11 +47,14 @@ export async function submitAddDevice() {
     showToast('设备添加成功', 'info');
     await refreshDevices();
   } catch (e) {
-    errorDiv.textContent = String(e);
-    errorDiv.style.display = 'block';
+    const textSpan = errorDiv.querySelector('span:last-child');
+    if (textSpan) textSpan.textContent = String(e);
+    else errorDiv.textContent = String(e);
+    errorDiv.style.display = 'flex';
   } finally {
     submitBtn.disabled = false;
-    submitBtn.innerHTML = '连接';
+    submitBtn.innerHTML =
+      '<span class="flex items-center gap-1.5"><span class="material-symbols-outlined text-[14px]">link</span>连接</span>';
   }
 }
 

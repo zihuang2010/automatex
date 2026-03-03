@@ -48,7 +48,7 @@ enum TickEffect {
     /// 整个任务执行完成
     TaskSuccess { task_id: String },
     /// 设备离线，任务需要标记 ERROR
-    DeviceOffline { task_id: String },
+    DeviceOffline { task_id: String, device_serial: String },
     /// 风控触发：标记设备 + 任务 ERROR
     RiskControl { task_id: String, device_serial: String },
     /// 无需任何 DB 操作（城市切换、RUN→OK 等）
@@ -84,15 +84,17 @@ pub struct TaskEngine {
     /// 防重入：正在 reload 的 task_id 集合
     reloading: Mutex<HashSet<String>>,
     app_handle: tauri::AppHandle,
+    /// emit_update 节流时间戳
+    last_emit: Mutex<std::time::Instant>,
 }
 
 impl TaskEngine {
-    pub fn new(
+    pub async fn new(
         storage: Arc<Database>,
         http: Arc<HttpClient>,
         app_handle: tauri::AppHandle,
     ) -> Arc<Self> {
-        let tasks = task_provider::load_tasks(&storage);
+        let tasks = task_provider::load_tasks(&storage).await;
         Arc::new(Self {
             storage,
             http,
@@ -100,6 +102,7 @@ impl TaskEngine {
             running: RwLock::new(HashMap::new()),
             reloading: Mutex::new(HashSet::new()),
             app_handle,
+            last_emit: Mutex::new(std::time::Instant::now() - Duration::from_secs(1)),
         })
     }
 
@@ -111,10 +114,7 @@ impl TaskEngine {
     /// 重新从 DB 加载任务列表
     #[allow(dead_code)]
     pub async fn reload_tasks(&self) {
-        let db = Arc::clone(&self.storage);
-        let tasks = tokio::task::spawn_blocking(move || task_provider::load_tasks(&db))
-            .await
-            .unwrap_or_default();
+        let tasks = task_provider::load_tasks(&self.storage).await;
         *self.tasks.write().await = tasks;
     }
 
@@ -122,8 +122,7 @@ impl TaskEngine {
 
     /// 启动任务
     pub async fn start_task(self: &Arc<Self>, task_id: &str) -> Result<(), String> {
-        // DB 查询在写锁外执行，减少锁持有时间
-        let devices = self.storage.load_all_devices();
+        let devices = self.storage.load_all_devices().await;
         let serial = {
             let mut tasks = self.tasks.write().await;
 
@@ -143,15 +142,8 @@ impl TaskEngine {
             serial
         };
 
-        let db = Arc::clone(&self.storage);
-        let tid = task_id.to_string();
-        let ser = serial.clone();
-        let started_at = tokio::task::spawn_blocking(move || {
-            db.save_task_state(&tid, task_status::EXECUTING, Some(&ser));
-            db.start_task_run(&tid, &ser)
-        })
-        .await
-        .map_err(|e| format!("DB 操作失败: {}", e))?;
+        self.storage.save_task_state(task_id, task_status::EXECUTING, Some(&serial)).await;
+        let started_at = self.storage.start_task_run(task_id, &serial).await;
 
         self.spawn_loop(task_id, started_at).await;
         self.emit_update().await;
@@ -159,9 +151,7 @@ impl TaskEngine {
     }
 
     /// 暂停任务
-    /// FIX #5: 添加状态检查
     pub async fn pause_task(self: &Arc<Self>, task_id: &str) -> Result<(), String> {
-        // FIX #5: 先检查任务状态
         {
             let tasks = self.tasks.read().await;
             let status = tasks
@@ -174,7 +164,6 @@ impl TaskEngine {
             }
         }
 
-        // FIX #3: 先 cancel 再 remove
         let run_info = {
             let mut running = self.running.write().await;
             if let Some(entry) = running.get(task_id) {
@@ -184,46 +173,26 @@ impl TaskEngine {
         };
 
         if let Some(run) = run_info {
-            let db = Arc::clone(&self.storage);
-            let tid = task_id.to_string();
-            let started_at = run.started_at;
-            // FIX #4: 日志警告而非静默丢弃
-            if let Err(e) = tokio::task::spawn_blocking(move || {
-                db.finish_task_run(&tid, started_at, run_status::PAUSED);
-            })
-            .await
-            {
-                eprintln!("[engine] finish_task_run 失败: {}", e);
-            }
+            self.storage.finish_task_run(task_id, run.started_at, run_status::PAUSED).await;
         }
 
         {
             let mut tasks = self.tasks.write().await;
             if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
-                // RUN → PENDING（未执行完的关键词回退）
                 rollback_running_keywords(task);
                 task.status = task_status::PAUSED.to_string();
                 task.assigned_device = None;
             }
         }
 
-        let db = Arc::clone(&self.storage);
-        let tid = task_id.to_string();
-        if let Err(e) = tokio::task::spawn_blocking(move || {
-            db.save_task_state(&tid, task_status::PAUSED, None);
-        })
-        .await
-        {
-            eprintln!("[engine] save_task_state 失败: {}", e);
-        }
-
+        self.storage.save_task_state(task_id, task_status::PAUSED, None).await;
         self.emit_update().await;
         Ok(())
     }
 
     /// 继续任务
     pub async fn resume_task(self: &Arc<Self>, task_id: &str) -> Result<(), String> {
-        let devices = self.storage.load_all_devices();
+        let devices = self.storage.load_all_devices().await;
         let serial = {
             let mut tasks = self.tasks.write().await;
 
@@ -238,29 +207,20 @@ impl TaskEngine {
             let serial = pick_ready_serial(&devices, &tasks)?;
 
             let task = tasks.iter_mut().find(|t| t.id == task_id).unwrap();
-            // FIX #4: 回滚上次残留的 RUN 关键词
             rollback_running_keywords(task);
             task.status = task_status::EXECUTING.to_string();
             task.assigned_device = Some(serial.clone());
             serial
         };
 
-        let db = Arc::clone(&self.storage);
-        let tid = task_id.to_string();
-        let ser = serial.clone();
-        let started_at = tokio::task::spawn_blocking(move || {
-            db.save_task_state(&tid, task_status::EXECUTING, Some(&ser));
-            db.start_task_run(&tid, &ser)
-        })
-        .await
-        .map_err(|e| format!("DB 操作失败: {}", e))?;
+        self.storage.save_task_state(task_id, task_status::EXECUTING, Some(&serial)).await;
+        let started_at = self.storage.start_task_run(task_id, &serial).await;
 
         self.spawn_loop(task_id, started_at).await;
         self.emit_update().await;
         Ok(())
     }
 
-    // ─── FIX #5: 提取公共 cancel + cleanup 方法 ───────────────
     /// 取消正在运行的任务循环，结束 run 记录，清进度，重建任务
     async fn cancel_and_cleanup(&self, task_id: &str) -> Result<Option<Task>, String> {
         {
@@ -270,7 +230,6 @@ impl TaskEngine {
             }
         }
 
-        // cancel + remove
         let run_info = {
             let mut running = self.running.write().await;
             if let Some(entry) = running.get(task_id) {
@@ -279,20 +238,12 @@ impl TaskEngine {
             running.remove(task_id)
         };
 
-        // 结束 run 记录 + 清进度 + 重建（合并到一次 spawn_blocking）
-        let db = Arc::clone(&self.storage);
-        let tid = task_id.to_string();
-        let started = run_info.map(|r| r.started_at);
-        let fresh = tokio::task::spawn_blocking(move || {
-            if let Some(sa) = started {
-                db.finish_task_run(&tid, sa, run_status::STOPPED);
-            }
-            db.clear_task_progress(&tid);
-            db.delete_task_state(&tid);
-            task_provider::load_task_by_id(&db, &tid)
-        })
-        .await
-        .map_err(|e| format!("DB 操作失败: {}", e))?;
+        if let Some(run) = run_info {
+            self.storage.finish_task_run(task_id, run.started_at, run_status::STOPPED).await;
+        }
+        self.storage.clear_task_progress(task_id).await;
+        self.storage.delete_task_state(task_id).await;
+        let fresh = task_provider::load_task_by_id(&self.storage, task_id).await;
 
         Ok(fresh)
     }
@@ -316,7 +267,7 @@ impl TaskEngine {
     pub async fn retry_task(self: &Arc<Self>, task_id: &str) -> Result<(), String> {
         let fresh = self.cancel_and_cleanup(task_id).await?;
 
-        let devices = self.storage.load_all_devices();
+        let devices = self.storage.load_all_devices().await;
         let serial = {
             let mut tasks = self.tasks.write().await;
             let serial = pick_ready_serial(&devices, &tasks)?;
@@ -331,15 +282,8 @@ impl TaskEngine {
             serial
         };
 
-        let db = Arc::clone(&self.storage);
-        let tid = task_id.to_string();
-        let ser = serial.clone();
-        let started_at = tokio::task::spawn_blocking(move || {
-            db.save_task_state(&tid, task_status::EXECUTING, Some(&ser));
-            db.start_task_run(&tid, &ser)
-        })
-        .await
-        .map_err(|e| format!("DB 操作失败: {}", e))?;
+        self.storage.save_task_state(task_id, task_status::EXECUTING, Some(&serial)).await;
+        let started_at = self.storage.start_task_run(task_id, &serial).await;
 
         self.spawn_loop(task_id, started_at).await;
         self.emit_update().await;
@@ -351,7 +295,6 @@ impl TaskEngine {
         let online_set: HashSet<&str> = online_serials.iter().map(|s| s.as_str()).collect();
         let mut released = 0u32;
 
-        // Step 1: 读锁收集需要释放的任务 ID（不持有 running 锁）
         let task_ids_to_release: Vec<String> = {
             let tasks = self.tasks.read().await;
             tasks
@@ -365,7 +308,6 @@ impl TaskEngine {
                 .collect()
         };
 
-        // Step 2: 单独获取 running 写锁，cancel + remove
         let run_infos: Vec<(String, Option<RunningTask>)> = {
             let mut running = self.running.write().await;
             task_ids_to_release
@@ -380,29 +322,16 @@ impl TaskEngine {
                 .collect()
         };
 
-        // FIX #9: 合并到一次 spawn_blocking，避免循环内多次 spawn
         if !run_infos.is_empty() {
-            let db = Arc::clone(&self.storage);
-            let infos: Vec<(String, Option<i64>)> = run_infos
-                .iter()
-                .map(|(tid, ri)| (tid.clone(), ri.as_ref().map(|r| r.started_at)))
-                .collect();
-            if let Err(e) = tokio::task::spawn_blocking(move || {
-                for (tid, started) in &infos {
-                    if let Some(sa) = started {
-                        db.finish_task_run(tid, *sa, run_status::STOPPED);
-                    }
-                    db.save_task_state(tid, task_status::ERROR, None);
+            for (tid, ri) in &run_infos {
+                if let Some(run) = ri {
+                    self.storage.finish_task_run(tid, run.started_at, run_status::STOPPED).await;
                 }
-            })
-            .await
-            {
-                eprintln!("[engine] release_offline DB 批量操作失败: {}", e);
+                self.storage.save_task_state(tid, task_status::ERROR, None).await;
             }
             released = run_infos.len() as u32;
         }
 
-        // Step 4: 批量更新 tasks 写锁（只获取一次）
         if released > 0 {
             {
                 let mut tasks = self.tasks.write().await;
@@ -420,7 +349,7 @@ impl TaskEngine {
 
     /// 获取就绪设备列表（在线且未被任务占用）
     pub async fn get_ready_serials(&self) -> Vec<String> {
-        let devices = self.storage.load_all_devices();
+        let devices = self.storage.load_all_devices().await;
         let tasks = self.tasks.read().await;
         let assigned: HashSet<String> = tasks
             .iter()
@@ -463,44 +392,30 @@ impl TaskEngine {
                 }
             };
 
-            // FIX #6: 安全处理 RunningTask 已被移走的情况
             let run_info = engine.running.write().await.remove(&tid);
             if completed {
-                // 任务自然完成：需要记录 COMPLETED
-                // 兜底：即使被移走也用原始 started_at
                 let sa = run_info.map(|r| r.started_at).unwrap_or(started_at);
-                let db = Arc::clone(&engine.storage);
-                let task_id = tid.clone();
-                if let Err(e) = tokio::task::spawn_blocking(move || {
-                    db.finish_task_run(&task_id, sa, run_status::COMPLETED);
-                })
-                .await
-                {
-                    eprintln!("[engine] finish_task_run(COMPLETED) 失败: {}", e);
-                }
+                engine.storage.finish_task_run(&tid, sa, run_status::COMPLETED).await;
             }
-            // cancelled: pause/stop 已经调用了 finish_task_run，无需重复
         });
     }
 
     /// 核心 tick 逻辑
-    /// FIX #1: done 计数移到 RUN→OK 时
-    /// FIX #2: 所有 TaskSuccess 都走 effect 通道（labeled block）
     async fn tick(&self, task_id: &str) -> bool {
-        // Step 1: DB 查询在写锁外执行（避免在持有 RwLock 时阻塞在同步 Mutex 上）
+        // Step 1: DB 查询在写锁外执行
         let device_serial_for_check = {
             let tasks = self.tasks.read().await;
             tasks.iter().find(|t| t.id == task_id).and_then(|t| t.assigned_device.clone())
         };
-        let device_online = device_serial_for_check
-            .as_deref()
-            .map(|serial| {
-                self.storage
-                    .get_device_by_serial(serial)
-                    .map(|d| d.state == crate::constants::device_state::DEVICE)
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false);
+        let device_online = match device_serial_for_check.as_deref() {
+            Some(serial) => self
+                .storage
+                .get_device_by_serial(serial)
+                .await
+                .map(|d| d.state == crate::constants::device_state::DEVICE)
+                .unwrap_or(false),
+            None => false,
+        };
 
         // Step 2: 获取写锁执行状态变更
         let effect = 'effect: {
@@ -516,26 +431,24 @@ impl TaskEngine {
 
             let device_serial = task.assigned_device.clone().unwrap_or_default();
 
-            // 使用锁外查询的结果
             if !device_online {
                 rollback_running_keywords(task);
                 task.status = task_status::ERROR.to_string();
                 task.assigned_device = None;
-                break 'effect TickEffect::DeviceOffline { task_id: task_id.to_string() };
+                break 'effect TickEffect::DeviceOffline {
+                    task_id: task_id.to_string(),
+                    device_serial,
+                };
             }
 
-            // ── 风控模拟 ──────────────────────────────────────────
-            // TODO: 这里未来替换为真实的 ADB 操作检测逻辑
-            // 当前以 10% 概率随机触发风控，模拟操作设备时发现无法
-            // 找到元素、应用崩溃等不可控异常
-            {
+            // ── 风控模拟（可配置开关） ────────────────────────
+            if crate::constants::debug::MOCK_RISK_ENABLED {
                 let mut rng = rand::rng();
-                if rng.random_bool(0.05) {
+                if rng.random_bool(crate::constants::debug::MOCK_RISK_PROBABILITY) {
                     eprintln!(
                         "[engine] risk-control triggered (simulated): task={}, device={}",
                         task_id, device_serial
                     );
-                    // 回退 RUN 状态的关键词
                     rollback_running_keywords(task);
                     task.status = task_status::ERROR.to_string();
                     task.assigned_device = None;
@@ -555,7 +468,6 @@ impl TaskEngine {
                 });
 
             let Some(active_idx) = active_idx else {
-                // FIX #2: 所有城市完成 → 走正常 effect 通道
                 task.status = task_status::SUCCESS.to_string();
                 task.assigned_device = None;
                 break 'effect TickEffect::TaskSuccess { task_id: task_id.to_string() };
@@ -563,7 +475,7 @@ impl TaskEngine {
 
             let city = &mut task.cities[active_idx];
 
-            // FIX #1: 上一 tick 的 RUN → OK 时才 done += 1
+            // 上一 tick 的 RUN → OK 时才 done += 1
             for kw in city.keywords.iter_mut() {
                 if kw.status == keyword_status::RUN {
                     kw.status = keyword_status::OK.to_string();
@@ -607,92 +519,61 @@ impl TaskEngine {
             }
         }; // ← 写锁释放
 
-        // Step 2: 锁外执行 DB 操作
+        // Step 3: 锁外执行 DB 操作（直接 await，无需 spawn_blocking）
         match effect {
             TickEffect::KeywordDone { task_id, city_name, kw_name, device_serial } => {
-                let db = Arc::clone(&self.storage);
-                if let Err(e) = tokio::task::spawn_blocking(move || {
-                    db.record_keyword_done(&task_id, &city_name, &kw_name, &device_serial);
-                })
-                .await
-                {
-                    eprintln!("[engine] record_keyword_done 失败: {}", e);
-                }
+                self.storage
+                    .record_keyword_done(&task_id, &city_name, &kw_name, &device_serial)
+                    .await;
                 false
             },
             TickEffect::TaskSuccess { task_id } => {
-                let db = Arc::clone(&self.storage);
-                if let Err(e) = tokio::task::spawn_blocking(move || {
-                    db.save_task_state(&task_id, task_status::SUCCESS, None);
-                })
-                .await
-                {
-                    eprintln!("[engine] save_task_state(SUCCESS) 失败: {}", e);
-                }
+                self.storage.save_task_state(&task_id, task_status::SUCCESS, None).await;
                 true
             },
-            TickEffect::DeviceOffline { task_id } => {
-                // FIX #2: 二次确认设备在线状态，减少 TOCTOU 误判
-                let still_offline = {
-                    let tasks = self.tasks.read().await;
-                    let serial = tasks
-                        .iter()
-                        .find(|t| t.id == task_id)
-                        .and_then(|t| t.assigned_device.clone());
-                    serial
-                        .as_deref()
-                        .map(|s| {
-                            self.storage
-                                .get_device_by_serial(s)
-                                .map(|d| d.state != crate::constants::device_state::DEVICE)
-                                .unwrap_or(true)
-                        })
-                        .unwrap_or(true)
-                };
+            TickEffect::DeviceOffline { task_id, device_serial } => {
+                // 二次确认设备在线状态（用原device_serial，而非已置空的assigned_device）
+                let still_offline = self
+                    .storage
+                    .get_device_by_serial(&device_serial)
+                    .await
+                    .map(|d| d.state != crate::constants::device_state::DEVICE)
+                    .unwrap_or(true);
                 if !still_offline {
                     eprintln!("[engine] 设备已恢复在线，跳过 DeviceOffline 标记: {}", task_id);
-                    return false; // 不终止循环
+                    return false;
                 }
-                let db = Arc::clone(&self.storage);
-                if let Err(e) = tokio::task::spawn_blocking(move || {
-                    db.save_task_state(&task_id, task_status::ERROR, None);
-                })
-                .await
-                {
-                    eprintln!("[engine] save_task_state(ERROR/DeviceOffline) 失败: {}", e);
-                }
-                true // 返回 true 停止执行循环
+                self.storage.save_task_state(&task_id, task_status::ERROR, None).await;
+                true
             },
             TickEffect::RiskControl { task_id, device_serial } => {
-                let db = Arc::clone(&self.storage);
-                let app = self.app_handle.clone();
-                if let Err(e) = tokio::task::spawn_blocking(move || {
-                    db.save_task_state(&task_id, task_status::ERROR, None);
-                    db.flag_device(&device_serial);
-                    // 通知前端：风控触发
-                    let _ = app.emit(
-                        "risk-control",
-                        serde_json::json!({
-                            "task_id": task_id,
-                            "device_serial": device_serial,
-                            "message": "设备风控触发，任务已停止，设备已标记"
-                        }),
-                    );
-                    let _ = app.emit("devices-changed", ());
-                })
-                .await
-                {
-                    eprintln!("[engine] RiskControl 处理失败: {}", e);
-                }
-                true // 停止执行循环
+                self.storage.save_task_state(&task_id, task_status::ERROR, None).await;
+                self.storage.flag_device(&device_serial).await;
+                let _ = self.app_handle.emit(
+                    "risk-control",
+                    serde_json::json!({
+                        "task_id": task_id,
+                        "device_serial": device_serial,
+                        "message": "设备风控触发，任务已停止，设备已标记"
+                    }),
+                );
+                let _ = self.app_handle.emit("devices-changed", ());
+                true
             },
             TickEffect::None => false,
         }
     }
 
-    /// 推送任务状态到前端
-    // TODO #8: 性能优化 — 当前每次都 clone 全量任务列表，后续可用版本号 diff 或 Arc 包装减少内存分配
+    /// 推送任务状态到前端（节流控制）
     async fn emit_update(&self) {
+        let throttle_ms = crate::constants::debug::EMIT_THROTTLE_MS;
+        {
+            let mut last = self.last_emit.lock().await;
+            if last.elapsed() < Duration::from_millis(throttle_ms) {
+                return;
+            }
+            *last = std::time::Instant::now();
+        }
         let tasks = self.tasks.read().await;
         let snapshot = TaskSnapshot { tasks: tasks.clone() };
         let _ = self.app_handle.emit("task://update", &snapshot);
@@ -708,31 +589,19 @@ impl TaskEngine {
             let mut tasks = self.tasks.write().await;
             let task = tasks.iter_mut().find(|t| t.id == task_id).ok_or("任务不存在")?;
 
-            // 分离：固定部分（done/active）和可排序部分（pending）
             let (fixed, mut pending): (Vec<_>, Vec<_>) = task
                 .cities
                 .drain(..)
                 .partition(|c| c.status != crate::constants::city_status::PENDING);
 
-            // 按 new_order 排序 pending
             pending.sort_by_key(|c| {
                 new_order.iter().position(|name| name == &c.name).unwrap_or(usize::MAX)
             });
 
-            // 合并写回
             task.cities = fixed.into_iter().chain(pending).collect();
         }
 
-        // 落盘
-        let db = Arc::clone(&self.storage);
-        let order = new_order.clone();
-        let tid = task_id.to_string();
-        let _ = tokio::task::spawn_blocking(move || {
-            db.save_city_order(&tid, &order);
-        })
-        .await;
-
-        // 推送更新
+        self.storage.save_city_order(task_id, &new_order).await;
         self.emit_update().await;
         Ok(())
     }
@@ -740,17 +609,14 @@ impl TaskEngine {
     // ─── MQTT 消息处理 ─────────────────────────────────────────
 
     /// 处理 MQTT 踢设备指令
-    /// 根据 hw_serial 找到本地设备，暂停关联任务并删除设备
     pub async fn handle_device_kick(self: &Arc<Self>, hw_serials: Vec<String>) -> u32 {
         let mut kicked = 0u32;
 
         for hw_serial in &hw_serials {
-            // 通过 hw_serial 找到本地设备的 serial
-            let device = self.storage.get_device_by_hw_serial(hw_serial);
+            let device = self.storage.get_device_by_hw_serial(hw_serial).await;
             let Some(device) = device else { continue };
             let serial = device.serial.clone();
 
-            // 检查是否有任务绑定在这个设备上
             let task_to_pause: Option<String> = {
                 let tasks = self.tasks.read().await;
                 tasks
@@ -763,15 +629,13 @@ impl TaskEngine {
                     .map(|t| t.id.clone())
             };
 
-            // 如果有任务在执行 → 暂停
             if let Some(task_id) = task_to_pause {
                 if let Err(e) = self.pause_task(&task_id).await {
                     eprintln!("[engine] 踢设备时暂停任务失败: task={}, err={}", task_id, e);
                 }
             }
 
-            // 从 DB 删除设备
-            self.storage.delete_device(&serial);
+            self.storage.delete_device(&serial).await;
             eprintln!("[engine] 设备已踢下线: hw_serial={}, serial={}", hw_serial, serial);
             kicked += 1;
         }
@@ -784,13 +648,7 @@ impl TaskEngine {
     }
 
     /// 增量合并单个任务（reload_task 核心逻辑）
-    ///
-    /// FIX #1: was_success 判断移入写锁消除竞态
-    /// FIX #3: 防重入由 handle_task_reload 的 reloading Mutex 保证
-    /// FIX #7: payload 序列化失败时 log + return
-    /// FIX #14: 统一走 http.fetch_task（mock/real 自动切换）
     async fn merge_single_task(&self, task_id: &str) {
-        // ── Step 1: 通过 HttpClient 获取最新定义（mock/real 自动切换） ──
         let new_def = match self.http.fetch_task(task_id).await {
             Ok(def) => def,
             Err(e) => {
@@ -799,7 +657,6 @@ impl TaskEngine {
             },
         };
 
-        // ── Step 2: 更新 DB 缓存（FIX #7: 序列化失败则中止） ──
         let payload = match serde_json::to_string(&new_def.cities) {
             Ok(p) => p,
             Err(e) => {
@@ -807,39 +664,21 @@ impl TaskEngine {
                 return;
             },
         };
-        let db = Arc::clone(&self.storage);
-        let def_for_cache = new_def.clone();
-        let tid = task_id.to_string();
-        let payload_clone = payload;
-        let _ = tokio::task::spawn_blocking(move || {
-            db.upsert_task_cache(&tid, &def_for_cache.name, &payload_clone, 1);
-        })
-        .await;
 
-        // ── Step 3: 在写锁内判断 was_success 并清进度（FIX #1: 消除竞态） ──
-        // 不能在锁外判断再锁内操作，否则有 TOCTOU
+        self.storage.upsert_task_cache(task_id, &new_def.name, &payload, 1).await;
+
         let was_success = {
             let tasks = self.tasks.read().await;
             tasks.iter().any(|t| t.id == task_id && t.status == task_status::SUCCESS)
         };
         if was_success {
-            let db = Arc::clone(&self.storage);
-            let tid = task_id.to_string();
-            let _ = tokio::task::spawn_blocking(move || {
-                db.clear_task_progress(&tid);
-                db.delete_task_state(&tid);
-                eprintln!("[engine] 任务 {} 原状态 SUCCESS，已清空旧进度", tid);
-            })
-            .await;
+            self.storage.clear_task_progress(task_id).await;
+            self.storage.delete_task_state(task_id).await;
+            eprintln!("[engine] 任务 {} 原状态 SUCCESS，已清空旧进度", task_id);
         }
 
-        // ── Step 4: 用 build_task 重建 ──
-        let db = Arc::clone(&self.storage);
-        let merged = tokio::task::spawn_blocking(move || task_provider::build_task(&db, new_def))
-            .await
-            .expect("build_task panic");
+        let merged = task_provider::build_task(&self.storage, new_def).await;
 
-        // ── Step 5: 写锁内原子合并（FIX #1: 所有判断在同一写锁内） ──
         let mut tasks = self.tasks.write().await;
         if let Some(local) = tasks.iter_mut().find(|t| t.id == task_id) {
             let is_running = local.status == task_status::EXECUTING
@@ -873,15 +712,9 @@ impl TaskEngine {
                     .collect()
             })
             .unwrap_or_default();
-        drop(tasks); // 释放写锁
+        drop(tasks);
 
-        // 清理孤儿进度记录
-        let db = Arc::clone(&self.storage);
-        let tid = task_id.to_string();
-        let _ = tokio::task::spawn_blocking(move || {
-            db.cleanup_orphan_progress(&tid, &valid_pairs);
-        })
-        .await;
+        self.storage.cleanup_orphan_progress(task_id, valid_pairs).await;
     }
 
     /// 处理 MQTT 任务数据变更通知
@@ -894,7 +727,6 @@ impl TaskEngine {
             },
             "reload_task" => {
                 if let Some(tid) = task_id {
-                    // FIX #3: 防重入 — 同一 task_id 不并发 reload
                     {
                         let mut guard = self.reloading.lock().await;
                         if guard.contains(tid) {
@@ -906,14 +738,12 @@ impl TaskEngine {
                     eprintln!("[engine] 收到 reload_task: {}", tid);
                     self.merge_single_task(tid).await;
                     self.emit_update().await;
-                    // 释放防重入标记
                     self.reloading.lock().await.remove(tid);
                 }
             },
             "delete_task" => {
                 if let Some(tid) = task_id {
                     eprintln!("[engine] 收到 delete_task: {}", tid);
-                    // 如果任务正在执行 → 先停止
                     let is_running = {
                         let tasks = self.tasks.read().await;
                         tasks.iter().any(|t| {
@@ -925,18 +755,11 @@ impl TaskEngine {
                     if is_running {
                         let _ = self.stop_task(tid).await;
                     }
-                    // 从内存中移除
                     {
                         let mut tasks = self.tasks.write().await;
                         tasks.retain(|t| t.id != tid);
                     }
-                    // 从 DB 移除缓存
-                    let db = Arc::clone(&self.storage);
-                    let tid_owned = tid.to_string();
-                    let _ = tokio::task::spawn_blocking(move || {
-                        db.delete_task_cache(&tid_owned);
-                    })
-                    .await;
+                    self.storage.delete_task_cache(tid).await;
                     self.emit_update().await;
                 }
             },
@@ -944,5 +767,64 @@ impl TaskEngine {
                 eprintln!("[engine] 未知的 task reload action: {}", action);
             },
         }
+    }
+
+    /// 处理手机号解绑/被抢占 — 暂停+删除对应任务
+    pub async fn handle_phones_unbind(self: &Arc<Self>, phones: Vec<String>) -> u32 {
+        let mut all_task_ids: Vec<String> = Vec::new();
+        for phone in &phones {
+            let task_ids = self.storage.get_tasks_by_phone(phone).await;
+            eprintln!("[engine] 解绑手机号 {}: 关联 {} 个任务", phone, task_ids.len());
+            all_task_ids.extend(task_ids);
+        }
+        all_task_ids.sort();
+        all_task_ids.dedup();
+
+        if all_task_ids.is_empty() {
+            return 0;
+        }
+
+        for task_id in &all_task_ids {
+            let is_running = {
+                let tasks = self.tasks.read().await;
+                tasks.iter().any(|t| {
+                    t.id == *task_id
+                        && (t.status == crate::constants::task_status::EXECUTING
+                            || t.status == crate::constants::task_status::PAUSED)
+                })
+            };
+            if is_running {
+                if let Err(e) = self.stop_task(task_id).await {
+                    eprintln!("[engine] 解绑时停止任务失败: task={}, err={}", task_id, e);
+                }
+            }
+        }
+
+        {
+            let all_ids_set: HashSet<&str> = all_task_ids.iter().map(|s| s.as_str()).collect();
+            let mut tasks = self.tasks.write().await;
+            tasks.retain(|t| !all_ids_set.contains(t.id.as_str()));
+        }
+
+        let removed = all_task_ids.len() as u32;
+
+        // DB 批量清理（单连接事务内完成）
+        self.storage.batch_cleanup_tasks(&all_task_ids, &phones).await;
+
+        // 更新 synced_phones
+        let current = self.storage.get_setting("synced_phones").await.unwrap_or_default();
+        let mut phone_list: Vec<String> = serde_json::from_str(&current).unwrap_or_default();
+        phone_list.retain(|p| !phones.contains(p));
+        self.storage
+            .set_setting("synced_phones", &serde_json::to_string(&phone_list).unwrap_or_default())
+            .await;
+        eprintln!(
+            "[engine] 批量清理完成: {} 个任务, synced_phones={:?}",
+            all_task_ids.len(),
+            phone_list
+        );
+
+        self.emit_update().await;
+        removed
     }
 }

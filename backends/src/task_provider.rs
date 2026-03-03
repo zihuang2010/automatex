@@ -51,30 +51,51 @@ pub struct CityDef {
 // ─── 任务提供者 ─────────────────────────────────────────────────
 
 /// 同步任务缓存到数据库（仅在启动时调用一次）
-pub fn sync_task_cache(db: &Database) {
+pub async fn sync_task_cache(db: &Database) {
     let defs: Vec<TaskDef> = load_mock_definitions();
     for def in defs {
         let payload = serde_json::to_string(&def.cities).unwrap_or_default();
-        db.upsert_task_cache(&def.id, &def.name, &payload, 1);
+        db.upsert_task_cache(&def.id, &def.name, &payload, 1).await;
     }
 }
 
-/// 加载 Mock JSON 任务定义，合并 DB 中的已完成进度，返回恢复后的任务列表（纯读操作）
-pub fn load_tasks(db: &Database) -> Vec<Task> {
-    let defs: Vec<TaskDef> = load_mock_definitions();
+/// 从 DB 缓存加载任务定义，合并进度，返回 Task 列表
+/// 优先从e a_task_cache 读取，若 DB 为空则 fallback 到 mock
+pub async fn load_tasks(db: &Database) -> Vec<Task> {
+    let cached = db.load_all_task_defs().await;
+    let defs: Vec<TaskDef> = if cached.is_empty() {
+        // DB 无缓存，fallback 为 mock
+        load_mock_definitions()
+    } else {
+        cached
+            .into_iter()
+            .filter_map(|(id, name, payload)| {
+                let cities: Vec<CityDef> = serde_json::from_str(&payload).ok()?;
+                Some(TaskDef { id, name, cities })
+            })
+            .collect()
+    };
     let mut tasks = Vec::new();
-
     for def in defs {
-        tasks.push(build_task(db, def));
+        tasks.push(build_task(db, def).await);
     }
-
     tasks
 }
 
-/// #4: 加载单个任务（避免全量加载再过滤）
-pub fn load_task_by_id(db: &Database, target_id: &str) -> Option<Task> {
+/// 加载单个任务（优先 DB 缓存，fallback mock）
+pub async fn load_task_by_id(db: &Database, target_id: &str) -> Option<Task> {
+    // 优先从 DB 读取
+    if let Some((id, name, payload)) = db.load_task_def_by_id(target_id).await {
+        if let Ok(cities) = serde_json::from_str::<Vec<CityDef>>(&payload) {
+            return Some(build_task(db, TaskDef { id, name, cities }).await);
+        }
+    }
+    // Fallback: mock
     let defs: Vec<TaskDef> = load_mock_definitions();
-    defs.into_iter().find(|d| d.id == target_id).map(|def| build_task(db, def))
+    match defs.into_iter().find(|d| d.id == target_id) {
+        Some(def) => Some(build_task(db, def).await),
+        None => None,
+    }
 }
 
 /// Mock 模式下按 ID 查找任务定义（供 TaskEngine 增量合并使用）
@@ -94,7 +115,6 @@ pub fn load_mock_task_def_by_id(task_id: &str) -> Option<TaskDef> {
 /// 从 ~/.automatex/mock_tasks_override.json 读取指定 task 的定义
 /// 每次调用都重新读磁盘（不缓存），方便测试时随时修改
 fn load_override_task_def(task_id: &str) -> Option<TaskDef> {
-    // 跨平台获取用户目录：macOS/Linux → HOME，Windows → USERPROFILE
     let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).ok()?;
     let path = std::path::Path::new(&home).join(".automatex").join("mock_tasks_override.json");
     if !path.exists() {
@@ -106,9 +126,9 @@ fn load_override_task_def(task_id: &str) -> Option<TaskDef> {
 }
 
 /// 内部：从 Mock 定义 + DB 进度 + DB 状态 构建单个 Task
-pub fn build_task(db: &Database, def: TaskDef) -> Task {
+pub async fn build_task(db: &Database, def: TaskDef) -> Task {
     // 加载已完成记录
-    let progress = db.load_task_progress(&def.id);
+    let progress = db.load_task_progress(&def.id).await;
     let completed: HashSet<(String, String)> = progress
         .iter()
         .filter(|p| p.status == keyword_status::OK)
@@ -160,12 +180,10 @@ pub fn build_task(db: &Database, def: TaskDef) -> Task {
         });
     }
     // 按用户自定义顺序重排 pending 城市
-    if let Some(order) = db.load_city_order(&def.id) {
-        // 分离 done 和 pending 城市
+    if let Some(order) = db.load_city_order(&def.id).await {
         let (done, mut pending): (Vec<_>, Vec<_>) =
             cities.into_iter().partition(|c| c.status == city_status::DONE);
 
-        // 按 order 排序 pending（未在 order 中的排最后）
         pending
             .sort_by_key(|c| order.iter().position(|name| name == &c.name).unwrap_or(usize::MAX));
 
@@ -181,21 +199,18 @@ pub fn build_task(db: &Database, def: TaskDef) -> Task {
         task_status::WAITING
     };
 
-    // #1: 从 DB 加载保存的运行时状态（覆盖推断值）
-    let final_status = match db.load_task_state(&def.id) {
+    // 从 DB 加载保存的运行时状态（覆盖推断值）
+    let final_status = match db.load_task_state(&def.id).await {
         Some((saved_status, _)) => {
-            // EXECUTING → PAUSED（重启后设备不再绑定）
             if saved_status == task_status::EXECUTING {
                 task_status::PAUSED.to_string()
             } else if saved_status == task_status::SUCCESS
                 && inferred_status != task_status::SUCCESS
             {
-                // 已完成但新定义有未完成的组合 → 降级为等待中
                 task_status::WAITING.to_string()
             } else if saved_status == task_status::WAITING
                 && inferred_status != task_status::WAITING
             {
-                // 如果 DB 记录 WAITING 但实际有进度，以推断为准
                 inferred_status.to_string()
             } else {
                 saved_status
@@ -205,21 +220,19 @@ pub fn build_task(db: &Database, def: TaskDef) -> Task {
     };
 
     // 只有任务在 EXECUTING 或 PAUSED 时，才激活第一个 pending 城市
-    // WAITING 状态下所有城市保持 pending，允许用户自由排序
     if final_status != task_status::WAITING && final_status != task_status::SUCCESS {
         if let Some(first_pending) = cities.iter_mut().find(|c| c.status == city_status::PENDING) {
             first_pending.status = city_status::ACTIVE.to_string();
         }
     }
 
-    // 重启后统一释放设备绑定（与手动暂停/停止行为一致）
     let assigned_device: Option<String> = None;
 
     Task { id: def.id, name: def.name, status: final_status, assigned_device, cities }
 }
 
 /// 从嵌入资源读取 Mock 任务定义（OnceLock 缓存，只解析一次）
-fn load_mock_definitions() -> Vec<TaskDef> {
+pub fn load_mock_definitions() -> Vec<TaskDef> {
     use std::sync::OnceLock;
     static DEFS: OnceLock<Vec<TaskDef>> = OnceLock::new();
     DEFS.get_or_init(|| {

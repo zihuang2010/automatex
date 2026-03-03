@@ -22,6 +22,7 @@ import {
   setTaskViewCallbacks,
 } from './task-view';
 import { loadChainForDevice } from './queue';
+import { needsTransition, showTransition } from './transition';
 import { registerTaskActions, setRefreshCallbacks, initEngine } from './task-engine';
 import {
   showAddDeviceDialog,
@@ -47,21 +48,40 @@ function syncWindowBg() {
 }
 
 function initTheme() {
+  // 先从 localStorage 快速应用（避免开屏期间白屏闪烁）
   const saved = localStorage.getItem('theme');
-  // 默认暗色，仅用户明确选择 light 时才用亮色
   if (saved !== 'light') {
     document.documentElement.classList.add('dark');
   }
   updateThemeIcon();
-  // 注意：此处不调用 syncWindowBg()，开屏期间保持 tauri.conf.json 中的 backgroundColor
-  // 等 splash 退场后再同步，避免底色闪变
+
+  // 异步从数据库读取真实主题设置并同步
+  invoke<Record<string, string>>('get_settings')
+    .then(settings => {
+      const dbTheme = settings.theme || 'dark';
+      const currentIsDark = document.documentElement.classList.contains('dark');
+      const dbIsDark = dbTheme === 'dark';
+      if (currentIsDark !== dbIsDark) {
+        if (dbIsDark) {
+          document.documentElement.classList.add('dark');
+        } else {
+          document.documentElement.classList.remove('dark');
+        }
+        localStorage.setItem('theme', dbTheme);
+        updateThemeIcon();
+      }
+    })
+    .catch(() => {});
 }
 
 function toggleTheme() {
   const isDark = document.documentElement.classList.toggle('dark');
-  localStorage.setItem('theme', isDark ? 'dark' : 'light');
+  const theme = isDark ? 'dark' : 'light';
+  localStorage.setItem('theme', theme);
   updateThemeIcon();
   syncWindowBg();
+  // 持久化到数据库
+  invoke('save_settings', { settings: { theme } }).catch(() => {});
 }
 
 function updateThemeIcon() {
@@ -87,13 +107,21 @@ function splash() {
   }
   // 入场动画
   setTimeout(() => el.classList.add('loaded'), 300);
-  // 退场 + 显示主应用
-  setTimeout(() => {
+  // 退场 → 检查是否需要过渡页
+  setTimeout(async () => {
     el.classList.add('out');
-    app.classList.add('show');
-    // 开屏退场后再同步窗口背景色（避免底色闪变）
+    // 开屏退场后同步窗口背景色
     syncWindowBg();
     setTimeout(() => el.remove(), 800);
+
+    // 检查是否需要任务同步过渡页
+    const showTrans = await needsTransition();
+    if (showTrans) {
+      // 显示过渡页，等用户完成后再进入主应用
+      await showTransition();
+    }
+    // 进入主应用
+    app.classList.add('show');
   }, 3200);
 }
 

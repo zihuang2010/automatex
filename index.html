@@ -252,6 +252,245 @@
         </div>
       </div>
 
+      <!-- ===== 任务同步过渡页 ===== -->
+      <div class="transition-page" id="transition" style="display: none">
+        <!-- 主卡片 -->
+        <div
+          class="w-full max-w-2xl bg-white rounded-2xl border border-s200 shadow-xl overflow-hidden"
+        >
+          <!-- 顶部图形区 -->
+          <div
+            class="bg-gradient-to-b from-blue-50 to-white p-12 border-b border-s100 relative overflow-hidden"
+          >
+            <div class="flex items-center justify-center gap-16 relative z-10">
+              <!-- 任务卡片堆叠 -->
+              <div
+                class="relative w-28 h-28 flex items-center justify-center task-stack-container trans-card-float"
+              >
+                <div
+                  class="absolute w-20 h-24 bg-white rounded-xl border-2 border-blue/20 shadow-sm translate-x-4 -translate-y-4 rotate-6"
+                ></div>
+                <div
+                  class="absolute w-20 h-24 bg-white rounded-xl border-2 border-blue/40 shadow-md translate-x-2 -translate-y-2 rotate-3"
+                ></div>
+                <div
+                  class="relative w-20 h-24 bg-white rounded-xl border-2 border-blue shadow-lg flex flex-col p-3"
+                >
+                  <div class="w-full h-1.5 bg-blue/10 rounded mb-2"></div>
+                  <div class="w-3/4 h-1.5 bg-blue/10 rounded mb-4"></div>
+                  <div class="mt-auto flex items-center justify-between">
+                    <div class="w-6 h-6 rounded bg-blue/10 flex items-center justify-center">
+                      <span class="material-symbols-outlined text-blue text-sm font-bold">
+                        settings
+                      </span>
+                    </div>
+                    <span
+                      class="material-symbols-outlined text-blue text-lg"
+                      style="font-variation-settings: 'FILL' 1"
+                    >
+                      check_circle
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <!-- 同步图标 -->
+              <div class="flex flex-col items-center gap-2">
+                <div class="relative w-16 h-16 flex items-center justify-center">
+                  <div
+                    class="absolute inset-0 border-2 border-dashed border-blue/30 rounded-full trans-ring-rotate"
+                  ></div>
+                  <span class="material-symbols-outlined text-3xl text-blue trans-sync-spin">
+                    sync
+                  </span>
+                </div>
+                <div class="flex gap-1">
+                  <div class="w-1.5 h-1.5 rounded-full bg-blue trans-dot-pulse"></div>
+                  <div class="w-1.5 h-1.5 rounded-full bg-blue trans-dot-pulse"></div>
+                  <div class="w-1.5 h-1.5 rounded-full bg-blue trans-dot-pulse"></div>
+                </div>
+              </div>
+              <!-- 云端图标 -->
+              <div class="w-36 h-36 flex items-center justify-center relative trans-cloud-float">
+                <div class="absolute inset-[-16px] bg-blue/15 rounded-full blur-2xl"></div>
+                <div class="absolute inset-0 border border-blue/20 rounded-full"></div>
+                <span
+                  class="material-symbols-outlined text-7xl text-blue"
+                  style="font-variation-settings: 'FILL' 1"
+                >
+                  cloud
+                </span>
+                <span class="material-symbols-outlined absolute text-white text-xl translate-y-1">
+                  cloud_done
+                </span>
+              </div>
+            </div>
+            <!-- 背景装饰 -->
+            <div
+              class="absolute top-0 right-0 -mr-16 -mt-16 w-64 h-64 bg-blue/5 rounded-full blur-3xl trans-glow-pulse"
+            ></div>
+            <div
+              class="absolute bottom-0 left-0 -ml-16 -mb-16 w-64 h-64 bg-blue/5 rounded-full blur-3xl trans-glow-pulse"
+              style="animation-delay: 3s"
+            ></div>
+          </div>
+
+          <!-- 标题区 -->
+          <div class="px-8 pt-8 pb-4 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+              <div
+                class="w-10 h-10 rounded-full bg-blue/10 text-blue flex items-center justify-center"
+              >
+                <span class="material-symbols-outlined">sync_alt</span>
+              </div>
+              <div>
+                <h2 class="text-xl font-bold text-s800 font-mono tracking-tight">任务同步过渡</h2>
+                <p class="text-sm text-s400 tracking-wide">正在进入多端任务检索流程</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- 分隔线 -->
+          <div class="px-8">
+            <div class="h-px bg-s100 w-full"></div>
+          </div>
+
+          <!-- 表单区 -->
+          <div class="p-8">
+            <div class="space-y-6">
+              <!-- 手机号输入 -->
+              <div>
+                <label
+                  class="block text-sm font-semibold text-s600 mb-2 flex items-center gap-2 tracking-wide"
+                  for="phone-numbers"
+                >
+                  关联手机号
+                  <span
+                    class="material-symbols-outlined text-base text-s400 cursor-help"
+                    title="关联后系统将自动下发任务到对应设备"
+                  >
+                    info
+                  </span>
+                </label>
+                <div class="relative group">
+                  <textarea
+                    class="w-full px-4 py-3 bg-s50 border border-s200 rounded-xl focus:ring-2 focus:ring-blue/20 focus:border-blue transition-all resize-none text-s800 placeholder:text-s400"
+                    id="phone-numbers"
+                    placeholder="请输入手机号，多个号码请换行分隔..."
+                    rows="5"
+                  ></textarea>
+                  <div
+                    id="phone-counter"
+                    class="absolute bottom-3 right-3 text-[10px] text-s400 font-mono bg-white/80 dark:bg-s800/80 px-2 py-0.5 rounded border border-s100 dark:border-s700"
+                  >
+                    建议一次不超过 50 个
+                  </div>
+                </div>
+                <p class="mt-3 text-xs text-s400 flex items-center gap-1.5">
+                  <span
+                    class="material-symbols-outlined text-sm text-blue/60 shrink-0"
+                    style="font-variation-settings: 'FILL' 1"
+                  >
+                    lightbulb
+                  </span>
+                  <span>
+                    系统将根据填写的号码自动匹配当前任务队列，请确保设备均已登录并处于在线状态。
+                  </span>
+                </p>
+              </div>
+
+              <!-- Toggle 开关 -->
+              <div
+                class="flex items-center gap-6 p-4 bg-s50 rounded-xl border border-dashed border-s200"
+              >
+                <label class="flex items-center gap-3 cursor-pointer group">
+                  <div class="relative">
+                    <input checked type="checkbox" class="peer sr-only" id="chk-smart-match" />
+                    <div
+                      class="w-10 h-5 bg-s300 rounded-full peer-checked:bg-blue transition-colors"
+                    ></div>
+                    <div
+                      class="absolute top-1 left-1 w-3 h-3 bg-white rounded-full transition-transform peer-checked:translate-x-5"
+                    ></div>
+                  </div>
+                  <span
+                    class="text-sm font-medium text-s500 group-hover:text-s800 transition-colors"
+                  >
+                    智能匹配模式
+                  </span>
+                </label>
+                <label class="flex items-center gap-3 cursor-pointer group">
+                  <div class="relative">
+                    <input type="checkbox" class="peer sr-only" id="chk-priority-override" />
+                    <div
+                      class="w-10 h-5 bg-s300 rounded-full peer-checked:bg-blue transition-colors"
+                    ></div>
+                    <div
+                      class="absolute top-1 left-1 w-3 h-3 bg-white rounded-full transition-transform peer-checked:translate-x-5"
+                    ></div>
+                  </div>
+                  <span
+                    class="text-sm font-medium text-s500 group-hover:text-s800 transition-colors"
+                  >
+                    任务优先级覆盖
+                  </span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <!-- 底部操作栏 -->
+          <div class="px-8 py-6 bg-s50/50 border-t border-s100 flex items-center justify-between">
+            <button
+              id="btn-sync-reset"
+              class="px-6 py-2.5 text-sm font-medium text-s500 hover:bg-s200/50 rounded-lg transition-all flex items-center gap-2"
+            >
+              <span class="material-symbols-outlined text-lg">restart_alt</span>
+              重置
+            </button>
+            <div class="flex items-center gap-3">
+              <button
+                id="btn-sync-start"
+                class="px-8 py-2.5 bg-blue hover:bg-blue-dark active:scale-[0.98] text-white font-bold rounded-lg shadow-lg shadow-blue/20 transition-all flex items-center gap-2"
+              >
+                <span class="material-symbols-outlined text-lg">sync</span>
+                <span class="font-mono">开始同步</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 错误提示 -->
+        <div
+          id="transition-error"
+          class="mt-4 w-full max-w-2xl px-4 py-3 rounded-xl bg-red-light border border-red/30 text-red text-xs flex items-center gap-2"
+          style="display: none"
+        >
+          <span class="material-symbols-outlined text-sm">error</span>
+          <span></span>
+        </div>
+
+        <!-- 页脚信息 -->
+        <div class="mt-8 flex flex-col items-center gap-4">
+          <div class="flex items-center gap-8 opacity-40 grayscale">
+            <div class="flex items-center gap-1.5 text-xs font-semibold text-s600">
+              <span class="material-symbols-outlined text-sm">security</span>
+              数据加密传输
+            </div>
+            <div class="flex items-center gap-1.5 text-xs font-semibold text-s600">
+              <span class="material-symbols-outlined text-sm">verified</span>
+              企业级安全审计
+            </div>
+            <div class="flex items-center gap-1.5 text-xs font-semibold text-s600">
+              <span class="material-symbols-outlined text-sm">cloud_done</span>
+              多云同步支持
+            </div>
+          </div>
+          <p class="text-[10px] text-s400 font-mono tracking-widest uppercase">
+            Version 1.0.2-STABLE Build 260301
+          </p>
+        </div>
+      </div>
+
       <!-- ===== 主应用 ===== -->
       <div class="app h-screen flex flex-col overflow-hidden" id="app">
         <!-- Header -->
@@ -498,58 +737,113 @@
 
       <!-- 添加设备对话框 -->
       <div class="modal-mask" id="add-device-modal" style="display: none">
-        <div class="modal-card" style="max-width: 400px">
-          <div class="flex items-center justify-between px-6 py-4.5 border-b border-s100">
-            <h3 class="text-base font-bold text-s900">添加设备</h3>
-            <button
-              class="w-8 h-8 flex items-center justify-center bg-transparent border-none rounded-sm text-s400 text-base cursor-pointer transition-all duration-100 hover:bg-s100 hover:text-s600"
-              id="add-device-close"
-            >
-              ✕
-            </button>
+        <div class="modal-card" style="max-width: 440px; border-radius: 16px; overflow: hidden">
+          <!-- 渐变头部 -->
+          <div
+            class="relative overflow-hidden px-6 pt-6 pb-5"
+            style="
+              background: linear-gradient(
+                135deg,
+                rgba(37, 99, 235, 0.08),
+                rgba(99, 102, 241, 0.06)
+              );
+            "
+          >
+            <div
+              class="absolute top-0 right-0 w-32 h-32 rounded-full opacity-30"
+              style="
+                background: radial-gradient(circle, rgba(37, 99, 235, 0.15), transparent 70%);
+                transform: translate(30%, -30%);
+              "
+            ></div>
+            <div class="flex items-center gap-3.5">
+              <div
+                class="w-11 h-11 rounded-xl flex items-center justify-center shrink-0 shadow-sm"
+                style="background: linear-gradient(135deg, #3b82f6, #6366f1)"
+              >
+                <span class="material-symbols-outlined text-white text-xl">wifi</span>
+              </div>
+              <div class="flex-1 min-w-0">
+                <h3 class="text-[15px] font-bold text-s900 tracking-tight">添加 WiFi 设备</h3>
+                <p class="text-[11px] text-s400 mt-0.5">通过 IP 地址连接远程 ADB 设备</p>
+              </div>
+              <button
+                class="w-7 h-7 flex items-center justify-center rounded-full text-s400 transition-all duration-150 hover:bg-s200/60 hover:text-s600"
+                id="add-device-close"
+              >
+                <span class="material-symbols-outlined text-[18px]">close</span>
+              </button>
+            </div>
           </div>
-          <div class="p-5 px-6">
+
+          <!-- 表单区 -->
+          <div class="px-6 py-5">
             <div class="mb-4">
-              <label class="block text-xs font-semibold text-s500 mb-1.5">设备地址</label>
+              <label
+                class="flex items-center gap-1.5 text-[11px] font-semibold text-s500 uppercase tracking-wider mb-2"
+              >
+                <span class="material-symbols-outlined text-[14px]">dns</span>
+                设备地址
+              </label>
               <input
                 type="text"
-                class="w-full px-3.5 py-2.5 border border-s200 rounded-sm font-mono text-[13px] text-s800 bg-s50 outline-none transition-colors duration-150 focus:border-blue focus:shadow-[0_0_0_3px_rgba(37,99,235,.1)] placeholder:text-s300"
+                class="w-full px-3.5 py-2.5 border border-s200 rounded-lg font-mono text-[13px] text-s800 bg-s50 outline-none transition-all duration-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/10 placeholder:text-s300"
                 id="add-device-addr"
                 placeholder="192.168.1.100:5555"
                 autofocus
               />
-              <span class="block text-[11px] text-s400 mt-1">
-                IP 地址，可附带端口号（默认: 5555）
+              <span class="block text-[11px] text-s400 mt-1.5 pl-0.5">
+                输入 IP 地址，端口可选（默认 5555）
               </span>
             </div>
-            <div class="mb-4">
-              <label class="block text-xs font-semibold text-s500 mb-1.5">名称（可选）</label>
+            <div class="mb-5">
+              <label
+                class="flex items-center gap-1.5 text-[11px] font-semibold text-s500 uppercase tracking-wider mb-2"
+              >
+                <span class="material-symbols-outlined text-[14px]">label</span>
+                备注名称
+                <span class="text-s300 font-normal normal-case tracking-normal">（可选）</span>
+              </label>
               <input
                 type="text"
-                class="w-full px-3.5 py-2.5 border border-s200 rounded-sm font-mono text-[13px] text-s800 bg-s50 outline-none transition-colors duration-150 focus:border-blue focus:shadow-[0_0_0_3px_rgba(37,99,235,.1)] placeholder:text-s300"
+                class="w-full px-3.5 py-2.5 border border-s200 rounded-lg font-mono text-[13px] text-s800 bg-s50 outline-none transition-all duration-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/10 placeholder:text-s300"
                 id="add-device-name"
                 placeholder="我的手机"
               />
             </div>
-            <div class="flex gap-2 justify-end mt-4.5">
+
+            <!-- 错误提示 -->
+            <div
+              class="mb-4 px-3.5 py-2.5 rounded-lg bg-red-50 border border-red-200 text-red-600 text-xs flex items-center gap-2"
+              id="add-device-error"
+              style="display: none"
+            >
+              <span class="material-symbols-outlined text-[14px]">error</span>
+              <span></span>
+            </div>
+
+            <!-- 操作按钮 -->
+            <div class="flex gap-2.5 justify-end">
               <button
-                class="px-5 py-2 rounded-sm font-sans text-xs font-semibold cursor-pointer border border-s200 bg-s50 text-s500 transition-all duration-150 hover:border-s300 hover:bg-s50"
+                class="px-5 py-2 rounded-lg text-xs font-semibold cursor-pointer border border-s200 bg-s50 text-s500 transition-all duration-150 hover:bg-s100 hover:border-s300 active:scale-[0.98]"
                 id="add-device-cancel"
               >
                 取消
               </button>
               <button
-                class="form-btn-primary px-5 py-2 rounded-sm font-sans text-xs font-semibold cursor-pointer border border-blue bg-blue text-white shadow-[0_2px_8px_rgba(37,99,235,.2)] transition-all duration-150 hover:bg-blue-dark hover:border-blue-dark"
+                class="px-6 py-2 rounded-lg text-xs font-semibold cursor-pointer text-white shadow-sm transition-all duration-150 hover:shadow-md active:scale-[0.98]"
+                style="
+                  background: linear-gradient(135deg, #3b82f6, #6366f1);
+                  border: 1px solid rgba(99, 102, 241, 0.3);
+                "
                 id="add-device-submit"
               >
-                连接
+                <span class="flex items-center gap-1.5">
+                  <span class="material-symbols-outlined text-[14px]">link</span>
+                  连接
+                </span>
               </button>
             </div>
-            <div
-              class="mt-2.5 px-3.5 py-2.5 rounded-sm bg-red-light border border-red/30 text-red text-xs"
-              id="add-device-error"
-              style="display: none"
-            ></div>
           </div>
         </div>
       </div>
@@ -573,80 +867,116 @@
       <!-- 设置弹窗 -->
       <div class="modal-mask" id="settings-overlay" style="display: none">
         <div
-          class="w-[820px] h-[580px] bg-white rounded-2xl overflow-hidden border border-s100 shadow-2xl flex flex-col"
+          class="settings-dialog w-[820px] h-[580px] bg-s50 rounded-2xl overflow-hidden border border-s200 shadow-2xl flex flex-col"
         >
           <!-- Header -->
-          <div class="px-5 py-3 flex items-center justify-between border-b border-s100 shrink-0">
-            <div class="flex items-center gap-1.5 text-s800">
-              <span class="material-symbols-outlined text-s400 text-base">settings</span>
-              <h1 class="text-sm font-semibold tracking-tight">设置</h1>
+          <div
+            class="relative overflow-hidden px-5 py-3.5 flex items-center justify-between border-b border-s200 shrink-0"
+            style="
+              background: linear-gradient(
+                135deg,
+                rgba(37, 99, 235, 0.05),
+                rgba(99, 102, 241, 0.03)
+              );
+            "
+          >
+            <div
+              class="absolute top-0 right-0 w-48 h-48 rounded-full opacity-20"
+              style="
+                background: radial-gradient(circle, rgba(37, 99, 235, 0.1), transparent 70%);
+                transform: translate(40%, -60%);
+              "
+            ></div>
+            <div class="flex items-center gap-2.5 text-s800 relative z-10">
+              <div
+                class="w-8 h-8 rounded-lg flex items-center justify-center"
+                style="background: linear-gradient(135deg, #3b82f6, #6366f1)"
+              >
+                <span class="material-symbols-outlined text-white text-[16px]">settings</span>
+              </div>
+              <div>
+                <h1 class="text-sm font-bold tracking-tight text-s900">设置</h1>
+                <p class="text-[10px] text-s400 -mt-px">配置应用参数与连接</p>
+              </div>
             </div>
             <button
-              class="text-s400 hover:text-s600 transition-colors w-7 h-7 flex items-center justify-center rounded-full hover:bg-s100"
+              class="w-7 h-7 flex items-center justify-center rounded-full text-s400 transition-all duration-150 hover:bg-s200/60 hover:text-s600 relative z-10"
               id="settings-close"
             >
-              <span class="material-symbols-outlined text-base">close</span>
+              <span class="material-symbols-outlined text-[18px]">close</span>
             </button>
           </div>
 
           <!-- Body: sidebar + content -->
           <div class="flex flex-1 overflow-hidden">
             <!-- Left Sidebar -->
-            <nav class="w-[160px] shrink-0 border-r border-s100 bg-s50/30 py-2.5 px-2.5 space-y-px">
+            <nav class="w-[170px] shrink-0 border-r border-s200 bg-s50 py-3 px-2.5 space-y-0.5">
               <button
                 data-settings-tab="general"
-                class="settings-nav-item active w-full flex items-center gap-2 px-2.5 py-[7px] rounded-md text-left text-xs transition-all"
+                class="settings-nav-item active w-full flex items-center gap-2.5 px-3 py-[9px] rounded-lg text-left text-[12px] transition-all"
               >
-                <span class="material-symbols-outlined icon-sm text-[16px]">tune</span>
+                <span class="material-symbols-outlined text-[17px]">tune</span>
                 通用
               </button>
               <button
                 data-settings-tab="mqtt"
-                class="settings-nav-item w-full flex items-center gap-2 px-2.5 py-[7px] rounded-md text-left text-xs transition-all"
+                class="settings-nav-item w-full flex items-center gap-2.5 px-3 py-[9px] rounded-lg text-left text-[12px] transition-all"
               >
-                <span class="material-symbols-outlined icon-sm text-[16px]">cloud_sync</span>
-                MQTT 连接
+                <span class="material-symbols-outlined text-[17px]">cloud_sync</span>
+                MQTT
               </button>
               <button
                 data-settings-tab="api"
-                class="settings-nav-item w-full flex items-center gap-2 px-2.5 py-[7px] rounded-md text-left text-xs transition-all"
+                class="settings-nav-item w-full flex items-center gap-2.5 px-3 py-[9px] rounded-lg text-left text-[12px] transition-all"
               >
-                <span class="material-symbols-outlined icon-sm text-[16px]">api</span>
-                API 服务
+                <span class="material-symbols-outlined text-[17px]">api</span>
+                ENDPOINT
               </button>
               <button
                 data-settings-tab="about"
-                class="settings-nav-item w-full flex items-center gap-2 px-2.5 py-[7px] rounded-md text-left text-xs transition-all"
+                class="settings-nav-item w-full flex items-center gap-2.5 px-3 py-[9px] rounded-lg text-left text-[12px] transition-all"
               >
-                <span class="material-symbols-outlined icon-sm text-[16px]">info</span>
+                <span class="material-symbols-outlined text-[17px]">info</span>
                 关于
               </button>
             </nav>
 
             <!-- Right Content -->
-            <div class="flex-1 overflow-y-auto">
+            <div class="flex-1 overflow-y-auto bg-s100/30">
               <!-- Tab: General -->
-              <div class="settings-tab-content px-6 py-5 space-y-4" data-tab-id="general">
-                <h2 class="text-sm font-bold text-s800">通用</h2>
-                <hr class="border-s100" />
-                <div class="space-y-3.5">
-                  <!-- Theme -->
-                  <div class="flex items-center justify-between gap-6">
-                    <div class="min-w-0">
-                      <div class="text-xs font-semibold text-s700">主题</div>
-                      <div class="text-[11px] text-s400 mt-px">选择应用的外观主题</div>
+              <div class="settings-tab-content px-6 py-5 space-y-5" data-tab-id="general">
+                <div class="flex items-center gap-2 mb-1">
+                  <span class="material-symbols-outlined text-blue-500 text-[18px]">tune</span>
+                  <h2 class="text-[13px] font-bold text-s800">通用设置</h2>
+                </div>
+
+                <!-- Theme Card -->
+                <div class="settings-card rounded-xl border border-s200 bg-white overflow-hidden">
+                  <div class="px-5 py-4 flex items-center justify-between">
+                    <div class="flex items-center gap-3">
+                      <div
+                        class="w-9 h-9 rounded-lg bg-amber-50 border border-amber-100 flex items-center justify-center"
+                      >
+                        <span class="material-symbols-outlined text-amber-500 text-[18px]">
+                          palette
+                        </span>
+                      </div>
+                      <div>
+                        <div class="text-[12px] font-semibold text-s800">外观主题</div>
+                        <div class="text-[11px] text-s400 mt-px">选择应用的视觉风格</div>
+                      </div>
                     </div>
-                    <div class="flex shrink-0 bg-s100 rounded-md p-0.5 gap-px" id="theme-switcher">
+                    <div class="flex shrink-0 bg-s100 rounded-lg p-0.5 gap-px" id="theme-switcher">
                       <button
                         data-theme="light"
-                        class="theme-opt px-3 py-1 text-[11px] font-medium rounded transition-all flex items-center gap-1"
+                        class="theme-opt px-3.5 py-1.5 text-[11px] font-medium rounded-md transition-all flex items-center gap-1"
                       >
                         <span class="material-symbols-outlined text-[14px]">light_mode</span>
                         浅色
                       </button>
                       <button
                         data-theme="dark"
-                        class="theme-opt px-3 py-1 text-[11px] font-medium rounded transition-all flex items-center gap-1"
+                        class="theme-opt px-3.5 py-1.5 text-[11px] font-medium rounded-md transition-all flex items-center gap-1"
                       >
                         <span class="material-symbols-outlined text-[14px]">dark_mode</span>
                         深色
@@ -657,146 +987,227 @@
               </div>
 
               <!-- Tab: MQTT -->
-              <div class="settings-tab-content hidden px-6 py-5 space-y-4" data-tab-id="mqtt">
-                <h2 class="text-sm font-bold text-s800">MQTT 连接</h2>
-                <hr class="border-s100" />
+              <div class="settings-tab-content hidden px-6 py-5 space-y-5" data-tab-id="mqtt">
+                <div class="flex items-center gap-2 mb-1">
+                  <span class="material-symbols-outlined text-blue-500 text-[18px]">
+                    cloud_sync
+                  </span>
+                  <h2 class="text-[13px] font-bold text-s800">MQTT 连接</h2>
+                </div>
 
-                <div class="space-y-3.5">
-                  <!-- Host + Port -->
-                  <div class="flex items-center justify-between gap-6">
-                    <div class="min-w-0">
-                      <div class="text-xs font-semibold text-s700">服务器地址</div>
-                      <div class="text-[11px] text-s400 mt-px">Broker 主机和端口</div>
+                <!-- Connection Card -->
+                <div class="settings-card rounded-xl border border-s200 bg-white overflow-hidden">
+                  <div class="divide-y divide-s100">
+                    <!-- Host + Port -->
+                    <div class="px-5 py-3.5 flex items-center justify-between gap-4">
+                      <div class="flex items-center gap-3 min-w-0">
+                        <div
+                          class="w-8 h-8 rounded-lg bg-blue-50 border border-blue-100 flex items-center justify-center shrink-0"
+                        >
+                          <span class="material-symbols-outlined text-blue-500 text-[15px]">
+                            dns
+                          </span>
+                        </div>
+                        <div>
+                          <div class="text-[12px] font-semibold text-s800">服务器地址</div>
+                          <div class="text-[10px] text-s400 mt-px">Broker 主机和端口</div>
+                        </div>
+                      </div>
+                      <div class="flex gap-1.5 shrink-0">
+                        <input
+                          type="text"
+                          id="set-mqtt-host"
+                          placeholder="39.98.170.208"
+                          class="settings-input w-[190px]"
+                        />
+                        <input
+                          type="number"
+                          id="set-mqtt-port"
+                          placeholder="30002"
+                          class="settings-input w-[68px]"
+                        />
+                      </div>
                     </div>
-                    <div class="flex gap-1.5 shrink-0">
+
+                    <!-- Client ID -->
+                    <div class="px-5 py-3.5 flex items-center justify-between gap-4">
+                      <div class="flex items-center gap-3 min-w-0">
+                        <div
+                          class="w-8 h-8 rounded-lg bg-indigo-50 border border-indigo-100 flex items-center justify-center shrink-0"
+                        >
+                          <span class="material-symbols-outlined text-indigo-500 text-[15px]">
+                            fingerprint
+                          </span>
+                        </div>
+                        <div>
+                          <div class="text-[12px] font-semibold text-s800">客户端 ID</div>
+                          <div class="text-[10px] text-s400 mt-px">唯一标识此客户端</div>
+                        </div>
+                      </div>
                       <input
                         type="text"
-                        id="set-mqtt-host"
-                        placeholder="39.98.170.208"
-                        class="w-[200px] bg-s50 border border-s200 rounded-md px-2.5 py-1.5 text-s700 focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 transition-all font-mono text-xs outline-none"
+                        id="set-mqtt-client-id"
+                        placeholder="automatex-001"
+                        class="settings-input w-[260px] shrink-0"
                       />
+                    </div>
+
+                    <!-- Username -->
+                    <div class="px-5 py-3.5 flex items-center justify-between gap-4">
+                      <div class="flex items-center gap-3 min-w-0">
+                        <div
+                          class="w-8 h-8 rounded-lg bg-emerald-50 border border-emerald-100 flex items-center justify-center shrink-0"
+                        >
+                          <span class="material-symbols-outlined text-emerald-500 text-[15px]">
+                            person
+                          </span>
+                        </div>
+                        <div>
+                          <div class="text-[12px] font-semibold text-s800">用户名</div>
+                          <div class="text-[10px] text-s400 mt-px">认证用户名（可选）</div>
+                        </div>
+                      </div>
                       <input
-                        type="number"
-                        id="set-mqtt-port"
-                        placeholder="30002"
-                        class="w-[72px] bg-s50 border border-s200 rounded-md px-2.5 py-1.5 text-s700 focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 transition-all font-mono text-xs outline-none"
+                        type="text"
+                        id="set-mqtt-username"
+                        placeholder="用户名"
+                        class="settings-input w-[260px] shrink-0"
+                      />
+                    </div>
+
+                    <!-- Password -->
+                    <div class="px-5 py-3.5 flex items-center justify-between gap-4">
+                      <div class="flex items-center gap-3 min-w-0">
+                        <div
+                          class="w-8 h-8 rounded-lg bg-rose-50 border border-rose-100 flex items-center justify-center shrink-0"
+                        >
+                          <span class="material-symbols-outlined text-rose-500 text-[15px]">
+                            lock
+                          </span>
+                        </div>
+                        <div>
+                          <div class="text-[12px] font-semibold text-s800">密码</div>
+                          <div class="text-[10px] text-s400 mt-px">认证密码（可选）</div>
+                        </div>
+                      </div>
+                      <input
+                        type="password"
+                        id="set-mqtt-password"
+                        placeholder="••••••"
+                        class="settings-input w-[260px] shrink-0"
                       />
                     </div>
                   </div>
+                </div>
 
-                  <hr class="border-s50" />
-
-                  <!-- Client ID -->
-                  <div class="flex items-center justify-between gap-6">
-                    <div class="min-w-0">
-                      <div class="text-xs font-semibold text-s700">客户端 ID</div>
-                      <div class="text-[11px] text-s400 mt-px">唯一标识此客户端</div>
-                    </div>
-                    <input
-                      type="text"
-                      id="set-mqtt-client-id"
-                      placeholder="automatex-001"
-                      class="w-[280px] shrink-0 bg-s50 border border-s200 rounded-md px-2.5 py-1.5 text-s700 focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 transition-all font-mono text-xs outline-none"
-                    />
-                  </div>
-
-                  <hr class="border-s50" />
-
-                  <!-- Username -->
-                  <div class="flex items-center justify-between gap-6">
-                    <div class="min-w-0">
-                      <div class="text-xs font-semibold text-s700">用户名</div>
-                      <div class="text-[11px] text-s400 mt-px">认证用户名（可选）</div>
-                    </div>
-                    <input
-                      type="text"
-                      id="set-mqtt-username"
-                      placeholder="用户名"
-                      class="w-[280px] shrink-0 bg-s50 border border-s200 rounded-md px-2.5 py-1.5 text-s700 focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 transition-all text-xs outline-none"
-                    />
-                  </div>
-
-                  <hr class="border-s50" />
-
-                  <!-- Password -->
-                  <div class="flex items-center justify-between gap-6">
-                    <div class="min-w-0">
-                      <div class="text-xs font-semibold text-s700">密码</div>
-                      <div class="text-[11px] text-s400 mt-px">认证密码（可选）</div>
-                    </div>
-                    <input
-                      type="password"
-                      id="set-mqtt-password"
-                      placeholder="密码"
-                      class="w-[280px] shrink-0 bg-s50 border border-s200 rounded-md px-2.5 py-1.5 text-s700 focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 transition-all text-xs outline-none"
-                    />
-                  </div>
-
-                  <hr class="border-s50" />
-
-                  <!-- Test Connection -->
-                  <div class="flex items-center justify-between">
-                    <div class="flex items-center gap-1.5">
-                      <span class="relative flex h-1.5 w-1.5">
+                <!-- Connection Status Card -->
+                <div class="settings-card rounded-xl border border-s200 bg-white overflow-hidden">
+                  <div class="px-5 py-3.5 flex items-center justify-between">
+                    <div class="flex items-center gap-2.5">
+                      <span class="relative flex h-2 w-2">
                         <span
                           class="animate-ping absolute inline-flex h-full w-full rounded-full bg-gray-300 opacity-75"
                           id="mqtt-ping"
                         ></span>
                         <span
-                          class="relative inline-flex rounded-full h-1.5 w-1.5 bg-gray-300"
+                          class="relative inline-flex rounded-full h-2 w-2 bg-gray-300"
                           id="mqtt-dot"
                         ></span>
                       </span>
-                      <span class="text-[11px] font-medium text-s400" id="mqtt-status-text">
+                      <span class="text-[12px] font-medium text-s500" id="mqtt-status-text">
                         未连接
                       </span>
                     </div>
-                    <button
-                      class="px-4 py-1 text-[11px] font-bold rounded-md border border-blue-200 text-blue-600 bg-blue-50/80 hover:bg-blue-100 hover:border-blue-300 transition-all active:scale-95 disabled:opacity-40"
-                      id="btn-mqtt-connect"
-                    >
-                      测试连接
-                    </button>
-                    <button id="btn-mqtt-disconnect" class="hidden"></button>
+                    <div class="flex items-center gap-2">
+                      <button
+                        class="px-4 py-1.5 text-[11px] font-bold rounded-lg border border-blue-200 text-blue-600 bg-blue-50/80 hover:bg-blue-100 hover:border-blue-300 transition-all active:scale-[0.97] disabled:opacity-40"
+                        id="btn-mqtt-connect"
+                      >
+                        测试连接
+                      </button>
+                      <button id="btn-mqtt-disconnect" class="hidden"></button>
+                    </div>
                   </div>
                 </div>
               </div>
 
               <!-- Tab: API -->
-              <div class="settings-tab-content hidden px-6 py-5 space-y-4" data-tab-id="api">
-                <h2 class="text-sm font-bold text-s800">API 服务</h2>
-                <hr class="border-s100" />
-                <div class="space-y-3.5">
-                  <div class="flex items-center justify-between gap-6">
-                    <div class="min-w-0">
-                      <div class="text-xs font-semibold text-s700">服务端地址</div>
-                      <div class="text-[11px] text-s400 mt-px">为空则使用本地 Mock 模式</div>
+              <div class="settings-tab-content hidden px-6 py-5 space-y-5" data-tab-id="api">
+                <div class="flex items-center gap-2 mb-1">
+                  <span class="material-symbols-outlined text-violet-500 text-[18px]">api</span>
+                  <h2 class="text-[13px] font-bold text-s800">API 服务</h2>
+                </div>
+
+                <div class="settings-card rounded-xl border border-s200 bg-white overflow-hidden">
+                  <div class="px-5 py-4 flex items-center justify-between gap-4">
+                    <div class="flex items-center gap-3 min-w-0">
+                      <div
+                        class="w-9 h-9 rounded-lg bg-violet-50 border border-violet-100 flex items-center justify-center shrink-0"
+                      >
+                        <span class="material-symbols-outlined text-violet-500 text-[18px]">
+                          cloud
+                        </span>
+                      </div>
+                      <div>
+                        <div class="text-[12px] font-semibold text-s800">服务端地址</div>
+                        <div class="text-[10px] text-s400 mt-px">为空则使用本地 Mock 模式</div>
+                      </div>
                     </div>
                     <input
                       type="text"
                       id="set-api-base-url"
                       placeholder="http://your-server:8080"
-                      class="w-[280px] shrink-0 bg-s50 border border-s200 rounded-md px-2.5 py-1.5 text-s700 focus:ring-2 focus:ring-violet-500/10 focus:border-violet-500 transition-all font-mono text-xs outline-none"
+                      class="settings-input w-[260px] shrink-0"
                     />
                   </div>
                 </div>
               </div>
 
               <!-- Tab: About -->
-              <div class="settings-tab-content hidden px-6 py-5 space-y-4" data-tab-id="about">
-                <h2 class="text-sm font-bold text-s800">关于</h2>
-                <hr class="border-s100" />
-                <div class="space-y-3.5">
-                  <div class="flex items-center justify-between">
-                    <div>
-                      <div class="text-xs font-semibold text-s700">版本</div>
-                      <div class="text-[11px] text-s400 mt-px">当前应用版本号</div>
+              <div class="settings-tab-content hidden px-6 py-5 space-y-5" data-tab-id="about">
+                <div class="flex items-center gap-2 mb-1">
+                  <span class="material-symbols-outlined text-s400 text-[18px]">info</span>
+                  <h2 class="text-[13px] font-bold text-s800">关于</h2>
+                </div>
+
+                <div class="settings-card rounded-xl border border-s200 bg-white overflow-hidden">
+                  <div class="divide-y divide-s100">
+                    <div class="px-5 py-3.5 flex items-center justify-between">
+                      <div class="flex items-center gap-3">
+                        <div
+                          class="w-8 h-8 rounded-lg bg-blue-50 border border-blue-100 flex items-center justify-center"
+                        >
+                          <span class="material-symbols-outlined text-blue-500 text-[15px]">
+                            tag
+                          </span>
+                        </div>
+                        <div>
+                          <div class="text-[12px] font-semibold text-s800">版本</div>
+                          <div class="text-[10px] text-s400 mt-px">当前应用版本号</div>
+                        </div>
+                      </div>
+                      <span
+                        class="font-mono text-[11px] font-semibold text-s600 bg-s100 border border-s200 rounded-md px-3 py-1"
+                      >
+                        v0.1.0
+                      </span>
                     </div>
-                    <span
-                      class="font-mono text-xs text-s700 bg-s50 border border-s200 rounded-md px-2.5 py-1"
-                    >
-                      0.1.0
-                    </span>
+                    <div class="px-5 py-3.5 flex items-center justify-between">
+                      <div class="flex items-center gap-3">
+                        <div
+                          class="w-8 h-8 rounded-lg bg-s100 border border-s200 flex items-center justify-center"
+                        >
+                          <span class="material-symbols-outlined text-s500 text-[15px]">code</span>
+                        </div>
+                        <div>
+                          <div class="text-[12px] font-semibold text-s800">技术栈</div>
+                          <div class="text-[10px] text-s400 mt-px">核心框架和运行时</div>
+                        </div>
+                      </div>
+                      <span class="text-[11px] text-s500 font-medium">
+                        Tauri 2 · Rust · TypeScript
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -804,19 +1215,31 @@
           </div>
 
           <!-- Footer -->
-          <div class="px-5 py-3 bg-s50 flex justify-end gap-2 border-t border-s100 shrink-0">
-            <button
-              class="px-5 py-1.5 text-xs font-medium text-s600 border border-s300 rounded-md hover:bg-white transition-all"
-              id="settings-cancel"
-            >
-              取消
-            </button>
-            <button
-              class="bg-blue-500 hover:bg-blue-600 text-white px-6 py-1.5 text-xs font-semibold rounded-md shadow-sm transition-all active:scale-[0.98]"
-              id="settings-save"
-            >
-              保存
-            </button>
+          <div
+            class="px-5 py-3 bg-s50 flex items-center justify-between gap-2 border-t border-s200 shrink-0"
+          >
+            <p class="text-[10px] text-s300">修改后点击保存生效</p>
+            <div class="flex gap-2">
+              <button
+                class="px-5 py-1.5 text-xs font-medium text-s500 border border-s300 rounded-lg hover:bg-s100 transition-all active:scale-[0.98]"
+                id="settings-cancel"
+              >
+                取消
+              </button>
+              <button
+                class="text-white px-6 py-1.5 text-xs font-semibold rounded-lg shadow-sm transition-all active:scale-[0.98] hover:shadow-md"
+                style="
+                  background: linear-gradient(135deg, #3b82f6, #6366f1);
+                  border: 1px solid rgba(99, 102, 241, 0.3);
+                "
+                id="settings-save"
+              >
+                <span class="flex items-center gap-1">
+                  <span class="material-symbols-outlined text-[14px]">save</span>
+                  保存
+                </span>
+              </button>
+            </div>
           </div>
         </div>
       </div>
