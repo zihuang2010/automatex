@@ -557,7 +557,7 @@ impl TaskEngine {
                         "message": "设备风控触发，任务已停止，设备已标记"
                     }),
                 );
-                let _ = self.app_handle.emit("devices-changed", ());
+                let _ = self.app_handle.emit(crate::constants::tauri_event::DEVICES_CHANGED, ());
                 true
             },
             TickEffect::None => false,
@@ -641,7 +641,7 @@ impl TaskEngine {
         }
 
         if kicked > 0 {
-            let _ = self.app_handle.emit("devices-changed", ());
+            let _ = self.app_handle.emit(crate::constants::tauri_event::DEVICES_CHANGED, ());
             self.emit_update().await;
         }
         kicked

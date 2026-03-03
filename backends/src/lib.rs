@@ -69,8 +69,8 @@ async fn add_device(
             hw_serial: entry.serial.clone(),
             name: entry.name.clone(),
             device_type: match entry.device_type {
-                connection::DeviceType::Usb => "usb".to_string(),
-                connection::DeviceType::Wifi => "wifi".to_string(),
+                connection::DeviceType::Usb => constants::device_type::USB.to_string(),
+                connection::DeviceType::Wifi => constants::device_type::WIFI.to_string(),
             },
             address: entry.address.clone(),
             state: constants::device_state::OFFLINE.to_string(),
@@ -264,7 +264,7 @@ async fn sync_tasks_by_phones(
     eprintln!("[sync] 同步完成: {} 个手机号, {} 个任务", bound_phones.len(), count);
 
     Ok(serde_json::json!({
-        "status": "ok",
+        "status": constants::response::OK,
         "phones": bound_phones.len(),
         "tasks": count,
     }))
@@ -376,7 +376,7 @@ async fn clear_task_progress(
 ) -> Result<String, String> {
     state.db.clear_task_progress(&task_id).await;
     state.db.delete_task_state(&task_id).await;
-    Ok("ok".to_string())
+    Ok(constants::response::OK.to_string())
 }
 
 // ─── 后台监控线程 ──────────────────────────────────────────────
@@ -406,8 +406,13 @@ fn parse_battery_field(raw: &str, field: &str) -> Option<i32> {
 }
 
 fn fetch_device_row(serial: &str, state: &str) -> DeviceRow {
-    let device_type = if serial.contains(':') { "wifi" } else { "usb" };
-    let address = if device_type == "wifi" { Some(serial.to_string()) } else { None };
+    let device_type = if serial.contains(':') {
+        constants::device_type::WIFI
+    } else {
+        constants::device_type::USB
+    };
+    let address =
+        if device_type == constants::device_type::WIFI { Some(serial.to_string()) } else { None };
 
     let raw = connection::run_adb_timed(
         connection::adb_command().args(["-s", serial, "shell", BATCH_PROPS_CMD]),
@@ -562,7 +567,8 @@ fn spawn_device_monitor(
                 }
 
                 if !db_block_on(&rt_cb, db_cb.device_exists(&serial))
-                    || (state == "Device" && db_block_on(&rt_cb, db_cb.needs_prop_refresh(&serial)))
+                    || (state == constants::device_state::DEVICE
+                        && db_block_on(&rt_cb, db_cb.needs_prop_refresh(&serial)))
                 {
                     let acquired = PROP_FETCH_THREADS.fetch_update(
                         Ordering::SeqCst,
@@ -598,7 +604,8 @@ fn spawn_device_monitor(
                                         }
                                     }
                                     db_block_on(&rt_inner, db_inner.upsert_device(&row));
-                                    let _ = handle_inner.emit("devices-changed", ());
+                                    let _ = handle_inner
+                                        .emit(constants::tauri_event::DEVICES_CHANGED, ());
                                 },
                                 Err(_) => {
                                     eprintln!("[monitor] fetch_device_row panic: {}", serial);
@@ -613,7 +620,7 @@ fn spawn_device_monitor(
                     db_block_on(&rt_cb, db_cb.update_device_state(&serial, state));
                 }
 
-                let _ = handle_cb.emit("devices-changed", ());
+                let _ = handle_cb.emit(constants::tauri_event::DEVICES_CHANGED, ());
                 Ok(())
             })
         }));
@@ -645,7 +652,7 @@ fn spawn_device_monitor(
 
         let devices = db_block_on(&rt_battery, db_battery.load_all_devices());
         let online_devices: Vec<&DeviceRow> =
-            devices.iter().filter(|dev| dev.state == "Device").collect();
+            devices.iter().filter(|dev| dev.state == constants::device_state::DEVICE).collect();
 
         if online_devices.is_empty() {
             continue;
@@ -671,13 +678,13 @@ fn spawn_device_monitor(
         }
 
         if changed.load(Ordering::Relaxed) {
-            let _ = handle_battery.emit("devices-changed", ());
+            let _ = handle_battery.emit(constants::tauri_event::DEVICES_CHANGED, ());
         }
 
         let wifi_devices: Vec<String> = devices
             .iter()
             .filter(|d| {
-                d.device_type == "wifi"
+                d.device_type == constants::device_type::WIFI
                     && d.state == constants::device_state::OFFLINE
                     && d.serial.contains(':')
             })
@@ -736,7 +743,7 @@ async fn engine_start_task(
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
     state.engine()?.start_task(&task_id).await?;
-    Ok("ok".into())
+    Ok(constants::response::OK.into())
 }
 
 #[tauri::command]
@@ -745,7 +752,7 @@ async fn engine_pause_task(
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
     state.engine()?.pause_task(&task_id).await?;
-    Ok("ok".into())
+    Ok(constants::response::OK.into())
 }
 
 #[tauri::command]
@@ -754,7 +761,7 @@ async fn engine_resume_task(
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
     state.engine()?.resume_task(&task_id).await?;
-    Ok("ok".into())
+    Ok(constants::response::OK.into())
 }
 
 #[tauri::command]
@@ -763,7 +770,7 @@ async fn engine_stop_task(
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
     state.engine()?.stop_task(&task_id).await?;
-    Ok("ok".into())
+    Ok(constants::response::OK.into())
 }
 
 #[tauri::command]
@@ -772,7 +779,7 @@ async fn engine_retry_task(
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
     state.engine()?.retry_task(&task_id).await?;
-    Ok("ok".into())
+    Ok(constants::response::OK.into())
 }
 
 #[tauri::command]
@@ -806,7 +813,7 @@ async fn flag_device(
     app: tauri::AppHandle,
 ) -> Result<String, String> {
     state.db.flag_device(&serial).await;
-    let _ = app.emit("devices-changed", ());
+    let _ = app.emit(constants::tauri_event::DEVICES_CHANGED, ());
     Ok(format!("设备 {} 已标记风控", serial))
 }
 
@@ -817,7 +824,7 @@ async fn unflag_device(
     app: tauri::AppHandle,
 ) -> Result<String, String> {
     state.db.unflag_device(&serial).await;
-    let _ = app.emit("devices-changed", ());
+    let _ = app.emit(constants::tauri_event::DEVICES_CHANGED, ());
     Ok(format!("设备 {} 已解除风控标记", serial))
 }
 
@@ -954,7 +961,8 @@ pub fn run() {
                                 );
                                 let n = eng.handle_device_kick(resp.to_remove).await;
                                 eprintln!("[startup] 已清理 {} 台设备", n);
-                                let _ = app_handle.emit("devices-changed", ());
+                                let _ =
+                                    app_handle.emit(constants::tauri_event::DEVICES_CHANGED, ());
                             }
                         },
                         Err(e) => {
@@ -967,7 +975,7 @@ pub fn run() {
             // ── MQTT 事件监听 ──
             {
                 let engine_kick = Arc::clone(&engine);
-                app.listen("mqtt-device-kick", move |event| {
+                app.listen(constants::tauri_event::MQTT_DEVICE_KICK, move |event| {
                     let engine = Arc::clone(&engine_kick);
                     tauri::async_runtime::spawn(async move {
                         let Some(eng) = engine.get() else {
@@ -991,7 +999,7 @@ pub fn run() {
                 });
 
                 let engine_reload = Arc::clone(&engine);
-                app.listen("mqtt-task-reload", move |event| {
+                app.listen(constants::tauri_event::MQTT_TASK_RELOAD, move |event| {
                     let engine = Arc::clone(&engine_reload);
                     tauri::async_runtime::spawn(async move {
                         let Some(eng) = engine.get() else {
@@ -1011,7 +1019,7 @@ pub fn run() {
             // ── MQTT 手机号解绑监听 ──
             {
                 let engine_unbind = Arc::clone(&engine);
-                app.listen("mqtt-phones-unbind", move |event| {
+                app.listen(constants::tauri_event::MQTT_PHONES_UNBIND, move |event| {
                     let engine = Arc::clone(&engine_unbind);
                     tauri::async_runtime::spawn(async move {
                         let Some(eng) = engine.get() else {

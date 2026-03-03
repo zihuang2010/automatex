@@ -31,6 +31,32 @@ pub mod device_state {
     pub const UNKNOWN: &str = "unknown";
 }
 
+/// 设备类型
+pub mod device_type {
+    pub const WIFI: &str = "wifi";
+    pub const USB: &str = "usb";
+}
+
+/// Tauri 前后端事件名（emit / listen）
+pub mod tauri_event {
+    pub const DEVICES_CHANGED: &str = "devices-changed";
+    pub const MQTT_STATUS: &str = "mqtt-status";
+    pub const MQTT_DEVICE_KICK: &str = "mqtt-device-kick";
+    pub const MQTT_TASK_RELOAD: &str = "mqtt-task-reload";
+    pub const MQTT_PHONES_UNBIND: &str = "mqtt-phones-unbind";
+}
+
+/// MQTT 状态推送到前端的字符串值
+pub mod mqtt_emit_status {
+    pub const CONNECTED: &str = "connected";
+    pub const DISCONNECTED: &str = "disconnected";
+}
+
+/// 通用响应字面量
+pub mod response {
+    pub const OK: &str = "ok";
+}
+
 /// 同步状态（a_task_progress.sync_status）
 pub mod sync_status {
     pub const PENDING: &str = "pending";

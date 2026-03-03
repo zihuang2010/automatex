@@ -1,4 +1,4 @@
-use crate::constants::mqtt_topic;
+use crate::constants::{mqtt_emit_status, mqtt_topic, tauri_event};
 use rumqttc::{AsyncClient, Event, Incoming, LastWill, MqttOptions, QoS};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -121,7 +121,7 @@ impl MqttManager {
                                 match &event {
                                     Event::Incoming(Incoming::ConnAck(_)) => {
                                         *status.lock().await = MqttStatus::Connected;
-                                        let _ = app_handle.emit("mqtt-status", "connected");
+                                        let _ = app_handle.emit(tauri_event::MQTT_STATUS, mqtt_emit_status::CONNECTED);
 
                                         // 更新连接时间戳
                                         connect_ts = crate::constants::now_unix();
@@ -152,7 +152,7 @@ impl MqttManager {
                                     }
                                     Event::Incoming(Incoming::Disconnect) => {
                                         *status.lock().await = MqttStatus::Disconnected;
-                                        let _ = app_handle.emit("mqtt-status", "disconnected");
+                                        let _ = app_handle.emit(tauri_event::MQTT_STATUS, mqtt_emit_status::DISCONNECTED);
                                     }
                                     _ => {}
                                 }
@@ -160,7 +160,7 @@ impl MqttManager {
                             Err(e) => {
                                 let err_msg = format!("{}", e);
                                 *status.lock().await = MqttStatus::Error(err_msg.clone());
-                                let _ = app_handle.emit("mqtt-status", format!("error:{}", err_msg));
+                                let _ = app_handle.emit(tauri_event::MQTT_STATUS, format!("error:{}", err_msg));
                                 eprintln!("[mqtt] 连接错误，{}s 后重试: {}", backoff_secs, err_msg);
                                 tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
                                 backoff_secs = (backoff_secs * 2).min(60); // 指数退避，最大 60s
@@ -339,19 +339,19 @@ fn route_message(topic: &str, payload: &str, app_handle: &tauri::AppHandle, conn
     if topic.ends_with(mqtt_topic::DOWN_DEVICE_KICK) {
         // ── 踢设备下线 ──
         eprintln!("[mqtt] 收到踢设备指令: {}", payload);
-        let _ = app_handle.emit("mqtt-device-kick", json_value);
+        let _ = app_handle.emit(tauri_event::MQTT_DEVICE_KICK, json_value);
     } else if topic.ends_with(mqtt_topic::DOWN_TASK_RELOAD) {
         // ── 任务数据变更 ──
         eprintln!("[mqtt] 收到任务变更通知: {}", payload);
-        let _ = app_handle.emit("mqtt-task-reload", json_value);
+        let _ = app_handle.emit(tauri_event::MQTT_TASK_RELOAD, json_value);
     } else if topic.ends_with(mqtt_topic::DOWN_PHONES_UNBIND) {
         // ── 手机号被抢占/解绑 ──
         eprintln!("[mqtt] 收到手机号解绑通知: {}", payload);
-        let _ = app_handle.emit("mqtt-phones-unbind", json_value);
+        let _ = app_handle.emit(tauri_event::MQTT_PHONES_UNBIND, json_value);
     } else if topic.contains(mqtt_topic::BROADCAST_TASK_UPDATE) {
         // ── 全局任务广播 ──
         eprintln!("[mqtt] 收到全局任务广播: {}", payload);
-        let _ = app_handle.emit("mqtt-task-reload", json_value);
+        let _ = app_handle.emit(tauri_event::MQTT_TASK_RELOAD, json_value);
     } else {
         // 未知 Topic，转发到通用事件
         let _ = app_handle.emit(
