@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+
 import { $, showToast } from './utils';
 
 /* ===== Settings Panel ===== */
@@ -29,9 +30,6 @@ function initThemeSwitcher() {
       }
       localStorage.setItem('theme', theme!);
       syncThemeSwitcher();
-      // 同步 header 图标
-      const icon = document.getElementById('theme-icon');
-      if (icon) icon.textContent = theme === 'dark' ? 'light_mode' : 'dark_mode';
     });
   });
 }

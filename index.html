@@ -591,6 +591,62 @@
             </div>
           </div>
           <div class="flex items-center gap-1">
+            <!-- 账号同步按钮 + 下拉面板 -->
+            <div class="relative" id="account-panel-wrap">
+              <button
+                id="btn-account-sync"
+                class="hover:bg-s100 text-s500 hover:text-s700 flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition-all"
+              >
+                <span
+                  class="material-symbols-outlined sync-icon-spin text-[15px] text-emerald-500"
+                  style="font-variation-settings: 'FILL' 1"
+                >
+                  sync
+                </span>
+                <span id="account-sync-label">已同步 0 个账号</span>
+                <span
+                  class="material-symbols-outlined text-s300 text-[14px] transition-transform"
+                  id="account-chevron"
+                >
+                  expand_more
+                </span>
+              </button>
+
+              <!-- 下拉面板 -->
+              <div
+                id="account-panel"
+                class="border-s200 absolute top-full right-0 z-50 mt-2 hidden w-[320px] overflow-hidden rounded-xl border bg-white shadow-xl"
+                style="animation: accountPanelIn 0.18s ease-out"
+              >
+                <!-- 面板头部 -->
+                <div class="border-s100 flex items-center justify-between border-b px-4 py-3">
+                  <h3 class="text-s800 text-[13px] font-bold tracking-tight">账号同步管理</h3>
+                  <span
+                    class="text-s400 bg-s100 rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                    id="account-active-count"
+                  >
+                    0 个活动账号
+                  </span>
+                </div>
+
+                <!-- 账号列表 -->
+                <div class="max-h-[240px] overflow-y-auto" id="account-list">
+                  <div class="text-s400 px-4 py-6 text-center text-xs">暂无已同步账号</div>
+                </div>
+
+                <!-- 底部操作 -->
+                <div class="border-s100 border-t px-4 py-3">
+                  <button
+                    id="btn-manage-accounts"
+                    class="flex w-full items-center justify-center gap-1.5 rounded-lg bg-gradient-to-r from-blue-500 to-indigo-500 px-4 py-2 text-[12px] font-bold text-white shadow-sm transition-all hover:shadow-md active:scale-[0.98]"
+                  >
+                    <span class="material-symbols-outlined text-[16px]">add</span>
+                    添加账号
+                  </button>
+                </div>
+              </div>
+            </div>
+
             <button
               id="btn-settings"
               class="hover:bg-s100 text-s400 hover:text-s600 flex h-6 w-6 items-center justify-center rounded-md transition-colors"
@@ -732,6 +788,96 @@
             </div>
           </aside>
         </main>
+      </div>
+
+      <!-- 添加同步账号对话框 -->
+      <div class="modal-mask" id="add-account-modal" style="display: none">
+        <div
+          class="border-s200 relative w-full max-w-[480px] overflow-hidden rounded-2xl border bg-white shadow-2xl"
+        >
+          <!-- 关闭按钮 -->
+          <button
+            id="add-account-close"
+            class="text-s400 hover:bg-s200/60 hover:text-s600 absolute top-4 right-4 z-10 flex h-7 w-7 items-center justify-center rounded-full transition-all duration-150"
+          >
+            <span class="material-symbols-outlined text-[18px]">close</span>
+          </button>
+
+          <!-- 顶部渐变区域（与过渡页风格协调） -->
+          <div
+            class="border-s100 relative overflow-hidden border-b bg-gradient-to-b from-blue-50 to-white px-8 pt-10 pb-6"
+          >
+            <div
+              class="bg-blue/5 absolute top-0 right-0 -mt-16 -mr-16 h-48 w-48 rounded-full blur-3xl"
+            ></div>
+            <div class="relative z-10 flex flex-col items-center">
+              <div
+                class="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-blue-100 bg-white shadow-sm"
+              >
+                <span
+                  class="material-symbols-outlined text-blue text-2xl"
+                  style="font-variation-settings: 'FILL' 1"
+                >
+                  group_add
+                </span>
+              </div>
+              <h2 class="text-s800 font-mono text-lg font-bold tracking-tight">添加同步账号</h2>
+              <p class="text-s400 mt-1 text-[12px] tracking-wide">请输入需要同步的任务账号信息</p>
+            </div>
+          </div>
+
+          <!-- 表单区 -->
+          <div class="px-8 py-6">
+            <!-- 标签（与过渡页 label 协调） -->
+            <label
+              class="text-s600 mb-2 flex items-center gap-2 text-sm font-semibold tracking-wide"
+            >
+              <span class="material-symbols-outlined text-s400 text-base">smartphone</span>
+              关联手机号
+            </label>
+
+            <!-- 输入框（与过渡页 textarea 保持一致） -->
+            <div class="group relative">
+              <textarea
+                id="add-account-phones"
+                class="bg-s50 border-s200 focus:ring-blue/20 focus:border-blue text-s800 placeholder:text-s400 w-full resize-none rounded-xl border px-4 py-3 font-mono text-[13px] leading-relaxed transition-all focus:ring-2"
+                rows="5"
+                placeholder="13800000000&#10;13900000000"
+              ></textarea>
+              <div
+                class="text-s400 dark:bg-s800/80 border-s100 dark:border-s700 absolute right-3 bottom-3 rounded border bg-white/80 px-2 py-0.5 font-mono text-[10px]"
+              >
+                支持批量输入
+              </div>
+            </div>
+
+            <!-- 提示信息（与过渡页 lightbulb 提示协调） -->
+            <p class="text-s400 mt-3 flex items-center gap-1.5 text-xs">
+              <span
+                class="material-symbols-outlined text-blue/60 shrink-0 text-sm"
+                style="font-variation-settings: 'FILL' 1"
+              >
+                lightbulb
+              </span>
+              <span>请输入手机号进行任务获取，支持换行输入多个号码。系统将自动验证账号状态。</span>
+            </p>
+          </div>
+
+          <!-- 底部操作栏（与过渡页底部操作栏协调） -->
+          <div class="bg-s50/50 border-s100 flex flex-col items-center gap-3 border-t px-8 py-5">
+            <button
+              id="add-account-submit"
+              class="bg-blue hover:bg-blue-dark shadow-blue/20 flex w-full items-center justify-center gap-2 rounded-lg px-8 py-2.5 font-bold text-white shadow-lg transition-all active:scale-[0.98]"
+            >
+              <span class="material-symbols-outlined text-lg">sync_alt</span>
+              <span class="font-mono">开始同步</span>
+            </button>
+            <span class="text-s300 inline-flex items-center gap-1.5 text-[10px] font-medium">
+              <span class="material-symbols-outlined text-[12px]">verified_user</span>
+              安全加密传输已开启
+            </span>
+          </div>
+        </div>
       </div>
 
       <!-- 添加设备对话框 -->
@@ -918,18 +1064,18 @@
                 通用
               </button>
               <button
+                data-settings-tab="api"
+                class="settings-nav-item flex w-full items-center gap-2.5 rounded-lg px-3 py-[9px] text-left text-[12px] transition-all"
+              >
+                <span class="material-symbols-outlined text-[17px]">api</span>
+                端点
+              </button>
+              <button
                 data-settings-tab="mqtt"
                 class="settings-nav-item flex w-full items-center gap-2.5 rounded-lg px-3 py-[9px] text-left text-[12px] transition-all"
               >
                 <span class="material-symbols-outlined text-[17px]">cloud_sync</span>
                 MQTT
-              </button>
-              <button
-                data-settings-tab="api"
-                class="settings-nav-item flex w-full items-center gap-2.5 rounded-lg px-3 py-[9px] text-left text-[12px] transition-all"
-              >
-                <span class="material-symbols-outlined text-[17px]">api</span>
-                ENDPOINT
               </button>
               <button
                 data-settings-tab="about"
@@ -991,7 +1137,7 @@
                   <span class="material-symbols-outlined text-[18px] text-blue-500">
                     cloud_sync
                   </span>
-                  <h2 class="text-s800 text-[13px] font-bold">MQTT 连接</h2>
+                  <h2 class="text-s800 text-[13px] font-bold">MQTT 设置</h2>
                 </div>
 
                 <!-- Connection Card -->
@@ -1134,7 +1280,7 @@
               <div class="settings-tab-content hidden space-y-5 px-6 py-5" data-tab-id="api">
                 <div class="mb-1 flex items-center gap-2">
                   <span class="material-symbols-outlined text-[18px] text-violet-500">api</span>
-                  <h2 class="text-s800 text-[13px] font-bold">API 服务</h2>
+                  <h2 class="text-s800 text-[13px] font-bold">端点</h2>
                 </div>
 
                 <div class="settings-card border-s200 overflow-hidden rounded-xl border bg-white">

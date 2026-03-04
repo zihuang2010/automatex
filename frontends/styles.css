@@ -204,7 +204,7 @@
     background-color: var(--premium-bg);
     border-radius: 10px;
     position: relative;
-    @apply h-full text-[13px] leading-normal overflow-hidden antialiased;
+    @apply h-full overflow-hidden text-[13px] leading-normal antialiased;
   }
 }
 
@@ -621,7 +621,7 @@
 }
 
 .splash.out {
-  @apply opacity-0 pointer-events-none;
+  @apply pointer-events-none opacity-0;
   filter: blur(8px);
   transform: scale(1.04);
   transition:
@@ -638,7 +638,7 @@
 
 /* ── 背景光晕（暗红色） ── */
 .splash-bg-glow {
-  @apply absolute rounded-full pointer-events-none;
+  @apply pointer-events-none absolute rounded-full;
   filter: blur(120px);
   animation: glow-float 8s ease-in-out infinite;
 }
@@ -694,7 +694,7 @@
 
 /* ── 网格底纹（暗色适配） ── */
 .splash-grid {
-  @apply absolute inset-0 pointer-events-none;
+  @apply pointer-events-none absolute inset-0;
   opacity: 0.04;
   background-image:
     linear-gradient(rgba(220, 38, 38, 0.3) 1px, transparent 1px),
@@ -706,7 +706,7 @@
 
 /* ── 浮动粒子 ── */
 .splash-particles {
-  @apply absolute inset-0 pointer-events-none overflow-hidden;
+  @apply pointer-events-none absolute inset-0 overflow-hidden;
 }
 
 .splash-particle {
@@ -747,7 +747,7 @@
 
 /* ── Shimmer 光带（红色） ── */
 .splash-shimmer {
-  @apply absolute top-0 h-full pointer-events-none;
+  @apply pointer-events-none absolute top-0 h-full;
   width: 40%;
   left: -60%;
   background: linear-gradient(
@@ -782,12 +782,12 @@
 
 /* ── 中心内容区 ── */
 .splash-center {
-  @apply relative flex flex-col items-center text-center z-10;
+  @apply relative z-10 flex flex-col items-center text-center;
 }
 
 /* ── 写轮眼光晕 ── */
 .splash-glow {
-  @apply absolute pointer-events-none;
+  @apply pointer-events-none absolute;
   top: 50%;
   left: 50%;
   width: 300px;
@@ -856,7 +856,7 @@
 
 /* ── 标题文字（精致等宽风格） ── */
 .splash-name {
-  @apply text-[28px] font-extralight tracking-[10px] uppercase mt-6 font-mono;
+  @apply mt-6 font-mono text-[28px] font-extralight tracking-[10px] uppercase;
   color: rgba(255, 255, 255, 0.85);
   animation: s-fade-in 0.6s var(--ease-smooth) 0.3s both;
   text-shadow:
@@ -870,14 +870,14 @@
 
 /* ── 版本号 ── */
 .splash-version {
-  @apply block text-[10px] mt-5 tracking-[2px] font-medium;
+  @apply mt-5 block text-[10px] font-medium tracking-[2px];
   color: rgba(220, 38, 38, 0.35);
   animation: s-fade-in 0.4s var(--ease-smooth) 0.9s both;
 }
 
 /* ── 时钟（精致等宽风格） ── */
 .splash-time {
-  @apply text-4xl font-thin tracking-[12px] mt-4 font-mono opacity-0;
+  @apply mt-4 font-mono text-4xl font-thin tracking-[12px] opacity-0;
   color: rgba(220, 38, 38, 0.7);
   text-shadow: 0 0 20px rgba(220, 38, 38, 0.3);
   animation: s-fade-in 0.8s var(--ease-smooth) 0.8s both;
@@ -889,7 +889,7 @@
 
 /* ══════ APP & TOPBAR ══════ */
 .app {
-  @apply flex flex-col h-screen opacity-0;
+  @apply flex h-screen flex-col opacity-0;
   transition: opacity 0.4s var(--ease-smooth);
 }
 
@@ -899,7 +899,7 @@
 
 /* ══════ SPINNER ══════ */
 .spinner {
-  @apply inline-block w-3.5 h-3.5 rounded-full;
+  @apply inline-block h-3.5 w-3.5 rounded-full;
   border: 2px solid var(--color-s200);
   border-top-color: var(--color-blue);
   animation: sp 0.6s linear infinite;
@@ -907,7 +907,7 @@
 
 /* ══════ MODAL ══════ */
 .modal-mask {
-  @apply fixed inset-0 flex items-center justify-center z-[1000];
+  @apply fixed inset-0 z-[1000] flex items-center justify-center;
   background: rgba(15, 23, 42, 0.3);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
@@ -915,14 +915,14 @@
 }
 
 .modal-card {
-  @apply bg-white border border-s200 rounded-md w-[420px] max-h-[75vh] overflow-y-auto;
+  @apply border-s200 max-h-[75vh] w-[420px] overflow-y-auto rounded-md border bg-white;
   box-shadow: var(--shadow-3);
   animation: m-up 250ms var(--ease-smooth);
 }
 
 /* ══════ CONNECT SPINNER ══════ */
 .btn-spinner {
-  @apply inline-block w-3 h-3 rounded-full align-middle mr-1;
+  @apply mr-1 inline-block h-3 w-3 rounded-full align-middle;
   border: 2px solid rgba(255, 255, 255, 0.3);
   border-top-color: #fff;
   animation: sp 0.6s linear infinite;
@@ -967,7 +967,7 @@
 
 /* ══════ EMPTY HINT ══════ */
 .empty-hint {
-  @apply text-center py-8 px-4 text-xs text-s300 font-medium;
+  @apply text-s300 px-4 py-8 text-center text-xs font-medium;
 }
 
 /* ══════ SETTINGS NAV ══════ */
@@ -981,13 +981,13 @@
 }
 
 .settings-nav-item.active {
-  @apply bg-blue-50 text-blue-600 font-semibold;
+  @apply bg-blue-50 font-semibold text-blue-600;
   border-left-color: #3b82f6;
 }
 
 /* ══════ SETTINGS INPUT (unified) ══════ */
 .settings-input {
-  @apply bg-s50 border border-s200 rounded-lg px-2.5 py-1.5 text-s700 font-mono text-xs outline-none;
+  @apply bg-s50 border-s200 text-s700 rounded-lg border px-2.5 py-1.5 font-mono text-xs outline-none;
   transition: all 0.2s ease;
 }
 
@@ -1020,4 +1020,41 @@
     opacity: 1;
     transform: scale(1) translateY(0);
   }
+}
+
+/* ── 账号管理面板 ── */
+@keyframes accountPanelIn {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.97);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+#account-panel.open {
+  display: block;
+  animation: accountPanelIn 0.18s ease-out;
+}
+
+#account-chevron.rotated {
+  transform: rotate(180deg);
+}
+
+/* sync 图标旋转特效 */
+@keyframes sync-spin {
+  0% {
+    transform: rotate(0deg);
+  }
+
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.sync-icon-spin {
+  animation: sync-spin 2s linear infinite;
 }

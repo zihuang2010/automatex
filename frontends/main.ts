@@ -7,12 +7,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { platform } from '@tauri-apps/plugin-os';
 
 import { DeviceState } from './constants';
-import {
-  filterDeviceCards,
-  refreshDevices,
-  setDeviceCallbacks,
-  updateCardSelection,
-} from './devices';
+import { refreshDevices, setDeviceCallbacks, updateCardSelection } from './devices';
 import {
   hideAddDeviceDialog,
   removeSelectedDevice,
@@ -35,17 +30,6 @@ import { needsTransition, showTransition } from './transition';
 import { $, showToast } from './utils';
 
 /* ===== Theme Toggle ===== */
-
-/** 同步 Tauri 窗口背景色与当前主题 */
-function syncWindowBg() {
-  try {
-    const win = getCurrentWindow();
-    // 保持原生窗口背景完全透明，让 HTML 的 border-radius 裁剪生效
-    win.setBackgroundColor('#00000000').catch(() => {});
-  } catch {
-    // 非 Tauri 环境忽略
-  }
-}
 
 function initTheme() {
   // 先从 localStorage 快速应用（避免开屏期间白屏闪烁）
@@ -90,7 +74,13 @@ function splash() {
   setTimeout(async () => {
     el.classList.add('out');
     // 开屏退场后同步窗口背景色
-    syncWindowBg();
+    try {
+      getCurrentWindow()
+        .setBackgroundColor('#00000000')
+        .catch(() => {});
+    } catch {
+      /* 非 Tauri 环境忽略 */
+    }
     setTimeout(() => el.remove(), 800);
 
     // 检查是否需要任务同步过渡页
@@ -110,6 +100,231 @@ async function fullRefresh() {
   await refreshDevices();
   await renderTaskView();
   loadChainForDevice(selectedDevice ?? '');
+}
+
+/* ===== Account Panel ===== */
+
+/** 手机号掩码: 138****8888 */
+function maskPhone(phone: string): string {
+  if (phone.length >= 7) {
+    return phone.slice(0, 3) + '****' + phone.slice(-4);
+  }
+  return phone;
+}
+
+/** 渲染账号列表 */
+function renderAccountList(phones: string[]) {
+  const list = document.getElementById('account-list');
+  const label = document.getElementById('account-sync-label');
+  const count = document.getElementById('account-active-count');
+  if (!list) return;
+
+  if (label) label.textContent = `已同步 ${phones.length} 个账号`;
+  if (count) count.textContent = `${phones.length} 个活动账号`;
+
+  if (phones.length === 0) {
+    list.innerHTML = '<div class="text-s400 px-4 py-6 text-center text-xs">暂无已同步账号</div>';
+    return;
+  }
+
+  list.innerHTML = phones
+    .map(
+      phone => `
+    <div class="border-s100 flex items-center justify-between border-b px-4 py-2.5 transition-colors last:border-b-0 hover:bg-s50">
+      <div>
+        <div class="text-s800 text-[13px] font-semibold tracking-wide" style="font-feature-settings:'tnum'">${maskPhone(phone)}</div>
+        <div class="mt-0.5 flex items-center gap-1 text-[10px] font-semibold text-emerald-500">
+          <span class="inline-block h-[5px] w-[5px] rounded-full bg-emerald-500"></span>
+          已就绪
+        </div>
+      </div>
+      <button title="移除" data-phone="${phone}"
+        class="text-s400 hover:text-red-500 hover:bg-red-50 flex h-7 w-7 items-center justify-center rounded-md border-none bg-transparent cursor-pointer transition-all">
+        <span class="material-symbols-outlined icon-sm text-[16px]">delete</span>
+      </button>
+    </div>
+  `,
+    )
+    .join('');
+}
+
+/** 从后端刷新账号列表 */
+async function refreshAccountList(): Promise<string[]> {
+  try {
+    const settings = await invoke<Record<string, string>>('get_settings');
+    const phones: string[] = JSON.parse(settings.synced_phones || '[]');
+    renderAccountList(phones);
+    return phones;
+  } catch {
+    renderAccountList([]);
+    return [];
+  }
+}
+
+function initAccountPanel() {
+  const btn = document.getElementById('btn-account-sync');
+  const panel = document.getElementById('account-panel');
+  const chevron = document.getElementById('account-chevron');
+  const manageBtn = document.getElementById('btn-manage-accounts');
+  const accountList = document.getElementById('account-list');
+
+  if (!btn || !panel) return;
+
+  // Toggle
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    const isOpen = panel.classList.contains('open');
+    if (isOpen) {
+      panel.classList.remove('open');
+      panel.classList.add('hidden');
+      chevron?.classList.remove('rotated');
+    } else {
+      panel.classList.remove('hidden');
+      panel.classList.add('open');
+      chevron?.classList.add('rotated');
+    }
+  });
+
+  // Outside click
+  document.addEventListener('click', e => {
+    const wrap = document.getElementById('account-panel-wrap');
+    if (wrap && !wrap.contains(e.target as Node)) {
+      panel.classList.remove('open');
+      panel.classList.add('hidden');
+      chevron?.classList.remove('rotated');
+    }
+  });
+
+  // ── 删除账号逻辑（事件委托） ──
+  accountList?.addEventListener('click', async e => {
+    const target = (e.target as HTMLElement).closest('button[data-phone]') as HTMLElement | null;
+    if (!target) return;
+
+    const phoneToRemove = target.dataset.phone;
+    if (!phoneToRemove) return;
+
+    // 确认删除
+    const masked = maskPhone(phoneToRemove);
+    if (!confirm(`确定要移除账号 ${masked} 吗？\n移除后该账号关联的任务将被清理。`)) return;
+
+    // 禁用按钮防止重复操作
+    target.setAttribute('disabled', 'true');
+    target.classList.add('opacity-50');
+
+    try {
+      // 获取当前已同步列表
+      const settings = await invoke<Record<string, string>>('get_settings');
+      const currentPhones: string[] = JSON.parse(settings.synced_phones || '[]');
+      const remaining = currentPhones.filter(p => p !== phoneToRemove);
+
+      // 用剩余号码重新同步（后端会自动清理被移除的号码，空列表也能正确处理）
+      await invoke('sync_tasks_by_phones', { phones: remaining, force: true });
+
+      showToast(`已移除账号 ${masked}`, 'info');
+      await refreshAccountList();
+    } catch (err) {
+      showToast(`移除失败: ${err}`, 'error');
+      target.removeAttribute('disabled');
+      target.classList.remove('opacity-50');
+    }
+  });
+
+  // ── 管理/添加按钮 → 打开添加账号弹窗（回显已有手机号） ──
+  manageBtn?.addEventListener('click', async () => {
+    panel.classList.remove('open');
+    panel.classList.add('hidden');
+    chevron?.classList.remove('rotated');
+    const modal = document.getElementById('add-account-modal') as HTMLElement;
+    if (!modal) return;
+
+    // 回显已同步的手机号
+    const textarea = document.getElementById('add-account-phones') as HTMLTextAreaElement;
+    if (textarea) {
+      try {
+        const settings = await invoke<Record<string, string>>('get_settings');
+        const phones: string[] = JSON.parse(settings.synced_phones || '[]');
+        textarea.value = phones.join('\n');
+      } catch {
+        textarea.value = '';
+      }
+    }
+    modal.style.display = 'flex';
+  });
+
+  // ── 添加账号弹窗交互 ──
+  const accountModal = document.getElementById('add-account-modal') as HTMLElement;
+  if (accountModal) {
+    // 关闭按钮
+    document.getElementById('add-account-close')?.addEventListener('click', () => {
+      accountModal.style.display = 'none';
+    });
+    // 点击遮罩关闭
+    accountModal.addEventListener('click', e => {
+      if (e.target === e.currentTarget) accountModal.style.display = 'none';
+    });
+
+    // 提交同步
+    document.getElementById('add-account-submit')?.addEventListener('click', async () => {
+      const textarea = document.getElementById('add-account-phones') as HTMLTextAreaElement;
+      const submitBtn = document.getElementById('add-account-submit') as HTMLButtonElement;
+      const raw = textarea?.value?.trim();
+
+      if (!raw) {
+        showToast('请输入至少一个手机号', 'error');
+        return;
+      }
+
+      const phones = raw
+        .split(/[\n,;，；]+/)
+        .map(s => s.trim())
+        .filter(Boolean);
+
+      // 去重
+      const uniquePhones = [...new Set(phones)];
+
+      if (uniquePhones.length === 0) {
+        showToast('请输入有效的手机号', 'error');
+        return;
+      }
+
+      // Loading 状态
+      submitBtn.setAttribute('disabled', 'true');
+      submitBtn.innerHTML = `
+        <span class="material-symbols-outlined text-lg sync-icon-spin">sync</span>
+        <span class="font-mono">同步中...</span>
+      `;
+
+      try {
+        const result = await invoke<{
+          status: string;
+          phones?: number;
+          tasks?: number;
+          conflicts?: unknown[];
+        }>('sync_tasks_by_phones', { phones: uniquePhones, force: true });
+
+        accountModal.style.display = 'none';
+        showToast(
+          `同步完成：${result.phones ?? uniquePhones.length} 个账号，${result.tasks ?? 0} 个任务`,
+          'info',
+        );
+
+        // 刷新账号列表
+        await refreshAccountList();
+      } catch (err) {
+        showToast(`同步失败: ${err}`, 'error');
+      } finally {
+        // 恢复按钮
+        submitBtn.removeAttribute('disabled');
+        submitBtn.innerHTML = `
+          <span class="material-symbols-outlined text-lg">sync_alt</span>
+          <span class="font-mono">开始同步</span>
+        `;
+      }
+    });
+  }
+
+  // 初始加载账号列表
+  refreshAccountList();
 }
 
 /* ===== Init ===== */
@@ -188,22 +403,6 @@ window.addEventListener('DOMContentLoaded', () => {
     });
 
   // ── Step 5: UI 事件绑定 ──
-  // Search toggle
-  $('#btn-search-dev')?.addEventListener('click', () => {
-    const box = $('#dev-search');
-    const searchInp = $('#dev-search-input') as HTMLInputElement | null;
-    if (!box || !searchInp) return;
-    const visible = box.style.display !== 'none';
-    box.style.display = visible ? 'none' : 'block';
-    if (!visible) {
-      searchInp.value = '';
-      searchInp.focus();
-    } else filterDeviceCards('');
-  });
-
-  $('#dev-search-input')?.addEventListener('input', e => {
-    filterDeviceCards((e.target as HTMLInputElement).value);
-  });
 
   // Add Device (WiFi)
   $('#btn-add-device')?.addEventListener('click', showAddDeviceDialog);
@@ -235,6 +434,9 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // Settings
   initSettings();
+
+  // ── Account Panel ──
+  initAccountPanel();
 
   // ── Step 6: 监听后台设备事件 ──
   let devicesChangedTimer: ReturnType<typeof setTimeout> | null = null;
