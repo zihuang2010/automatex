@@ -1,14 +1,17 @@
 import { invoke } from '@tauri-apps/api/core';
-import { TaskStatus, CityStatus, KeywordStatus } from './constants';
-import { TaskRunStats, TaskCity, TaskKeyword } from './types';
+/** 绑定城市卡片拖拽事件（SortableJS） */
+import Sortable from 'sortablejs';
+
+import { CityStatus, KeywordStatus, TaskStatus } from './constants';
 import {
-  activeTask,
   activeCityIdx,
-  setActiveTask,
-  setActiveCityIdx,
+  activeTask,
   globalQueue,
+  setActiveCityIdx,
+  setActiveTask,
   setSelectedDevice,
 } from './state';
+import { TaskCity, TaskKeyword, TaskRunStats } from './types';
 import { $, esc, formatRunTime } from './utils';
 
 // 回调注册（由 main.ts 初始化后设置，避免循环依赖）
@@ -140,8 +143,8 @@ export async function renderTaskView() {
       <span class="px-1.5 py-0.5 bg-s100 text-s500 rounded text-[10px] font-bold">${city.done}/${city.total}</span>
     </div>
     <div class="relative">
-      <input class="w-40 pl-7 pr-2 py-1 bg-s50 border border-s200 rounded text-[11px] focus:ring-1 focus:ring-blue-200 focus:border-blue-400 focus:bg-white outline-none transition-all placeholder:text-s300" placeholder="搜索..." type="text" id="kw-filter-input" oninput="window.__filterKw(this.value)" />
-      <span class="material-symbols-outlined absolute left-2 top-1/2 -translate-y-1/2 text-s300 text-xs">search</span>
+      <input class="w-40 pl-9 pr-2 py-1 bg-s50 border border-s200 rounded text-[11px] focus:ring-1 focus:ring-blue-200 focus:border-blue-400 focus:bg-white outline-none transition-all placeholder:text-s300" placeholder="搜索..." type="text" id="kw-filter-input" oninput="window.__filterKw(this.value)" />
+      <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-s300 text-xs">search</span>
     </div>`;
 
   // 保留搜索框的值和焦点
@@ -411,9 +414,6 @@ function buildCityCards(task: { cities: TaskCity[] }): string {
     })
     .join('');
 }
-
-/** 绑定城市卡片拖拽事件（SortableJS） */
-import Sortable from 'sortablejs';
 
 let _sortableInstance: Sortable | null = null;
 
