@@ -1,56 +1,16 @@
-use serde::{Deserialize, Serialize};
+//! 任务提供者模块
+//!
+//! - `types.rs` — Task、TaskDef 等数据结构
+//! - `mod.rs` — DB 加载、构建、Mock 函数
+
+pub mod types;
+
+pub use types::*;
+
 use std::collections::HashSet;
 
 use crate::constants::{city_status, keyword_status, task_status};
 use crate::storage::Database;
-
-// ─── 任务数据结构（前端交互用）────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskKeyword {
-    pub name: String,
-    pub status: String, // "pending" | "run" | "ok"
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskCity {
-    pub name: String,
-    pub poi: String,
-    pub progress: i32, // 0-100
-    pub total: i32,
-    pub done: i32,
-    pub status: String, // "pending" | "active" | "done"
-    pub keywords: Vec<TaskKeyword>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Task {
-    pub id: String,
-    pub name: String,
-    pub status: String, // "WAITING" | "EXECUTING" | "PAUSED" | "SUCCESS" | "ERROR"
-    pub assigned_device: Option<String>,
-    pub cities: Vec<TaskCity>,
-    /// 当天第几轮（0 = 尚未启动过）
-    pub round_no: i32,
-    /// 当前轮次 ID（用于内部关联，前端可忽略）
-    pub current_round_id: Option<i64>,
-}
-
-// ─── 任务定义格式（Mock / HTTP 共用）───────────────────────────────
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct TaskDef {
-    pub id: String,
-    pub name: String,
-    pub cities: Vec<CityDef>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct CityDef {
-    pub name: String,
-    pub poi: String,
-    pub keywords: Vec<String>,
-}
 
 // ─── 任务提供者 ─────────────────────────────────────────────────
 
@@ -58,7 +18,6 @@ pub struct CityDef {
 /// 仅当 DB 中没有任何缓存任务 且 没有绑定手机号时才写入 mock 数据
 /// 有绑定手机号时由 startup_sync_tasks 从服务端拉取真实数据
 pub async fn sync_task_cache(db: &Database) {
-    // 已有绑定手机号 → 跳过 mock，等 startup_sync_tasks 拉取真实任务
     let synced_phones = db
         .get_setting(crate::constants::setting_key::SYNCED_PHONES)
         .await
@@ -108,13 +67,11 @@ pub async fn load_tasks(db: &Database) -> Vec<Task> {
     // 批量预加载所有数据
     let all_states = db.load_all_task_states().await;
 
-    // 收集所有有效的 round_id 用于批量加载进度和轮次信息
     let round_ids: Vec<i64> =
         all_states.values().filter_map(|(_, _, round_id)| *round_id).collect();
     let all_progress = db.load_all_progress(&round_ids).await;
     let all_round_info = db.load_all_round_info(&round_ids).await;
 
-    // 按 task_id 分组进度记录
     let mut progress_map: std::collections::HashMap<String, Vec<crate::storage::ProgressRow>> =
         std::collections::HashMap::new();
     for p in all_progress {
@@ -126,7 +83,6 @@ pub async fn load_tasks(db: &Database) -> Vec<Task> {
         let progress = progress_map.remove(&def.id).unwrap_or_default();
         let state = all_states.get(&def.id).cloned();
         let order = all_orders.get(&def.id).cloned();
-        // 从 state 取 round_id → 从 round_info 取 round_no
         let round_id = state.as_ref().and_then(|(_, _, rid)| *rid);
         let round_no = round_id.and_then(|rid| all_round_info.get(&rid).copied()).unwrap_or(0);
         tasks.push(build_task_batched(def, progress, state, order, round_no));
@@ -136,13 +92,11 @@ pub async fn load_tasks(db: &Database) -> Vec<Task> {
 
 /// 加载单个任务（优先 DB 缓存，fallback mock）
 pub async fn load_task_by_id(db: &Database, target_id: &str) -> Option<Task> {
-    // 优先从 DB 读取
     if let Some((id, name, payload)) = db.load_task_def_by_id(target_id).await {
         if let Ok(cities) = serde_json::from_str::<Vec<CityDef>>(&payload) {
             return Some(build_task(db, TaskDef { id, name, cities }).await);
         }
     }
-    // Fallback: mock
     let defs: Vec<TaskDef> = load_mock_definitions();
     match defs.into_iter().find(|d| d.id == target_id) {
         Some(def) => Some(build_task(db, def).await),
@@ -151,21 +105,15 @@ pub async fn load_task_by_id(db: &Database, target_id: &str) -> Option<Task> {
 }
 
 /// Mock 模式下按 ID 查找任务定义（供 TaskEngine 增量合并使用）
-///
-/// 优先从 `~/.automatex/mock_tasks_override.json` 读取（每次读磁盘，不缓存），
-/// 这样修改外部文件不会触发 dev 重编译。找不到则 fallback 到内嵌的默认值。
 pub fn load_mock_task_def_by_id(task_id: &str) -> Option<TaskDef> {
-    // 尝试从运行时外部文件读取
     if let Some(def) = load_override_task_def(task_id) {
         eprintln!("[task_provider] 从外部 override 文件加载任务定义: {}", task_id);
         return Some(def);
     }
-    // Fallback: 内嵌的默认定义
     load_mock_definitions().into_iter().find(|d| d.id == task_id)
 }
 
 /// 从 ~/.automatex/mock_tasks_override.json 读取指定 task 的定义
-/// 每次调用都重新读磁盘（不缓存），方便测试时随时修改
 fn load_override_task_def(task_id: &str) -> Option<TaskDef> {
     let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).ok()?;
     let path = std::path::Path::new(&home).join(".automatex").join("mock_tasks_override.json");
@@ -271,7 +219,6 @@ fn build_task_batched(
     let (final_status, assigned_device) = match saved_state {
         Some((ref saved_status, ref dev, _)) => {
             let status = if saved_status == task_status::EXECUTING {
-                // 重启后无运行中的循环，降级为 PAUSED
                 task_status::PAUSED.to_string()
             } else if saved_status == task_status::SUCCESS
                 && inferred_status != task_status::SUCCESS
@@ -284,7 +231,6 @@ fn build_task_batched(
             } else {
                 saved_status.clone()
             };
-            // EXECUTING→PAUSED 时清除已失效的设备绑定
             let device = if saved_status == task_status::EXECUTING { None } else { dev.clone() };
             (status, device)
         },
@@ -316,7 +262,7 @@ pub fn load_mock_definitions() -> Vec<TaskDef> {
     use std::sync::OnceLock;
     static DEFS: OnceLock<Vec<TaskDef>> = OnceLock::new();
     DEFS.get_or_init(|| {
-        let json = include_str!("../resources/mock_tasks.json");
+        let json = include_str!("../../resources/mock_tasks.json");
         serde_json::from_str(json).unwrap_or_default()
     })
     .clone()
