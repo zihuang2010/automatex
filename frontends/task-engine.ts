@@ -1,7 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+
+import { activeTask, globalQueue, setActiveTask, setGlobalQueue } from './state';
 import { Task } from './types';
-import { setGlobalQueue, setActiveTask, activeTask, globalQueue } from './state';
 import { showToast } from './utils';
 
 // 回调注册（由 main.ts 初始化后设置，避免循环依赖）
@@ -27,7 +28,13 @@ export async function initEngine() {
       const updated = globalQueue.find(t => t.id === currentId);
       if (updated) {
         setActiveTask(updated);
+      } else {
+        // 当前任务已被删除，自动选中队列中的第一个任务
+        setActiveTask(globalQueue.length > 0 ? globalQueue[0] : null);
       }
+    } else if (globalQueue.length > 0) {
+      // 之前没有选中任务但现在有了，自动选中第一个
+      setActiveTask(globalQueue[0]);
     }
 
     // 触发 UI 刷新

@@ -484,7 +484,7 @@ async fn sync_tasks_by_phones(
         .await;
 
     engine.reload_tasks().await;
-    engine.emit_update().await;
+    engine.force_emit_update().await;
 
     eprintln!("[sync] 同步完成: {} 个手机号, {} 个任务", bound_phones.len(), count);
 

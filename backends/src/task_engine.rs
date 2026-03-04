@@ -123,10 +123,30 @@ impl TaskEngine {
         self.tasks.read().await.clone()
     }
 
-    /// 重新从 DB 加载任务列表
+    /// 重新从 DB 加载任务列表（保留仍在运行中的任务的运行时状态）
     #[allow(dead_code)]
     pub async fn reload_tasks(&self) {
-        let tasks = task_provider::load_tasks(&self.storage).await;
+        // 先快照当前 running 中的任务状态（status + assigned_device）
+        let running_snapshot: std::collections::HashMap<String, (String, Option<String>)> = {
+            let running = self.running.read().await;
+            let tasks = self.tasks.read().await;
+            tasks
+                .iter()
+                .filter(|t| running.contains_key(&t.id))
+                .map(|t| (t.id.clone(), (t.status.clone(), t.assigned_device.clone())))
+                .collect()
+        };
+
+        let mut tasks = task_provider::load_tasks(&self.storage).await;
+
+        // 恢复仍在 running 中的任务的运行时状态
+        for task in &mut tasks {
+            if let Some((status, device)) = running_snapshot.get(&task.id) {
+                task.status = status.clone();
+                task.assigned_device = device.clone();
+            }
+        }
+
         *self.tasks.write().await = tasks;
     }
 
@@ -631,6 +651,17 @@ impl TaskEngine {
         let _ = self.app_handle.emit(crate::constants::tauri_event::TASK_UPDATE, &snapshot);
     }
 
+    /// 强制推送任务状态（跳过节流，用于关键操作如同步完成后）
+    pub async fn force_emit_update(&self) {
+        {
+            let mut last = self.last_emit.lock().await;
+            *last = std::time::Instant::now();
+        }
+        let tasks = self.tasks.read().await;
+        let snapshot = TaskSnapshot { tasks: tasks.clone() };
+        let _ = self.app_handle.emit(crate::constants::tauri_event::TASK_UPDATE, &snapshot);
+    }
+
     /// 重排城市顺序（仅 pending 城市）
     pub async fn reorder_cities(
         &self,
@@ -821,7 +852,7 @@ impl TaskEngine {
         }
     }
 
-    /// 处理手机号解绑/被抢占 — 暂停+删除对应任务
+    /// 处理手机号解绑/被抢占 — 停止运行、释放设备、从内存和 DB 彻底清除
     pub async fn handle_phones_unbind(self: &Arc<Self>, phones: Vec<String>) -> u32 {
         let mut all_task_ids: Vec<String> = Vec::new();
         for phone in &phones {
@@ -836,42 +867,43 @@ impl TaskEngine {
             return 0;
         }
 
-        for task_id in &all_task_ids {
-            let is_running = {
-                let tasks = self.tasks.read().await;
-                tasks.iter().any(|t| {
-                    t.id == *task_id
-                        && (t.status == crate::constants::task_status::EXECUTING
-                            || t.status == crate::constants::task_status::PAUSED)
-                })
-            };
-            if is_running {
-                if let Err(e) = self.stop_task(task_id).await {
-                    eprintln!("[engine] 解绑时停止任务失败: task={}, err={}", task_id, e);
+        let all_ids_set: HashSet<String> = all_task_ids.iter().cloned().collect();
+
+        // ── 1. 取消正在运行的任务循环 + 释放设备 ──
+        {
+            let mut running = self.running.write().await;
+            for task_id in &all_task_ids {
+                if let Some(entry) = running.get(task_id) {
+                    entry.cancel.cancel();
+                    eprintln!("[engine] 取消运行中任务: {}", task_id);
                 }
+                running.remove(task_id);
             }
         }
 
+        // ── 2. 从内存任务列表移除 + 释放 assigned_device ──
         {
-            let all_ids_set: HashSet<&str> = all_task_ids.iter().map(|s| s.as_str()).collect();
             let mut tasks = self.tasks.write().await;
-            tasks.retain(|t| !all_ids_set.contains(t.id.as_str()));
+            tasks.retain(|t| !all_ids_set.contains(&t.id));
         }
 
-        let removed = all_task_ids.len() as u32;
-
-        // DB 批量清理（单连接事务内完成）
+        // ── 3. DB 清理（finish rounds/runs + 批量删除任务数据） ──
+        for task_id in &all_task_ids {
+            // 结束可能存在的 round 和 run 记录
+            self.storage.clear_task_progress(task_id).await;
+            self.storage.delete_task_state(task_id).await;
+        }
         self.storage.batch_cleanup_tasks(&all_task_ids).await;
 
-        // 注意：不在此处更新 synced_phones——由调用方（sync_tasks_by_phones）统一管理，
-        // 避免双重写入导致的竞态条件
+        let removed = all_task_ids.len() as u32;
         eprintln!(
             "[engine] 批量清理完成: {} 个任务（解绑手机号: {:?}）",
             all_task_ids.len(),
             phones
         );
 
-        self.emit_update().await;
+        // 注意：不在此处 emit_update / 更新 synced_phones
+        // 由调用方在 reload_tasks 后统一 force_emit_update，确保前端收到最终正确状态
         removed
     }
 }
