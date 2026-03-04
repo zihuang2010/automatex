@@ -741,9 +741,13 @@ impl Database {
         let phone = phone.to_string();
         let Ok(conn) = self.pool.get().await else { return Vec::new() };
         conn.interact(move |conn| {
-            let mut stmt = conn
-                .prepare("SELECT task_id FROM a_task_defs WHERE phone = ?1")
-                .unwrap_or_else(|_| conn.prepare("SELECT '' WHERE 0").unwrap());
+            let mut stmt = match conn.prepare("SELECT task_id FROM a_task_defs WHERE phone = ?1") {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("[db] get_tasks_by_phone prepare 失败: {}", e);
+                    return Vec::new();
+                },
+            };
             stmt.query_map(params![phone], |row| row.get::<_, String>(0))
                 .ok()
                 .map(|rows| rows.flatten().collect())
@@ -836,8 +840,8 @@ impl Database {
                          VALUES (?1, ?2, ?3, ?4)
                          ON CONFLICT(task_id) DO UPDATE SET
                              status=excluded.status,
-                             assigned_device=COALESCE(excluded.assigned_device, a_task_state.assigned_device),
-                             current_round_id=COALESCE(excluded.current_round_id, a_task_state.current_round_id)",
+                             assigned_device=excluded.assigned_device,
+                             current_round_id=excluded.current_round_id",
                         params![task_id, status, assigned_device, current_round_id],
                     ),
                     "save_task_state",
@@ -1216,30 +1220,37 @@ impl Database {
         }
         let task_id = task_id.to_string();
         let Ok(conn) = self.pool.get().await else { return };
-        let _ = conn.interact(move |conn| {
-            let valid_keys: Vec<String> =
-                valid_pairs.iter().map(|(c, k)| format!("{}|{}", c, k)).collect();
-            let placeholders: Vec<String> =
-                (0..valid_keys.len()).map(|i| format!("?{}", i + 2)).collect();
-            let sql = format!(
-                "DELETE FROM a_task_progress WHERE task_id = ?1 AND (city_name || '|' || keyword_name) NOT IN ({})",
-                placeholders.join(",")
-            );
-            let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> =
-                Vec::with_capacity(valid_keys.len() + 1);
-            param_values.push(Box::new(task_id.clone()));
-            for key in &valid_keys {
-                param_values.push(Box::new(key.clone()));
-            }
-            let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-                param_values.iter().map(|p| p.as_ref()).collect();
-            let result = conn.execute(&sql, params_ref.as_slice());
-            match result {
-                Ok(n) if n > 0 => eprintln!("[db] 清理了 {} 条孤儿进度记录 (task={})", n, task_id),
-                Err(e) => eprintln!("[db] cleanup_orphan_progress 失败: {}", e),
-                _ => {},
-            }
-        }).await;
+        let _ = conn
+            .interact(move |conn| {
+                // 使用 (city_name, keyword_name) 双列判断，避免分隔符拼接导致误匹配
+                let pair_conditions: Vec<String> = (0..valid_pairs.len())
+                    .map(|i| {
+                        format!("(city_name = ?{} AND keyword_name = ?{})", i * 2 + 2, i * 2 + 3)
+                    })
+                    .collect();
+                let sql = format!(
+                    "DELETE FROM a_task_progress WHERE task_id = ?1 AND NOT ({})",
+                    pair_conditions.join(" OR ")
+                );
+                let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> =
+                    Vec::with_capacity(valid_pairs.len() * 2 + 1);
+                param_values.push(Box::new(task_id.clone()));
+                for (city, keyword) in &valid_pairs {
+                    param_values.push(Box::new(city.clone()));
+                    param_values.push(Box::new(keyword.clone()));
+                }
+                let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+                    param_values.iter().map(|p| p.as_ref()).collect();
+                let result = conn.execute(&sql, params_ref.as_slice());
+                match result {
+                    Ok(n) if n > 0 => {
+                        eprintln!("[db] 清理了 {} 条孤儿进度记录 (task={})", n, task_id)
+                    },
+                    Err(e) => eprintln!("[db] cleanup_orphan_progress 失败: {}", e),
+                    _ => {},
+                }
+            })
+            .await;
     }
 
     #[allow(dead_code)]

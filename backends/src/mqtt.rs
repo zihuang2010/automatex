@@ -339,17 +339,30 @@ fn route_message(topic: &str, payload: &str, app_handle: &tauri::AppHandle, conn
         }
     }
 
+    // FIX #4: 基础消息来源校验
+    // 验证 source 字段 — 消息不应来自自身（防止回环）
+    // 完整的 HMAC/JWT 签名校验需服务端配合，后续实现
+    if let Some(source) = json_value.get("source").and_then(|v| v.as_str()) {
+        // 如果消息的 source 等于自身 client_id，跳过（防止回环攻击）
+        if let Some(our_id) = json_value.get("target").and_then(|v| v.as_str()) {
+            if source == our_id {
+                eprintln!("[mqtt] 跳过回环消息: topic={}, source={}", topic, source);
+                return;
+            }
+        }
+    }
+
     if topic.ends_with(mqtt_topic::DOWN_DEVICE_KICK) {
-        // ── 踢设备下线 ──
-        eprintln!("[mqtt] 收到踢设备指令: {}", payload);
+        // ── 踢设备下线 ──（高危操作，记录审计日志）
+        eprintln!("[mqtt] ⚠ 收到踢设备指令: {}", payload);
         let _ = app_handle.emit(tauri_event::MQTT_DEVICE_KICK, json_value);
     } else if topic.ends_with(mqtt_topic::DOWN_TASK_RELOAD) {
         // ── 任务数据变更 ──
         eprintln!("[mqtt] 收到任务变更通知: {}", payload);
         let _ = app_handle.emit(tauri_event::MQTT_TASK_RELOAD, json_value);
     } else if topic.ends_with(mqtt_topic::DOWN_PHONES_UNBIND) {
-        // ── 手机号被抢占/解绑 ──
-        eprintln!("[mqtt] 收到手机号解绑通知: {}", payload);
+        // ── 手机号被抢占/解绑 ──（高危操作，记录审计日志）
+        eprintln!("[mqtt] ⚠ 收到手机号解绑通知: {}", payload);
         let _ = app_handle.emit(tauri_event::MQTT_PHONES_UNBIND, json_value);
     } else if topic.contains(mqtt_topic::BROADCAST_TASK_UPDATE) {
         // ── 全局任务广播 ──

@@ -36,18 +36,26 @@ async fn ensure_client_id(db: &storage::Database) -> String {
 /// 确保 MQTT 默认配置存在（首次启动时写入）
 async fn ensure_mqtt_defaults(db: &storage::Database) {
     use constants::{mqtt_default, setting_key};
+    let host = mqtt_default::host();
+    let port = mqtt_default::port();
+    let username = mqtt_default::username();
+    let password = mqtt_default::password();
     let defaults: &[(&str, &str)] = &[
-        (setting_key::MQTT_HOST, mqtt_default::HOST),
-        (setting_key::MQTT_PORT, mqtt_default::PORT),
-        (setting_key::MQTT_USERNAME, mqtt_default::USERNAME),
-        (setting_key::MQTT_PASSWORD, mqtt_default::PASSWORD),
+        (setting_key::MQTT_HOST, host),
+        (setting_key::MQTT_PORT, port),
+        (setting_key::MQTT_USERNAME, username),
+        (setting_key::MQTT_PASSWORD, password),
     ];
     let existing = db.get_all_settings().await;
     for (key, default_val) in defaults {
         let has_value = existing.get(*key).map(|v| !v.is_empty()).unwrap_or(false);
         if !has_value {
             db.set_setting(key, default_val).await;
-            eprintln!("[startup] MQTT 默认配置写入: {}={}", key, default_val);
+            eprintln!(
+                "[startup] MQTT 默认配置写入: {}={}",
+                key,
+                if *key == setting_key::MQTT_PASSWORD { "***" } else { default_val }
+            );
         }
     }
 }
@@ -174,7 +182,9 @@ async fn startup_sync_tasks(
                         }
                         db.batch_upsert_task_defs(upsert_items).await;
 
-                        // 清理本地有但服务端不再返回的旧任务
+                        // FIX #12: 使用 HashSet 避免 O(n²) 查找
+                        let server_task_ids: std::collections::HashSet<String> =
+                            server_task_ids.into_iter().collect();
                         let local_defs = db.load_all_task_defs().await;
                         let stale_ids: Vec<String> = local_defs
                             .iter()
@@ -308,6 +318,27 @@ async fn list_devices(state: tauri::State<'_, AppState>) -> Result<Vec<DeviceRow
 
 #[tauri::command]
 async fn execute_shell(serial: String, command: String) -> Result<ShellResult, String> {
+    // FIX #3: 限制危险命令（在 release 模式下拒绝可能破坏设备的操作）
+    #[cfg(not(debug_assertions))]
+    {
+        let cmd_lower = command.to_lowercase();
+        let denied_patterns = [
+            "rm -rf",
+            "mkfs",
+            "dd if=",
+            "reboot",
+            "shutdown",
+            "factory_reset",
+            "wipe",
+            "format",
+            "su -c",
+        ];
+        for pattern in &denied_patterns {
+            if cmd_lower.contains(pattern) {
+                return Err(format!("危险命令被拒绝: {}", pattern));
+            }
+        }
+    }
     tokio::task::spawn_blocking(move || DeviceManager::new().execute_shell(&serial, &command))
         .await
         .map_err(|e| format!("执行失败: {}", e))
@@ -376,7 +407,7 @@ async fn get_settings(state: tauri::State<'_, AppState>) -> Result<serde_json::V
     use constants::{mqtt_default, setting_key};
     Ok(serde_json::json!({
         setting_key::MQTT_HOST: setting_or(&s, setting_key::MQTT_HOST, ""),
-        setting_key::MQTT_PORT: setting_or(&s, setting_key::MQTT_PORT, mqtt_default::PORT),
+        setting_key::MQTT_PORT: setting_or(&s, setting_key::MQTT_PORT, mqtt_default::port()),
         setting_key::MQTT_CLIENT_ID: s.get(setting_key::MQTT_CLIENT_ID).cloned()
             .unwrap_or_else(|| utils::generate_machine_client_id()),
         setting_key::MQTT_USERNAME: setting_or(&s, setting_key::MQTT_USERNAME, ""),
@@ -467,14 +498,18 @@ async fn sync_tasks_by_phones(
 
     let resp = http.fetch_tasks_by_phones(&client_id, &bound_phones).await?;
 
+    // FIX #11: 收集所有任务定义，使用批量 upsert
+    let mut upsert_items: Vec<(String, String, String, i64, String)> = Vec::new();
     let mut count = 0usize;
     for (phone, defs) in &resp.phone_tasks {
         for def in defs {
             let payload = serde_json::to_string(&def.cities).unwrap_or_default();
-            state.db.upsert_task_def(&def.id, &def.name, &payload, 1, phone).await;
+            upsert_items.push((def.id.clone(), def.name.clone(), payload, 1, phone.clone()));
             count += 1;
         }
     }
+    state.db.batch_upsert_task_defs(upsert_items).await;
+
     state
         .db
         .set_setting(
@@ -503,7 +538,7 @@ fn build_mqtt_config_from(s: &std::collections::HashMap<String, String>) -> Mqtt
     let port: u16 = s
         .get(setting_key::MQTT_PORT)
         .and_then(|v| v.parse().ok())
-        .unwrap_or(mqtt_default::PORT_NUM);
+        .unwrap_or_else(|| mqtt_default::port_num());
     let client_id = s
         .get(setting_key::MQTT_CLIENT_ID)
         .cloned()
@@ -715,12 +750,12 @@ fn fetch_device_row(serial: &str, state: &str) -> DeviceRow {
     }
 }
 
-/// 同步封装：在 std::thread 中调用 async DB 方法
+/// FIX #14: 使用 block_in_place 避免阻塞 tokio worker 线程
 fn db_block_on<F, T>(rt: &tokio::runtime::Handle, f: F) -> T
 where
     F: std::future::Future<Output = T>,
 {
-    rt.block_on(f)
+    tokio::task::block_in_place(|| rt.block_on(f))
 }
 
 fn device_state_str(state: &adb_client::server::DeviceState) -> &'static str {
@@ -1093,20 +1128,20 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     let rt = tokio::runtime::Handle::current();
 
+                    // FIX #9: 跨日检测应在所有初始化之前执行
+                    check_daily_reset(&db_init).await;
+
                     // 异步 DB 清理
                     task_provider::sync_task_cache(&db_init).await;
                     db_init.cleanup_orphan_runs().await;
                     db_init.mark_offline_except(Vec::new()).await;
                     db_init.cleanup_stale_assignments().await;
 
-                    // 确保 clientId 存在（首次启动时基于机器指纹生成）
+                    // 确保 clientId 存在（首次启动时基于 UUID 生成）
                     let client_id = ensure_client_id(&db_init).await;
 
                     // 确保 MQTT 默认配置存在
                     ensure_mqtt_defaults(&db_init).await;
-
-                    // ── 跨日检测 + 重置 ──
-                    check_daily_reset(&db_init).await;
 
                     // 创建 HTTP 客户端
                     let http_base_url = db_init

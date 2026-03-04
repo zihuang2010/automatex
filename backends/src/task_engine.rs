@@ -36,23 +36,33 @@ struct RunningTask {
 // ─── 事件负载（推送给前端）─────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
 pub struct TaskSnapshot {
     pub tasks: Vec<Task>,
+}
+
+/// 零拷贝快照：序列化时直接引用 tasks，避免深度 clone
+#[derive(Serialize)]
+struct TaskSnapshotRef<'a> {
+    tasks: &'a [Task],
 }
 
 // ─── tick 执行后需要持久化的操作 ──────────────────────────────
 
 /// tick 产生的副作用，在释放 tasks 写锁后执行
 enum TickEffect {
-    /// 推进了一个关键词
+    /// 推进了一个关键词（记录的是真正完成 RUN→OK 的那个）
     KeywordDone {
         task_id: String,
         city_name: String,
         kw_name: String,
         device_serial: String,
     },
-    /// 整个任务执行完成
-    TaskSuccess { task_id: String },
+    /// 整个任务执行完成（可能包含最后一个完成的关键词）
+    TaskSuccess {
+        task_id: String,
+        last_keyword: Option<(String, String, String)>, // (city, kw, device)
+    },
     /// 设备离线，任务需要标记 ERROR
     DeviceOffline {
         task_id: String,
@@ -63,19 +73,24 @@ enum TickEffect {
         task_id: String,
         device_serial: String,
     },
-    /// 无需任何 DB 操作（城市切换、RUN→OK 等）
+    /// 无需任何 DB 操作（城市切换、初始 RUN 标记等）
     None,
 }
 
 // ─── 引擎核心 ─────────────────────────────────────────────────
 
-/// 从预加载的设备列表中挑选就绪设备（不执行 DB 查询，避免在写锁内阻塞）
-fn pick_ready_serial(devices: &[DeviceRow], tasks: &[Task]) -> Result<String, String> {
-    let assigned: HashSet<&str> = tasks
+/// FIX #13: 提取已分配设备集合计算为公共辅助函数，避免各处重复代码
+fn compute_assigned_set(tasks: &[Task]) -> HashSet<&str> {
+    tasks
         .iter()
         .filter(|t| t.status == task_status::EXECUTING)
         .filter_map(|t| t.assigned_device.as_deref())
-        .collect();
+        .collect()
+}
+
+/// 从预加载的设备列表中挑选就绪设备（不执行 DB 查询，避免在写锁内阻塞）
+fn pick_ready_serial(devices: &[DeviceRow], tasks: &[Task]) -> Result<String, String> {
+    let assigned = compute_assigned_set(tasks);
 
     devices
         .iter()
@@ -174,8 +189,19 @@ impl TaskEngine {
             serial
         };
 
-        // 创建新轮次
-        let round_id = self.storage.create_round(task_id).await.unwrap_or(0);
+        // FIX #7: 创建新轮次 — 失败时回滚状态并返回错误
+        let round_id = match self.storage.create_round(task_id).await {
+            Some(id) => id,
+            None => {
+                // 回滚内存状态
+                let mut tasks = self.tasks.write().await;
+                if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
+                    task.status = task_status::WAITING.to_string();
+                    task.assigned_device = None;
+                }
+                return Err("创建轮次失败（数据库错误），无法启动任务".into());
+            },
+        };
 
         self.storage
             .save_task_state(task_id, task_status::EXECUTING, Some(&serial), Some(round_id))
@@ -250,13 +276,24 @@ impl TaskEngine {
             serial
         };
 
-        // resume 不创建新轮次，复用当前轮次
-        let round_id = self
-            .storage
-            .load_task_state(task_id)
-            .await
-            .and_then(|(_, _, rid)| rid)
-            .unwrap_or(0);
+        // FIX #6: resume 检查轮次状态，若已结束或无效则创建新轮次
+        let saved_round_id =
+            self.storage.load_task_state(task_id).await.and_then(|(_, _, rid)| rid);
+
+        let round_id = if let Some(rid) = saved_round_id {
+            // 验证 round 是否仍在 running 状态
+            let round_no = self.storage.get_round_no(rid).await;
+            if round_no.is_some() {
+                rid
+            } else {
+                // round 已结束或不存在，创建新轮次
+                eprintln!("[engine] resume: 旧轮次 {} 已结束，创建新轮次", rid);
+                self.storage.create_round(task_id).await.unwrap_or(0)
+            }
+        } else {
+            // 无保存的 round_id，创建新轮次
+            self.storage.create_round(task_id).await.unwrap_or(0)
+        };
 
         self.storage
             .save_task_state(task_id, task_status::EXECUTING, Some(&serial), Some(round_id))
@@ -333,8 +370,13 @@ impl TaskEngine {
             serial
         };
 
-        // retry 创建新轮次
-        let round_id = self.storage.create_round(task_id).await.unwrap_or(0);
+        // FIX #7: retry 创建新轮次 — 失败时返回错误
+        let round_id = match self.storage.create_round(task_id).await {
+            Some(id) => id,
+            None => {
+                return Err("创建轮次失败（数据库错误），无法重试任务".into());
+            },
+        };
 
         self.storage
             .save_task_state(task_id, task_status::EXECUTING, Some(&serial), Some(round_id))
@@ -404,21 +446,18 @@ impl TaskEngine {
     }
 
     /// 获取就绪设备列表（在线且未被任务占用）
+    /// FIX #13: 使用 HashSet<&str> 避免 String clone，复用 compute_assigned_set
     pub async fn get_ready_serials(&self) -> Vec<String> {
         let devices = self.storage.load_all_devices().await;
         let tasks = self.tasks.read().await;
-        let assigned: HashSet<String> = tasks
-            .iter()
-            .filter(|t| t.status == task_status::EXECUTING)
-            .filter_map(|t| t.assigned_device.clone())
-            .collect();
+        let assigned = compute_assigned_set(&tasks);
 
         devices
             .into_iter()
             .filter(|d| {
                 d.state == crate::constants::device_state::DEVICE
                     && !d.is_flagged
-                    && !assigned.contains(&d.serial)
+                    && !assigned.contains(d.serial.as_str())
             })
             .map(|d| d.serial)
             .collect()
@@ -530,14 +569,20 @@ impl TaskEngine {
             let Some(active_idx) = active_idx else {
                 task.status = task_status::SUCCESS.to_string();
                 task.assigned_device = None;
-                break 'effect TickEffect::TaskSuccess { task_id: task_id.to_string() };
+                break 'effect TickEffect::TaskSuccess {
+                    task_id: task_id.to_string(),
+                    last_keyword: None,
+                };
             };
 
             let city = &mut task.cities[active_idx];
 
-            // 上一 tick 的 RUN → OK 时才 done += 1
+            // FIX #5: 先记录真正完成的关键词（RUN → OK），再标记下一个
+            // completed_kw 保存的是刚完成的关键词信息
+            let mut completed_kw: Option<(String, String)> = None;
             for kw in city.keywords.iter_mut() {
                 if kw.status == keyword_status::RUN {
+                    completed_kw = Some((city.name.clone(), kw.name.clone()));
                     kw.status = keyword_status::OK.to_string();
                     city.done += 1;
                     city.progress = if city.total > 0 {
@@ -552,29 +597,64 @@ impl TaskEngine {
             let next_idx = city.keywords.iter().position(|k| k.status == keyword_status::PENDING);
 
             if let Some(idx) = next_idx {
+                // 标记下一个关键词为 RUN（开始执行）
                 city.keywords[idx].status = keyword_status::RUN.to_string();
 
-                TickEffect::KeywordDone {
-                    task_id: task_id.to_string(),
-                    city_name: city.name.clone(),
-                    kw_name: city.keywords[idx].name.clone(),
-                    device_serial,
+                // 如果有刚完成的关键词，记录它；否则仅标记了初始 RUN，无需记录
+                if let Some((done_city, done_kw)) = completed_kw {
+                    TickEffect::KeywordDone {
+                        task_id: task_id.to_string(),
+                        city_name: done_city,
+                        kw_name: done_kw,
+                        device_serial,
+                    }
+                } else {
+                    TickEffect::None // 首次 tick，仅标记第一个 RUN，无完成事件
                 }
-            } else {
-                // 当前城市所有关键词完成
+            } else if let Some((done_city, done_kw)) = completed_kw {
+                // 当前城市最后一个关键词刚完成（没有更多 pending）
                 city.status = city_status::DONE.to_string();
                 city.progress = 100;
 
                 // 激活下一个城市
+                let has_next = task
+                    .cities
+                    .iter_mut()
+                    .find(|c| c.status == city_status::PENDING)
+                    .map(|nc| {
+                        nc.status = city_status::ACTIVE.to_string();
+                    })
+                    .is_some();
+
+                if has_next {
+                    // 还有下一个城市，记录最后完成的关键词
+                    TickEffect::KeywordDone {
+                        task_id: task_id.to_string(),
+                        city_name: done_city,
+                        kw_name: done_kw,
+                        device_serial,
+                    }
+                } else {
+                    // 所有城市完成
+                    task.status = task_status::SUCCESS.to_string();
+                    task.assigned_device = None;
+                    TickEffect::TaskSuccess {
+                        task_id: task_id.to_string(),
+                        last_keyword: Some((done_city, done_kw, device_serial)),
+                    }
+                }
+            } else {
+                // 没有 pending 也没有 completed — 城市完成但这不应该发生
+                city.status = city_status::DONE.to_string();
+                city.progress = 100;
                 let next = task.cities.iter_mut().find(|c| c.status == city_status::PENDING);
                 if let Some(nc) = next {
                     nc.status = city_status::ACTIVE.to_string();
                     TickEffect::None
                 } else {
-                    // 所有城市完成
                     task.status = task_status::SUCCESS.to_string();
                     task.assigned_device = None;
-                    TickEffect::TaskSuccess { task_id: task_id.to_string() }
+                    TickEffect::TaskSuccess { task_id: task_id.to_string(), last_keyword: None }
                 }
             }
         }; // ← 写锁释放
@@ -589,7 +669,13 @@ impl TaskEngine {
                     .await;
                 false
             },
-            TickEffect::TaskSuccess { task_id } => {
+            TickEffect::TaskSuccess { task_id, last_keyword } => {
+                // FIX #5: 如果有最后完成的关键词，先记录它
+                if let Some((city, kw, device)) = last_keyword {
+                    let round_id =
+                        self.running.read().await.get(&task_id).map(|r| r.round_id).unwrap_or(0);
+                    self.storage.record_keyword_done(&task_id, &city, &kw, &device, round_id).await;
+                }
                 // 结束当前轮次
                 if let Some(run) = self.running.read().await.get(&task_id) {
                     self.storage.finish_round(run.round_id, round_status::COMPLETED).await;
@@ -606,12 +692,22 @@ impl TaskEngine {
                     .map(|d| d.state != crate::constants::device_state::DEVICE)
                     .unwrap_or(true);
                 if !still_offline {
-                    // 设备已恢复在线，回滚内存状态
+                    // FIX #8: 设备已恢复在线，回滚内存状态并同步 DB
                     let mut tasks = self.tasks.write().await;
                     if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
                         task.status = task_status::EXECUTING.to_string();
                         task.assigned_device = Some(device_serial.clone());
                     }
+                    // 从 running 表获取当前 round_id 同步到 DB
+                    let round_id = self.running.read().await.get(&task_id).map(|r| r.round_id);
+                    self.storage
+                        .save_task_state(
+                            &task_id,
+                            task_status::EXECUTING,
+                            Some(&device_serial),
+                            round_id,
+                        )
+                        .await;
                     eprintln!("[engine] 设备已恢复在线，回滚任务状态: {}", task_id);
                     return false;
                 }
@@ -637,6 +733,7 @@ impl TaskEngine {
     }
 
     /// 推送任务状态到前端（节流控制）
+    /// FIX #15: 直接在读锁内序列化引用，避免深度 clone 整个 Vec<Task>
     pub async fn emit_update(&self) {
         let throttle_ms = crate::constants::debug::EMIT_THROTTLE_MS;
         {
@@ -647,7 +744,7 @@ impl TaskEngine {
             *last = std::time::Instant::now();
         }
         let tasks = self.tasks.read().await;
-        let snapshot = TaskSnapshot { tasks: tasks.clone() };
+        let snapshot = TaskSnapshotRef { tasks: &*tasks };
         let _ = self.app_handle.emit(crate::constants::tauri_event::TASK_UPDATE, &snapshot);
     }
 
@@ -658,7 +755,7 @@ impl TaskEngine {
             *last = std::time::Instant::now();
         }
         let tasks = self.tasks.read().await;
-        let snapshot = TaskSnapshot { tasks: tasks.clone() };
+        let snapshot = TaskSnapshotRef { tasks: &*tasks };
         let _ = self.app_handle.emit(crate::constants::tauri_event::TASK_UPDATE, &snapshot);
     }
 
@@ -887,12 +984,8 @@ impl TaskEngine {
             tasks.retain(|t| !all_ids_set.contains(&t.id));
         }
 
-        // ── 3. DB 清理（finish rounds/runs + 批量删除任务数据） ──
-        for task_id in &all_task_ids {
-            // 结束可能存在的 round 和 run 记录
-            self.storage.clear_task_progress(task_id).await;
-            self.storage.delete_task_state(task_id).await;
-        }
+        // FIX #10: batch_cleanup_tasks 已包含删除 progress/state/rounds/runs/defs
+        // 无需在此之前逐条删除（移除冗余操作）
         self.storage.batch_cleanup_tasks(&all_task_ids).await;
 
         let removed = all_task_ids.len() as u32;

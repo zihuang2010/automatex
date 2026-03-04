@@ -141,12 +141,34 @@ pub mod setting_key {
 }
 
 /// MQTT 连接默认值
+/// 优先从环境变量读取，硬编码值仅作为开发阶段 fallback
 pub mod mqtt_default {
-    pub const HOST: &str = "39.98.170.208";
-    pub const PORT: &str = "30002";
-    pub const PORT_NUM: u16 = 30002;
-    pub const USERNAME: &str = "automatex";
-    pub const PASSWORD: &str = "zihuang2010=-0";
+    use std::sync::OnceLock;
+
+    fn env_or(var: &str, fallback: &str) -> String {
+        std::env::var(var).unwrap_or_else(|_| fallback.to_string())
+    }
+
+    /// 以下硬编码值仅用于开发环境，生产环境应通过环境变量 AUTOMATEX_MQTT_* 覆盖
+    pub fn host() -> &'static str {
+        static V: OnceLock<String> = OnceLock::new();
+        V.get_or_init(|| env_or("AUTOMATEX_MQTT_HOST", "39.98.170.208"))
+    }
+    pub fn port() -> &'static str {
+        static V: OnceLock<String> = OnceLock::new();
+        V.get_or_init(|| env_or("AUTOMATEX_MQTT_PORT", "30002"))
+    }
+    pub fn port_num() -> u16 {
+        port().parse().unwrap_or(30002)
+    }
+    pub fn username() -> &'static str {
+        static V: OnceLock<String> = OnceLock::new();
+        V.get_or_init(|| env_or("AUTOMATEX_MQTT_USERNAME", "automatex"))
+    }
+    pub fn password() -> &'static str {
+        static V: OnceLock<String> = OnceLock::new();
+        V.get_or_init(|| env_or("AUTOMATEX_MQTT_PASSWORD", "zihuang2010=-0"))
+    }
     pub const FALLBACK_HOST: &str = "127.0.0.1";
 }
 

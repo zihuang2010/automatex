@@ -28,40 +28,27 @@ pub fn setting_or(map: &HashMap<String, String>, key: &str, default: &str) -> St
 
 // ─── 机器指纹 ─────────────────────────────────────────────────
 
-/// 基于机器指纹生成稳定唯一的 clientId
-/// 采集 hostname + username + OS + arch，hash 后生成 16 位 hex 标识
+/// 基于 UUID v4 生成全局唯一的 clientId
+/// 旧版使用机器指纹哈希，存在碰撞风险（特别是 VM/Docker 环境）
+/// 现改用 UUID v4 确保唯一性，机器指纹仅用于日志标识
 pub fn generate_machine_client_id() -> String {
-    use std::hash::{Hash, Hasher};
+    let id = format!("atx-{}", uuid::Uuid::new_v4().as_simple());
+    // 截取前 20 字符保持 client_id 可读性
+    let short_id = &id[..20.min(id.len())];
 
+    // 机器指纹仅用于日志（方便排查同一台机器的多个实例）
     let hostname = std::env::var("HOSTNAME")
         .or_else(|_| std::env::var("COMPUTERNAME"))
         .or_else(|_| {
-            // macOS/Linux fallback
             std::process::Command::new("hostname")
                 .output()
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         })
         .unwrap_or_else(|_| "unknown-host".to_string());
-
     let username = std::env::var("USER")
         .or_else(|_| std::env::var("USERNAME"))
         .unwrap_or_else(|_| "unknown-user".to_string());
 
-    let os = std::env::consts::OS;
-    let arch = std::env::consts::ARCH;
-
-    let fingerprint = format!("{}|{}|{}|{}", hostname, username, os, arch);
-
-    // 使用两轮不同种子的 hash 来生成 16 位 hex（128 bit 空间）
-    let mut hasher1 = std::collections::hash_map::DefaultHasher::new();
-    fingerprint.hash(&mut hasher1);
-    let h1 = hasher1.finish();
-
-    let mut hasher2 = std::collections::hash_map::DefaultHasher::new();
-    format!("salt-v1-{}", fingerprint).hash(&mut hasher2);
-    let h2 = hasher2.finish();
-
-    let id = format!("atx-{:08x}{:08x}", h1 as u32, h2 as u32);
-    eprintln!("[client_id] 机器指纹: {} → {}", fingerprint, id);
-    id
+    eprintln!("[client_id] 生成新 ID: {} (host={}, user={})", short_id, hostname, username);
+    short_id.to_string()
 }
