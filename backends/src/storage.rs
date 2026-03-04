@@ -60,14 +60,6 @@ fn row_to_device(row: &rusqlite::Row) -> rusqlite::Result<DeviceRow> {
     })
 }
 
-fn get_schema_version(conn: &Connection) -> i32 {
-    conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap_or(0)
-}
-
-fn set_schema_version(conn: &Connection, version: i32) {
-    let _ = conn.execute_batch(&format!("PRAGMA user_version = {};", version));
-}
-
 /// deadpool-sqlite interact 统一错误转换
 #[allow(dead_code)]
 fn map_interact_err(e: deadpool_sqlite::InteractError) -> String {
@@ -90,7 +82,7 @@ impl Database {
             .ok_or_else(|| "数据库路径包含非 UTF-8 字符".to_string())?
             .to_string();
 
-        // Phase 1: 用裸 Connection 同步执行建表 + 迁移（一次性操作）
+        // 同步建表（裸 Connection，一次性操作）
         {
             let conn = Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {}", e))?;
             conn.execute_batch("PRAGMA journal_mode=WAL;")
@@ -111,20 +103,57 @@ impl Database {
                 display_resolution TEXT NOT NULL DEFAULT 'unknown',
                 battery_level      INTEGER NOT NULL DEFAULT 0,
                 battery_temperature REAL NOT NULL DEFAULT 0.0,
+                is_flagged         INTEGER NOT NULL DEFAULT 0,
                 updated_at         INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS a_settings (
                 key   TEXT PRIMARY KEY,
-                value TEXT NOT NULL
+                value TEXT NOT NULL DEFAULT ''
             );
 
-            CREATE TABLE IF NOT EXISTS a_task_cache (
+            CREATE TABLE IF NOT EXISTS a_task_defs (
                 task_id    TEXT PRIMARY KEY,
-                name       TEXT NOT NULL,
-                payload    TEXT NOT NULL,
+                name       TEXT NOT NULL DEFAULT '',
+                payload    TEXT NOT NULL DEFAULT '[]',
                 version    INTEGER NOT NULL DEFAULT 1,
-                fetched_at INTEGER NOT NULL
+                fetched_at INTEGER NOT NULL DEFAULT 0,
+                city_order TEXT,
+                phone      TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS a_task_state (
+                task_id          TEXT PRIMARY KEY,
+                status           TEXT NOT NULL DEFAULT 'WAITING',
+                assigned_device  TEXT,
+                current_round_id INTEGER
+            );
+
+            CREATE TABLE IF NOT EXISTS a_task_rounds (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id    TEXT NOT NULL,
+                run_date   TEXT NOT NULL,
+                round_no   INTEGER NOT NULL,
+                started_at INTEGER NOT NULL,
+                ended_at   INTEGER,
+                status     TEXT NOT NULL DEFAULT 'running',
+                UNIQUE(task_id, run_date, round_no)
+            );
+
+            CREATE TABLE IF NOT EXISTS a_task_runs (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id           TEXT NOT NULL,
+                device_serial     TEXT NOT NULL,
+                round_id          INTEGER,
+                run_date          TEXT NOT NULL,
+                started_at        INTEGER NOT NULL,
+                ended_at          INTEGER,
+                duration_sec      INTEGER,
+                status            TEXT NOT NULL DEFAULT 'running',
+                cities_done       INTEGER NOT NULL DEFAULT 0,
+                keywords_done     INTEGER NOT NULL DEFAULT 0,
+                keywords_baseline INTEGER NOT NULL DEFAULT 0,
+                sync_status       TEXT NOT NULL DEFAULT 'pending'
             );
 
             CREATE TABLE IF NOT EXISTS a_task_progress (
@@ -132,73 +161,28 @@ impl Database {
                 task_id       TEXT NOT NULL,
                 city_name     TEXT NOT NULL,
                 keyword_name  TEXT NOT NULL,
+                round_id      INTEGER NOT NULL DEFAULT 0,
                 status        TEXT NOT NULL DEFAULT 'ok',
                 completed_at  INTEGER NOT NULL,
                 device_serial TEXT NOT NULL,
                 sync_status   TEXT NOT NULL DEFAULT 'pending',
-                UNIQUE(task_id, city_name, keyword_name)
+                UNIQUE(task_id, city_name, keyword_name, round_id)
             );
 
-            CREATE TABLE IF NOT EXISTS a_task_runs (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                task_id       TEXT NOT NULL,
-                device_serial TEXT NOT NULL,
-                run_date      TEXT NOT NULL,
-                started_at    INTEGER NOT NULL,
-                ended_at      INTEGER,
-                duration_sec  INTEGER,
-                status        TEXT NOT NULL DEFAULT 'running',
-                cities_done   INTEGER NOT NULL DEFAULT 0,
-                keywords_done INTEGER NOT NULL DEFAULT 0,
-                sync_status   TEXT NOT NULL DEFAULT 'pending',
-                UNIQUE(task_id, device_serial, started_at)
-            );
-
+            CREATE INDEX IF NOT EXISTS idx_devices_hw_serial ON a_devices(hw_serial);
+            CREATE INDEX IF NOT EXISTS idx_task_defs_phone ON a_task_defs(phone);
+            CREATE INDEX IF NOT EXISTS idx_rounds_task ON a_task_rounds(task_id);
+            CREATE INDEX IF NOT EXISTS idx_rounds_date ON a_task_rounds(run_date);
             CREATE INDEX IF NOT EXISTS idx_progress_task ON a_task_progress(task_id);
+            CREATE INDEX IF NOT EXISTS idx_progress_round ON a_task_progress(round_id);
             CREATE INDEX IF NOT EXISTS idx_progress_sync ON a_task_progress(sync_status);
+            CREATE INDEX IF NOT EXISTS idx_runs_task ON a_task_runs(task_id);
+            CREATE INDEX IF NOT EXISTS idx_runs_round ON a_task_runs(round_id);
             CREATE INDEX IF NOT EXISTS idx_runs_date ON a_task_runs(run_date, task_id);
             CREATE INDEX IF NOT EXISTS idx_runs_sync ON a_task_runs(sync_status);
-            CREATE INDEX IF NOT EXISTS idx_runs_task_started ON a_task_runs(task_id, started_at);
-            CREATE INDEX IF NOT EXISTS idx_runs_task_date ON a_task_runs(task_id, run_date);
-            CREATE INDEX IF NOT EXISTS idx_runs_device_date ON a_task_runs(device_serial, run_date);
-            CREATE INDEX IF NOT EXISTS idx_devices_hw_serial ON a_devices(hw_serial);
-
-            CREATE TABLE IF NOT EXISTS a_phone_tasks (
-                phone    TEXT NOT NULL,
-                task_id  TEXT NOT NULL UNIQUE,
-                PRIMARY KEY (phone, task_id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_phone_tasks_phone ON a_phone_tasks(phone);",
+            CREATE INDEX IF NOT EXISTS idx_runs_device_date ON a_task_runs(device_serial, run_date);",
             )
             .map_err(|e| format!("建表失败: {}", e))?;
-
-            // ── 版本化迁移 ──
-            let version = get_schema_version(&conn);
-            if version < 1 {
-                let _ = conn.execute_batch(
-                    "ALTER TABLE a_task_cache ADD COLUMN status TEXT NOT NULL DEFAULT 'WAITING';
-                     ALTER TABLE a_task_cache ADD COLUMN assigned_device TEXT;",
-                );
-                set_schema_version(&conn, 1);
-            }
-            if version < 2 {
-                let _ = conn.execute_batch(
-                    "ALTER TABLE a_task_runs ADD COLUMN keywords_baseline INTEGER NOT NULL DEFAULT 0;",
-                );
-                set_schema_version(&conn, 2);
-            }
-            if version < 3 {
-                let _ = conn.execute_batch("ALTER TABLE a_task_cache ADD COLUMN city_order TEXT;");
-                set_schema_version(&conn, 3);
-            }
-            if version < 4 {
-                let _ = conn.execute_batch(
-                    "ALTER TABLE a_devices ADD COLUMN is_flagged INTEGER NOT NULL DEFAULT 0;",
-                );
-                set_schema_version(&conn, 4);
-            }
-            eprintln!("[db] schema_version: {} → 4", version);
-            // conn 在此作用域结束时自动关闭
         }
 
         // Phase 2: 创建 deadpool-sqlite 连接池（带 PRAGMA hook + 限制池大小）
@@ -448,10 +432,9 @@ impl Database {
             .await;
     }
 
-    /// 批量清理任务（单连接事务内完成，减少池往返）
-    pub async fn batch_cleanup_tasks(&self, task_ids: &[String], phones: &[String]) {
+    /// 批量清理任务（单连接事务内完成）
+    pub async fn batch_cleanup_tasks(&self, task_ids: &[String]) {
         let task_ids = task_ids.to_vec();
-        let phones = phones.to_vec();
         let Ok(conn) = self.pool.get().await else { return };
         let _ = conn
             .interact(move |conn| {
@@ -465,11 +448,11 @@ impl Database {
                 for tid in &task_ids {
                     let _ =
                         tx.execute("DELETE FROM a_task_progress WHERE task_id = ?1", params![tid]);
-                    let _ = tx.execute("DELETE FROM a_task_cache WHERE task_id = ?1", params![tid]);
-                }
-                for phone in &phones {
+                    let _ = tx.execute("DELETE FROM a_task_runs WHERE task_id = ?1", params![tid]);
                     let _ =
-                        tx.execute("DELETE FROM a_phone_tasks WHERE phone = ?1", params![phone]);
+                        tx.execute("DELETE FROM a_task_rounds WHERE task_id = ?1", params![tid]);
+                    let _ = tx.execute("DELETE FROM a_task_state WHERE task_id = ?1", params![tid]);
+                    let _ = tx.execute("DELETE FROM a_task_defs WHERE task_id = ?1", params![tid]);
                 }
                 if let Err(e) = tx.commit() {
                     eprintln!("[db] batch_cleanup_tasks 事务提交失败: {}", e);
@@ -563,6 +546,35 @@ impl Database {
         .flatten()
     }
 
+    #[allow(dead_code)]
+    /// 删除全部设备（跨日重置用）
+    pub async fn delete_all_devices(&self) {
+        let Ok(conn) = self.pool.get().await else { return };
+        let _ = conn
+            .interact(|conn| {
+                let result = conn.execute("DELETE FROM a_devices", []);
+                match result {
+                    Ok(n) => eprintln!("[db] 跨日重置: 删除了 {} 台设备", n),
+                    Err(e) => eprintln!("[db] delete_all_devices 失败: {}", e),
+                }
+            })
+            .await;
+    }
+
+    #[allow(dead_code)]
+    /// 解除所有设备风控标记（跨日重置用）
+    pub async fn unflag_all_devices(&self) {
+        let Ok(conn) = self.pool.get().await else { return };
+        let _ = conn
+            .interact(|conn| {
+                log_exec(
+                    conn.execute("UPDATE a_devices SET is_flagged = 0 WHERE is_flagged = 1", []),
+                    "unflag_all_devices",
+                );
+            })
+            .await;
+    }
+
     pub async fn get_setting(&self, key: &str) -> Option<String> {
         let key = key.to_string();
         let conn = self.pool.get().await.ok()?;
@@ -596,123 +608,31 @@ impl Database {
         .unwrap_or_default()
     }
 
-    // ─── 手机号任务映射操作 ────────────────────────────────────────
+    // ─── 任务定义操作（a_task_defs）─────────────────────────────────
 
-    pub async fn insert_phone_task(&self, phone: &str, task_id: &str) {
-        let phone = phone.to_string();
-        let task_id = task_id.to_string();
-        let Ok(conn) = self.pool.get().await else { return };
-        let _ = conn
-            .interact(move |conn| {
-                log_exec(
-                    conn.execute(
-                        "INSERT OR REPLACE INTO a_phone_tasks (phone, task_id) VALUES (?1, ?2)",
-                        params![phone, task_id],
-                    ),
-                    "insert_phone_task",
-                );
-            })
-            .await;
-    }
-
-    pub async fn get_tasks_by_phone(&self, phone: &str) -> Vec<String> {
-        let phone = phone.to_string();
-        let Ok(conn) = self.pool.get().await else { return Vec::new() };
-        conn.interact(move |conn| {
-            let mut stmt = conn
-                .prepare("SELECT task_id FROM a_phone_tasks WHERE phone = ?1")
-                .unwrap_or_else(|_| conn.prepare("SELECT '' WHERE 0").unwrap());
-            stmt.query_map(params![phone], |row| row.get::<_, String>(0))
-                .ok()
-                .map(|rows| rows.flatten().collect())
-                .unwrap_or_default()
-        })
-        .await
-        .unwrap_or_default()
-    }
-
-    #[allow(dead_code)]
-    pub async fn get_all_phone_tasks(&self) -> std::collections::HashMap<String, Vec<String>> {
-        let Ok(conn) = self.pool.get().await else { return Default::default() };
-        conn.interact(|conn| {
-            let mut map: std::collections::HashMap<String, Vec<String>> =
-                std::collections::HashMap::new();
-            if let Ok(mut stmt) =
-                conn.prepare("SELECT phone, task_id FROM a_phone_tasks ORDER BY phone")
-            {
-                if let Ok(rows) = stmt
-                    .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
-                {
-                    for row in rows.flatten() {
-                        map.entry(row.0).or_default().push(row.1);
-                    }
-                }
-            }
-            map
-        })
-        .await
-        .unwrap_or_default()
-    }
-
-    #[allow(dead_code)]
-    pub async fn delete_phone_tasks(&self, phone: &str) {
-        let phone = phone.to_string();
-        let Ok(conn) = self.pool.get().await else { return };
-        let _ = conn
-            .interact(move |conn| {
-                log_exec(
-                    conn.execute("DELETE FROM a_phone_tasks WHERE phone = ?1", params![phone]),
-                    "delete_phone_tasks",
-                );
-            })
-            .await;
-    }
-
-    #[allow(dead_code)]
-    pub async fn clear_all_phone_tasks(&self) {
-        let Ok(conn) = self.pool.get().await else { return };
-        let _ = conn
-            .interact(|conn| {
-                log_exec(conn.execute("DELETE FROM a_phone_tasks", []), "clear_all_phone_tasks");
-            })
-            .await;
-    }
-
-    // ─── 任务缓存操作 ────────────────────────────────────────────
-
-    /// 从 DB 读取所有缓存的任务定义
     pub async fn load_all_task_defs(&self) -> Vec<(String, String, String)> {
-        // 返回 (task_id, name, payload_json)
         let conn = match self.pool.get().await {
             Ok(c) => c,
             Err(_) => return Vec::new(),
         };
         conn.interact(|conn| {
-            let mut stmt = conn.prepare("SELECT task_id, name, payload FROM a_task_cache").unwrap();
-            let rows = stmt
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                })
-                .unwrap()
-                .filter_map(|r| r.ok())
-                .collect::<Vec<_>>();
-            rows
+            let mut stmt = conn.prepare("SELECT task_id, name, payload FROM a_task_defs")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            })?;
+            Ok::<_, rusqlite::Error>(rows.filter_map(|r| r.ok()).collect())
         })
         .await
+        .unwrap_or_else(|_| Ok(Vec::new()))
         .unwrap_or_default()
     }
 
-    /// 从 DB 读取单个任务定义
     pub async fn load_task_def_by_id(&self, task_id: &str) -> Option<(String, String, String)> {
         let task_id = task_id.to_string();
         let conn = self.pool.get().await.ok()?;
         conn.interact(move |conn| {
             conn.query_row(
-                "SELECT task_id, name, payload FROM a_task_cache WHERE task_id = ?1",
+                "SELECT task_id, name, payload FROM a_task_defs WHERE task_id = ?1",
                 params![task_id],
                 |row| {
                     Ok((
@@ -729,131 +649,101 @@ impl Database {
         .flatten()
     }
 
-    pub async fn upsert_task_cache(&self, task_id: &str, name: &str, payload: &str, version: i64) {
+    pub async fn upsert_task_def(
+        &self,
+        task_id: &str,
+        name: &str,
+        payload: &str,
+        version: i64,
+        phone: &str,
+    ) {
         let task_id = task_id.to_string();
         let name = name.to_string();
         let payload = payload.to_string();
-        let Ok(conn) = self.pool.get().await else { return };
-        let _ = conn.interact(move |conn| {
-            let now = now_unix();
-            log_exec(
-                conn.execute(
-                    "INSERT INTO a_task_cache (task_id, name, payload, version, fetched_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5)
-                     ON CONFLICT(task_id) DO UPDATE SET name=excluded.name, payload=excluded.payload, version=excluded.version, fetched_at=excluded.fetched_at",
-                    params![task_id, name, payload, version, now],
-                ),
-                "upsert_task_cache",
-            );
-        }).await;
-    }
-
-    pub async fn save_task_state(
-        &self,
-        task_id: &str,
-        status: &str,
-        assigned_device: Option<&str>,
-    ) {
-        let task_id = task_id.to_string();
-        let status = status.to_string();
-        let assigned_device = assigned_device.map(|s| s.to_string());
+        let phone = phone.to_string();
         let Ok(conn) = self.pool.get().await else { return };
         let _ = conn
             .interact(move |conn| {
+                let now = now_unix();
                 log_exec(
                 conn.execute(
-                    "UPDATE a_task_cache SET status = ?2, assigned_device = ?3 WHERE task_id = ?1",
-                    params![task_id, status, assigned_device],
+                    "INSERT INTO a_task_defs (task_id, name, payload, version, fetched_at, phone)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT(task_id) DO UPDATE SET
+                         name=excluded.name, payload=excluded.payload,
+                         version=excluded.version, fetched_at=excluded.fetched_at,
+                         phone=CASE WHEN excluded.phone = '' THEN a_task_defs.phone ELSE excluded.phone END",
+                    params![task_id, name, payload, version, now, phone],
                 ),
-                "save_task_state",
+                "upsert_task_def",
             );
             })
             .await;
     }
 
-    pub async fn load_task_state(&self, task_id: &str) -> Option<(String, Option<String>)> {
-        let task_id = task_id.to_string();
-        let conn = self.pool.get().await.ok()?;
-        conn.interact(move |conn| {
-            conn.query_row(
-                "SELECT status, assigned_device FROM a_task_cache WHERE task_id = ?1",
-                params![task_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .ok()
-        })
-        .await
-        .ok()
-        .flatten()
-    }
-
-    pub async fn delete_task_state(&self, task_id: &str) {
+    #[allow(dead_code)]
+    pub async fn delete_task_def(&self, task_id: &str) {
         let task_id = task_id.to_string();
         let Ok(conn) = self.pool.get().await else { return };
-        let _ = conn.interact(move |conn| {
-            log_exec(
-                conn.execute(
-                    "UPDATE a_task_cache SET status = 'WAITING', assigned_device = NULL WHERE task_id = ?1",
-                    params![task_id],
-                ),
-                "delete_task_state",
-            );
-        }).await;
+        let _ = conn
+            .interact(move |conn| {
+                log_exec(
+                    conn.execute("DELETE FROM a_task_defs WHERE task_id = ?1", params![task_id]),
+                    "delete_task_def",
+                );
+            })
+            .await;
     }
 
-    /// 批量加载全部 task_progress（用于 load_tasks 消除 N+1）
-    pub async fn load_all_progress(&self) -> Vec<ProgressRow> {
+    pub async fn get_tasks_by_phone(&self, phone: &str) -> Vec<String> {
+        let phone = phone.to_string();
         let Ok(conn) = self.pool.get().await else { return Vec::new() };
-        conn.interact(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT task_id, city_name, keyword_name, status, completed_at, device_serial
-                 FROM a_task_progress",
-            )?;
-            let rows = stmt.query_map([], |row| {
-                Ok(ProgressRow {
-                    task_id: row.get(0)?,
-                    city_name: row.get(1)?,
-                    keyword_name: row.get(2)?,
-                    status: row.get(3)?,
-                    completed_at: row.get(4)?,
-                    device_serial: row.get(5)?,
-                })
-            })?;
-            Ok::<_, rusqlite::Error>(rows.filter_map(|r| r.ok()).collect())
+        conn.interact(move |conn| {
+            let mut stmt = conn
+                .prepare("SELECT task_id FROM a_task_defs WHERE phone = ?1")
+                .unwrap_or_else(|_| conn.prepare("SELECT '' WHERE 0").unwrap());
+            stmt.query_map(params![phone], |row| row.get::<_, String>(0))
+                .ok()
+                .map(|rows| rows.flatten().collect())
+                .unwrap_or_default()
         })
         .await
-        .unwrap_or_else(|_| Ok(Vec::new()))
         .unwrap_or_default()
     }
 
-    /// 批量加载全部 task_cache 的状态（用于 load_tasks 消除 N+1）
-    pub async fn load_all_task_states(
-        &self,
-    ) -> std::collections::HashMap<String, (String, Option<String>)> {
-        let Ok(conn) = self.pool.get().await else {
-            return Default::default();
-        };
-        conn.interact(|conn| {
-            let mut map = std::collections::HashMap::new();
-            if let Ok(mut stmt) =
-                conn.prepare("SELECT task_id, status, assigned_device FROM a_task_cache")
-            {
-                if let Ok(rows) = stmt.query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                    ))
-                }) {
-                    for row in rows.flatten() {
-                        map.insert(row.0, (row.1, row.2));
-                    }
-                }
-            }
-            map
-        })
-        .await
-        .unwrap_or_default()
+    pub async fn save_city_order(&self, task_id: &str, order: &[String]) {
+        let task_id = task_id.to_string();
+        let json = serde_json::to_string(order).unwrap_or_default();
+        let Ok(conn) = self.pool.get().await else { return };
+        let _ = conn
+            .interact(move |conn| {
+                log_exec(
+                    conn.execute(
+                        "UPDATE a_task_defs SET city_order = ?2 WHERE task_id = ?1",
+                        params![task_id, json],
+                    ),
+                    "save_city_order",
+                );
+            })
+            .await;
+    }
+
+    pub async fn load_city_order(&self, task_id: &str) -> Option<Vec<String>> {
+        let task_id = task_id.to_string();
+        let conn = self.pool.get().await.ok()?;
+        let json: Option<String> = conn
+            .interact(move |conn| {
+                conn.query_row(
+                    "SELECT city_order FROM a_task_defs WHERE task_id = ?1",
+                    params![task_id],
+                    |row| row.get(0),
+                )
+                .ok()
+            })
+            .await
+            .ok()
+            .flatten()?;
+        json.and_then(|s| serde_json::from_str(&s).ok())
     }
 
     /// 批量加载全部 city_order（用于 load_tasks 消除 N+1）
@@ -863,9 +753,9 @@ impl Database {
         };
         conn.interact(|conn| {
             let mut map = std::collections::HashMap::new();
-            if let Ok(mut stmt) = conn.prepare(
-                "SELECT task_id, city_order FROM a_task_cache WHERE city_order IS NOT NULL",
-            ) {
+            if let Ok(mut stmt) = conn
+                .prepare("SELECT task_id, city_order FROM a_task_defs WHERE city_order IS NOT NULL")
+            {
                 if let Ok(rows) = stmt
                     .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
                 {
@@ -882,88 +772,185 @@ impl Database {
         .unwrap_or_default()
     }
 
-    pub async fn save_city_order(&self, task_id: &str, order: &[String]) {
+    // ─── 任务运行时状态操作（a_task_state）────────────────────────────
+
+    pub async fn save_task_state(
+        &self,
+        task_id: &str,
+        status: &str,
+        assigned_device: Option<&str>,
+        current_round_id: Option<i64>,
+    ) {
         let task_id = task_id.to_string();
-        let json = serde_json::to_string(order).unwrap_or_default();
+        let status = status.to_string();
+        let assigned_device = assigned_device.map(|s| s.to_string());
         let Ok(conn) = self.pool.get().await else { return };
         let _ = conn
             .interact(move |conn| {
                 log_exec(
                     conn.execute(
-                        "UPDATE a_task_cache SET city_order = ?2 WHERE task_id = ?1",
-                        params![task_id, json],
+                        "INSERT INTO a_task_state (task_id, status, assigned_device, current_round_id)
+                         VALUES (?1, ?2, ?3, ?4)
+                         ON CONFLICT(task_id) DO UPDATE SET
+                             status=excluded.status,
+                             assigned_device=COALESCE(excluded.assigned_device, a_task_state.assigned_device),
+                             current_round_id=COALESCE(excluded.current_round_id, a_task_state.current_round_id)",
+                        params![task_id, status, assigned_device, current_round_id],
                     ),
-                    "save_city_order",
+                    "save_task_state",
                 );
             })
             .await;
     }
 
-    pub async fn load_city_order(&self, task_id: &str) -> Option<Vec<String>> {
-        let task_id = task_id.to_string();
-        let conn = self.pool.get().await.ok()?;
-        let json: Option<String> = conn
-            .interact(move |conn| {
-                conn.query_row(
-                    "SELECT city_order FROM a_task_cache WHERE task_id = ?1",
-                    params![task_id],
-                    |row| row.get(0),
-                )
-                .ok()
-            })
-            .await
-            .ok()
-            .flatten()?;
-        json.and_then(|s| serde_json::from_str(&s).ok())
-    }
-
-    #[allow(dead_code)]
-    pub async fn load_task_cache(&self, task_id: &str) -> Option<TaskCacheRow> {
+    pub async fn load_task_state(
+        &self,
+        task_id: &str,
+    ) -> Option<(String, Option<String>, Option<i64>)> {
         let task_id = task_id.to_string();
         let conn = self.pool.get().await.ok()?;
         conn.interact(move |conn| {
             conn.query_row(
-                "SELECT task_id, name, payload, version, fetched_at FROM a_task_cache WHERE task_id = ?1",
+                "SELECT status, assigned_device, current_round_id FROM a_task_state WHERE task_id = ?1",
                 params![task_id],
-                |row| {
-                    Ok(TaskCacheRow {
-                        task_id: row.get(0)?, name: row.get(1)?, payload: row.get(2)?,
-                        version: row.get(3)?, fetched_at: row.get(4)?,
-                    })
-                },
-            ).ok()
-        }).await.ok().flatten()
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .ok()
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
-    #[allow(dead_code)]
-    pub async fn load_all_task_caches(&self) -> Vec<TaskCacheRow> {
-        let Ok(conn) = self.pool.get().await else { return Vec::new() };
-        conn.interact(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT task_id, name, payload, version, fetched_at FROM a_task_cache ORDER BY name",
-            )?;
-            let rows = stmt.query_map([], |row| {
-                Ok(TaskCacheRow {
-                    task_id: row.get(0)?, name: row.get(1)?, payload: row.get(2)?,
-                    version: row.get(3)?, fetched_at: row.get(4)?,
-                })
-            })?;
-            Ok::<_, rusqlite::Error>(rows.filter_map(|r| r.ok()).collect())
-        }).await.unwrap_or_else(|_| Ok(Vec::new())).unwrap_or_default()
-    }
-
-    #[allow(dead_code)]
-    pub async fn delete_task_cache(&self, task_id: &str) {
+    pub async fn delete_task_state(&self, task_id: &str) {
         let task_id = task_id.to_string();
         let Ok(conn) = self.pool.get().await else { return };
         let _ = conn
             .interact(move |conn| {
                 log_exec(
-                    conn.execute("DELETE FROM a_task_cache WHERE task_id = ?1", params![task_id]),
-                    "delete_task_cache",
+                    conn.execute("DELETE FROM a_task_state WHERE task_id = ?1", params![task_id]),
+                    "delete_task_state",
                 );
             })
             .await;
+    }
+
+    /// 批量加载全部任务状态（用于 load_tasks 消除 N+1）
+    pub async fn load_all_task_states(
+        &self,
+    ) -> std::collections::HashMap<String, (String, Option<String>, Option<i64>)> {
+        let Ok(conn) = self.pool.get().await else {
+            return Default::default();
+        };
+        conn.interact(|conn| {
+            let mut map = std::collections::HashMap::new();
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT task_id, status, assigned_device, current_round_id FROM a_task_state",
+            ) {
+                if let Ok(rows) = stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<i64>>(3)?,
+                    ))
+                }) {
+                    for row in rows.flatten() {
+                        map.insert(row.0, (row.1, row.2, row.3));
+                    }
+                }
+            }
+            map
+        })
+        .await
+        .unwrap_or_default()
+    }
+
+    #[allow(dead_code)]
+    /// 跨日重置：所有任务状态回到 WAITING
+    pub async fn daily_reset_tasks(&self) {
+        let Ok(conn) = self.pool.get().await else { return };
+        let _ = conn
+            .interact(|conn| {
+                let result = conn.execute(
+                    "UPDATE a_task_state SET status = 'WAITING', assigned_device = NULL, current_round_id = NULL",
+                    [],
+                );
+                match result {
+                    Ok(n) => eprintln!("[db] 跨日重置: 重置了 {} 个任务状态", n),
+                    Err(e) => eprintln!("[db] daily_reset_tasks 失败: {}", e),
+                }
+            })
+            .await;
+    }
+
+    // ─── 轮次操作（a_task_rounds）────────────────────────────────────
+
+    /// 创建新轮次，返回 round_id
+    pub async fn create_round(&self, task_id: &str) -> Option<i64> {
+        let task_id = task_id.to_string();
+        let conn = self.pool.get().await.ok()?;
+        conn.interact(move |conn| {
+            let today = today_str();
+            let now = now_unix();
+            // 事务保证 MAX+INSERT 原子性，避免并发 round_no 重复
+            let tx = conn.transaction().ok()?;
+            let round_no: i32 = tx
+                .query_row(
+                    "SELECT COALESCE(MAX(round_no), 0) + 1 FROM a_task_rounds WHERE task_id = ?1 AND run_date = ?2",
+                    params![task_id, today],
+                    |row| row.get(0),
+                )
+                .unwrap_or(1);
+            tx.execute(
+                "INSERT INTO a_task_rounds (task_id, run_date, round_no, started_at, status)
+                 VALUES (?1, ?2, ?3, ?4, 'running')",
+                params![task_id, today, round_no, now],
+            ).ok()?;
+            let id = tx.last_insert_rowid();
+            tx.commit().ok()?;
+            eprintln!("[db] 创建轮次: task={}, date={}, round_no={}, id={}", task_id, today, round_no, id);
+            Some(id)
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    /// 结束轮次
+    pub async fn finish_round(&self, round_id: i64, status: &str) {
+        let status = status.to_string();
+        let Ok(conn) = self.pool.get().await else { return };
+        let _ = conn
+            .interact(move |conn| {
+                let now = now_unix();
+                log_exec(
+                    conn.execute(
+                        "UPDATE a_task_rounds SET ended_at = ?1, status = ?2 WHERE id = ?3",
+                        params![now, status, round_id],
+                    ),
+                    "finish_round",
+                );
+            })
+            .await;
+    }
+
+    /// 获取当前运行中的轮次 ID
+    #[allow(dead_code)]
+    pub async fn get_active_round(&self, task_id: &str) -> Option<i64> {
+        let task_id = task_id.to_string();
+        let conn = self.pool.get().await.ok()?;
+        conn.interact(move |conn| {
+            conn.query_row(
+                "SELECT id FROM a_task_rounds WHERE task_id = ?1 AND status = 'running' ORDER BY id DESC LIMIT 1",
+                params![task_id],
+                |row| row.get(0),
+            )
+            .ok()
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     // ─── 执行进度操作 ────────────────────────────────────────────
@@ -974,6 +961,7 @@ impl Database {
         city_name: &str,
         keyword_name: &str,
         device_serial: &str,
+        round_id: i64,
     ) {
         let task_id = task_id.to_string();
         let city_name = city_name.to_string();
@@ -985,24 +973,25 @@ impl Database {
             log_exec(
                 conn.execute(
                     "INSERT OR IGNORE INTO a_task_progress
-                        (task_id, city_name, keyword_name, status, completed_at, device_serial, sync_status)
-                     VALUES (?1, ?2, ?3, 'ok', ?4, ?5, 'pending')",
-                    params![task_id, city_name, keyword_name, now, device_serial],
+                        (task_id, city_name, keyword_name, round_id, status, completed_at, device_serial, sync_status)
+                     VALUES (?1, ?2, ?3, ?4, 'ok', ?5, ?6, 'pending')",
+                    params![task_id, city_name, keyword_name, round_id, now, device_serial],
                 ),
                 "record_keyword_done",
             );
         }).await;
     }
 
-    pub async fn load_task_progress(&self, task_id: &str) -> Vec<ProgressRow> {
+    /// 加载指定轮次的任务进度
+    pub async fn load_task_progress(&self, task_id: &str, round_id: i64) -> Vec<ProgressRow> {
         let task_id = task_id.to_string();
         let Ok(conn) = self.pool.get().await else { return Vec::new() };
         conn.interact(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT task_id, city_name, keyword_name, status, completed_at, device_serial
-                 FROM a_task_progress WHERE task_id = ?1",
+                 FROM a_task_progress WHERE task_id = ?1 AND round_id = ?2",
             )?;
-            let rows = stmt.query_map(params![task_id], |row| {
+            let rows = stmt.query_map(params![task_id, round_id], |row| {
                 Ok(ProgressRow {
                     task_id: row.get(0)?,
                     city_name: row.get(1)?,
@@ -1013,6 +1002,50 @@ impl Database {
                 })
             })?;
             Ok::<_, rusqlite::Error>(rows.filter_map(|r| r.ok()).collect())
+        })
+        .await
+        .unwrap_or_else(|_| Ok(Vec::new()))
+        .unwrap_or_default()
+    }
+
+    /// 批量加载指定轮次的全部进度（用于 load_tasks 消除 N+1）
+    pub async fn load_all_progress(&self, round_ids: &[i64]) -> Vec<ProgressRow> {
+        if round_ids.is_empty() {
+            return Vec::new();
+        }
+        let round_ids = round_ids.to_vec();
+        let Ok(conn) = self.pool.get().await else { return Vec::new() };
+        conn.interact(move |conn| {
+            let mut all_rows = Vec::new();
+            // 分批查询，避免 SQLite 参数上限（默认 999）
+            for chunk in round_ids.chunks(500) {
+                let placeholders: Vec<String> =
+                    (0..chunk.len()).map(|i| format!("?{}", i + 1)).collect();
+                let sql = format!(
+                    "SELECT task_id, city_name, keyword_name, status, completed_at, device_serial
+                     FROM a_task_progress WHERE round_id IN ({})",
+                    placeholders.join(",")
+                );
+                let mut stmt = conn.prepare(&sql)?;
+                let param_values: Vec<Box<dyn rusqlite::types::ToSql>> = chunk
+                    .iter()
+                    .map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>)
+                    .collect();
+                let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+                    param_values.iter().map(|p| p.as_ref()).collect();
+                let rows = stmt.query_map(params_ref.as_slice(), |row| {
+                    Ok(ProgressRow {
+                        task_id: row.get(0)?,
+                        city_name: row.get(1)?,
+                        keyword_name: row.get(2)?,
+                        status: row.get(3)?,
+                        completed_at: row.get(4)?,
+                        device_serial: row.get(5)?,
+                    })
+                })?;
+                all_rows.extend(rows.filter_map(|r| r.ok()));
+            }
+            Ok::<_, rusqlite::Error>(all_rows)
         })
         .await
         .unwrap_or_else(|_| Ok(Vec::new()))
@@ -1115,7 +1148,7 @@ impl Database {
 
     // ─── 执行记录操作 ────────────────────────────────────────────
 
-    pub async fn start_task_run(&self, task_id: &str, device_serial: &str) -> i64 {
+    pub async fn start_task_run(&self, task_id: &str, device_serial: &str, round_id: i64) -> i64 {
         let task_id = task_id.to_string();
         let device_serial = device_serial.to_string();
         let Ok(conn) = self.pool.get().await else { return now_unix() };
@@ -1124,17 +1157,17 @@ impl Database {
             let today = today_str();
             let baseline: i32 = conn
                 .query_row(
-                    "SELECT COUNT(*) FROM a_task_progress WHERE task_id = ?1",
-                    params![task_id],
+                    "SELECT COUNT(*) FROM a_task_progress WHERE task_id = ?1 AND round_id = ?2",
+                    params![task_id, round_id],
                     |row| row.get(0),
                 )
                 .unwrap_or(0);
             log_exec(
                 conn.execute(
                     "INSERT INTO a_task_runs
-                        (task_id, device_serial, run_date, started_at, status, sync_status, keywords_baseline)
-                     VALUES (?1, ?2, ?3, ?4, 'running', 'pending', ?5)",
-                    params![task_id, device_serial, today, now, baseline],
+                        (task_id, device_serial, round_id, run_date, started_at, status, sync_status, keywords_baseline)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'running', 'pending', ?6)",
+                    params![task_id, device_serial, round_id, today, now, baseline],
                 ),
                 "start_task_run",
             );
@@ -1194,7 +1227,7 @@ impl Database {
                 let paused = crate::constants::task_status::PAUSED;
                 let executing = crate::constants::task_status::EXECUTING;
                 let affected = conn.execute(
-                    "UPDATE a_task_cache SET status = ?1, assigned_device = NULL WHERE status = ?2",
+                    "UPDATE a_task_state SET status = ?1, assigned_device = NULL WHERE status = ?2",
                     params![paused, executing],
                 );
                 match affected {
@@ -1351,16 +1384,6 @@ pub struct TaskRunStats {
     pub today_runs: i32,
     pub today_duration_sec: i64,
     pub today_keywords: i32,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskCacheRow {
-    pub task_id: String,
-    pub name: String,
-    pub payload: String,
-    pub version: i64,
-    pub fetched_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

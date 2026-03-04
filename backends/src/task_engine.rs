@@ -30,6 +30,7 @@ fn rollback_running_keywords(task: &mut Task) {
 struct RunningTask {
     cancel: CancellationToken,
     started_at: i64,
+    round_id: i64,
 }
 
 // ─── 事件负载（推送给前端）─────────────────────────────────────
@@ -153,12 +154,15 @@ impl TaskEngine {
             serial
         };
 
-        self.storage
-            .save_task_state(task_id, task_status::EXECUTING, Some(&serial))
-            .await;
-        let started_at = self.storage.start_task_run(task_id, &serial).await;
+        // 创建新轮次
+        let round_id = self.storage.create_round(task_id).await.unwrap_or(0);
 
-        self.spawn_loop(task_id, started_at).await;
+        self.storage
+            .save_task_state(task_id, task_status::EXECUTING, Some(&serial), Some(round_id))
+            .await;
+        let started_at = self.storage.start_task_run(task_id, &serial, round_id).await;
+
+        self.spawn_loop(task_id, started_at, round_id).await;
         self.emit_update().await;
         Ok(())
     }
@@ -198,7 +202,7 @@ impl TaskEngine {
             }
         }
 
-        self.storage.save_task_state(task_id, task_status::PAUSED, None).await;
+        self.storage.save_task_state(task_id, task_status::PAUSED, None, None).await;
         self.emit_update().await;
         Ok(())
     }
@@ -226,12 +230,20 @@ impl TaskEngine {
             serial
         };
 
-        self.storage
-            .save_task_state(task_id, task_status::EXECUTING, Some(&serial))
-            .await;
-        let started_at = self.storage.start_task_run(task_id, &serial).await;
+        // resume 不创建新轮次，复用当前轮次
+        let round_id = self
+            .storage
+            .load_task_state(task_id)
+            .await
+            .and_then(|(_, _, rid)| rid)
+            .unwrap_or(0);
 
-        self.spawn_loop(task_id, started_at).await;
+        self.storage
+            .save_task_state(task_id, task_status::EXECUTING, Some(&serial), Some(round_id))
+            .await;
+        let started_at = self.storage.start_task_run(task_id, &serial, round_id).await;
+
+        self.spawn_loop(task_id, started_at, round_id).await;
         self.emit_update().await;
         Ok(())
     }
@@ -293,16 +305,22 @@ impl TaskEngine {
                 if let Some(pos) = tasks.iter().position(|t| t.id == task_id) {
                     tasks[pos] = fresh;
                 }
+            } else {
+                // DB 中无此任务定义，无法重试
+                return Err("任务定义不存在，无法重试".into());
             }
             serial
         };
 
-        self.storage
-            .save_task_state(task_id, task_status::EXECUTING, Some(&serial))
-            .await;
-        let started_at = self.storage.start_task_run(task_id, &serial).await;
+        // retry 创建新轮次
+        let round_id = self.storage.create_round(task_id).await.unwrap_or(0);
 
-        self.spawn_loop(task_id, started_at).await;
+        self.storage
+            .save_task_state(task_id, task_status::EXECUTING, Some(&serial), Some(round_id))
+            .await;
+        let started_at = self.storage.start_task_run(task_id, &serial, round_id).await;
+
+        self.spawn_loop(task_id, started_at, round_id).await;
         self.emit_update().await;
         Ok(())
     }
@@ -344,7 +362,7 @@ impl TaskEngine {
                 if let Some(run) = ri {
                     self.storage.finish_task_run(tid, run.started_at, run_status::STOPPED).await;
                 }
-                self.storage.save_task_state(tid, task_status::ERROR, None).await;
+                self.storage.save_task_state(tid, task_status::ERROR, None, None).await;
             }
             released = run_infos.len() as u32;
         }
@@ -387,12 +405,12 @@ impl TaskEngine {
 
     // ─── 内部方法 ─────────────────────────────────────────────
 
-    async fn spawn_loop(self: &Arc<Self>, task_id: &str, started_at: i64) {
+    async fn spawn_loop(self: &Arc<Self>, task_id: &str, started_at: i64, round_id: i64) {
         let cancel = CancellationToken::new();
-        self.running
-            .write()
-            .await
-            .insert(task_id.to_string(), RunningTask { cancel: cancel.clone(), started_at });
+        self.running.write().await.insert(
+            task_id.to_string(),
+            RunningTask { cancel: cancel.clone(), started_at, round_id },
+        );
 
         let engine = Arc::clone(self);
         let tid = task_id.to_string();
@@ -411,6 +429,10 @@ impl TaskEngine {
 
             let run_info = engine.running.write().await.remove(&tid);
             if completed {
+                if let Some(ref run) = run_info {
+                    // 双保险：tick 中可能已调用 finish_round，这里再确保一次
+                    engine.storage.finish_round(run.round_id, "completed").await;
+                }
                 let sa = run_info.map(|r| r.started_at).unwrap_or(started_at);
                 engine.storage.finish_task_run(&tid, sa, run_status::COMPLETED).await;
             }
@@ -539,13 +561,19 @@ impl TaskEngine {
         // Step 3: 锁外执行 DB 操作（直接 await，无需 spawn_blocking）
         match effect {
             TickEffect::KeywordDone { task_id, city_name, kw_name, device_serial } => {
+                let round_id =
+                    self.running.read().await.get(&task_id).map(|r| r.round_id).unwrap_or(0);
                 self.storage
-                    .record_keyword_done(&task_id, &city_name, &kw_name, &device_serial)
+                    .record_keyword_done(&task_id, &city_name, &kw_name, &device_serial, round_id)
                     .await;
                 false
             },
             TickEffect::TaskSuccess { task_id } => {
-                self.storage.save_task_state(&task_id, task_status::SUCCESS, None).await;
+                // 结束当前轮次
+                if let Some(run) = self.running.read().await.get(&task_id) {
+                    self.storage.finish_round(run.round_id, "completed").await;
+                }
+                self.storage.save_task_state(&task_id, task_status::SUCCESS, None, None).await;
                 true
             },
             TickEffect::DeviceOffline { task_id, device_serial } => {
@@ -566,11 +594,11 @@ impl TaskEngine {
                     eprintln!("[engine] 设备已恢复在线，回滚任务状态: {}", task_id);
                     return false;
                 }
-                self.storage.save_task_state(&task_id, task_status::ERROR, None).await;
+                self.storage.save_task_state(&task_id, task_status::ERROR, None, None).await;
                 true
             },
             TickEffect::RiskControl { task_id, device_serial } => {
-                self.storage.save_task_state(&task_id, task_status::ERROR, None).await;
+                self.storage.save_task_state(&task_id, task_status::ERROR, None, None).await;
                 self.storage.flag_device(&device_serial).await;
                 let _ = self.app_handle.emit(
                     crate::constants::tauri_event::RISK_CONTROL,
@@ -688,7 +716,7 @@ impl TaskEngine {
             },
         };
 
-        self.storage.upsert_task_cache(task_id, &new_def.name, &payload, 1).await;
+        self.storage.upsert_task_def(task_id, &new_def.name, &payload, 1, "").await;
 
         let was_success = {
             let tasks = self.tasks.read().await;
@@ -782,7 +810,7 @@ impl TaskEngine {
                         let mut tasks = self.tasks.write().await;
                         tasks.retain(|t| t.id != tid);
                     }
-                    self.storage.delete_task_cache(tid).await;
+                    self.storage.batch_cleanup_tasks(&[tid.to_string()]).await;
                     self.emit_update().await;
                 }
             },
@@ -832,7 +860,7 @@ impl TaskEngine {
         let removed = all_task_ids.len() as u32;
 
         // DB 批量清理（单连接事务内完成）
-        self.storage.batch_cleanup_tasks(&all_task_ids, &phones).await;
+        self.storage.batch_cleanup_tasks(&all_task_ids).await;
 
         // 更新 synced_phones
         let current = self.storage.get_setting("synced_phones").await.unwrap_or_default();

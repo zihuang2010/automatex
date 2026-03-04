@@ -55,23 +55,21 @@ pub struct CityDef {
 pub async fn sync_task_cache(db: &Database) {
     let existing = db.load_all_task_defs().await;
     if !existing.is_empty() {
-        eprintln!("[task_provider] DB 已有 {} 条任务缓存，跳过 mock 写入", existing.len());
+        eprintln!("[task_provider] DB 已有 {} 条任务定义，跳过 mock 写入", existing.len());
         return;
     }
     let defs: Vec<TaskDef> = load_mock_definitions();
     for def in defs {
         let payload = serde_json::to_string(&def.cities).unwrap_or_default();
-        db.upsert_task_cache(&def.id, &def.name, &payload, 1).await;
+        db.upsert_task_def(&def.id, &def.name, &payload, 1, "").await;
     }
 }
 
-/// 从 DB 缓存加载任务定义，合并进度，返回 Task 列表
-/// 优先从 a_task_cache 读取，若 DB 为空则 fallback 到 mock
-/// 使用批量加载（3 次查询）代替 N+1 模式
+/// 从 DB 缓存加载任务定义，合并当前轮次进度，返回 Task 列表
+/// 优先从 a_task_defs 读取，若 DB 为空则 fallback 到 mock
 pub async fn load_tasks(db: &Database) -> Vec<Task> {
     let cached = db.load_all_task_defs().await;
     let defs: Vec<TaskDef> = if cached.is_empty() {
-        // DB 无缓存，fallback 为 mock
         load_mock_definitions()
     } else {
         cached
@@ -83,10 +81,14 @@ pub async fn load_tasks(db: &Database) -> Vec<Task> {
             .collect()
     };
 
-    // 批量预加载所有数据（3 次 DB 查询替代 3N 次）
-    let all_progress = db.load_all_progress().await;
+    // 批量预加载所有数据
     let all_states = db.load_all_task_states().await;
     let all_orders = db.load_all_city_orders().await;
+
+    // 收集所有有效的 round_id 用于批量加载进度
+    let round_ids: Vec<i64> =
+        all_states.values().filter_map(|(_, _, round_id)| *round_id).collect();
+    let all_progress = db.load_all_progress(&round_ids).await;
 
     // 按 task_id 分组进度记录
     let mut progress_map: std::collections::HashMap<String, Vec<crate::storage::ProgressRow>> =
@@ -150,9 +152,9 @@ fn load_override_task_def(task_id: &str) -> Option<TaskDef> {
 
 /// 内部：从 Mock 定义 + DB 进度 + DB 状态 构建单个 Task
 pub async fn build_task(db: &Database, def: TaskDef) -> Task {
-    // 加载已完成记录
-    let progress = db.load_task_progress(&def.id).await;
     let state = db.load_task_state(&def.id).await;
+    let round_id = state.as_ref().and_then(|(_, _, rid)| *rid).unwrap_or(0);
+    let progress = db.load_task_progress(&def.id, round_id).await;
     let order = db.load_city_order(&def.id).await;
     build_task_batched(def, progress, state, order)
 }
@@ -161,7 +163,7 @@ pub async fn build_task(db: &Database, def: TaskDef) -> Task {
 fn build_task_batched(
     def: TaskDef,
     progress: Vec<crate::storage::ProgressRow>,
-    saved_state: Option<(String, Option<String>)>,
+    saved_state: Option<(String, Option<String>, Option<i64>)>,
     city_order: Option<Vec<String>>,
 ) -> Task {
     let completed: HashSet<(String, String)> = progress
@@ -170,7 +172,6 @@ fn build_task_batched(
         .map(|p| (p.city_name.clone(), p.keyword_name.clone()))
         .collect();
 
-    // 合并定义 + 进度
     let mut cities = Vec::new();
     let mut all_done = true;
 
@@ -238,9 +239,10 @@ fn build_task_batched(
     };
 
     // 从保存的运行时状态（覆盖推断值）
-    let final_status = match saved_state {
-        Some((saved_status, _)) => {
-            if saved_status == task_status::EXECUTING {
+    let (final_status, assigned_device) = match saved_state {
+        Some((ref saved_status, ref dev, _)) => {
+            let status = if saved_status == task_status::EXECUTING {
+                // 重启后无运行中的循环，降级为 PAUSED
                 task_status::PAUSED.to_string()
             } else if saved_status == task_status::SUCCESS
                 && inferred_status != task_status::SUCCESS
@@ -251,10 +253,13 @@ fn build_task_batched(
             {
                 inferred_status.to_string()
             } else {
-                saved_status
-            }
+                saved_status.clone()
+            };
+            // EXECUTING→PAUSED 时清除已失效的设备绑定
+            let device = if saved_status == task_status::EXECUTING { None } else { dev.clone() };
+            (status, device)
         },
-        None => inferred_status.to_string(),
+        None => (inferred_status.to_string(), None),
     };
 
     // 只有任务在 EXECUTING 或 PAUSED 时，才激活第一个 pending 城市
@@ -263,8 +268,6 @@ fn build_task_batched(
             first_pending.status = city_status::ACTIVE.to_string();
         }
     }
-
-    let assigned_device: Option<String> = None;
 
     Task { id: def.id, name: def.name, status: final_status, assigned_device, cities }
 }

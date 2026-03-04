@@ -252,9 +252,8 @@ async fn sync_tasks_by_phones(
     let mut count = 0usize;
     for (phone, defs) in &resp.phone_tasks {
         for def in defs {
-            state.db.insert_phone_task(phone, &def.id).await;
             let payload = serde_json::to_string(&def.cities).unwrap_or_default();
-            state.db.upsert_task_cache(&def.id, &def.name, &payload, 1).await;
+            state.db.upsert_task_def(&def.id, &def.name, &payload, 1, phone).await;
             count += 1;
         }
     }
