@@ -617,7 +617,7 @@ impl TaskEngine {
     }
 
     /// 推送任务状态到前端（节流控制）
-    async fn emit_update(&self) {
+    pub async fn emit_update(&self) {
         let throttle_ms = crate::constants::debug::EMIT_THROTTLE_MS;
         {
             let mut last = self.last_emit.lock().await;
@@ -863,24 +863,12 @@ impl TaskEngine {
         // DB 批量清理（单连接事务内完成）
         self.storage.batch_cleanup_tasks(&all_task_ids).await;
 
-        // 更新 synced_phones
-        let current = self
-            .storage
-            .get_setting(crate::constants::setting_key::SYNCED_PHONES)
-            .await
-            .unwrap_or_default();
-        let mut phone_list: Vec<String> = serde_json::from_str(&current).unwrap_or_default();
-        phone_list.retain(|p| !phones.contains(p));
-        self.storage
-            .set_setting(
-                crate::constants::setting_key::SYNCED_PHONES,
-                &serde_json::to_string(&phone_list).unwrap_or_default(),
-            )
-            .await;
+        // 注意：不在此处更新 synced_phones——由调用方（sync_tasks_by_phones）统一管理，
+        // 避免双重写入导致的竞态条件
         eprintln!(
-            "[engine] 批量清理完成: {} 个任务, synced_phones={:?}",
+            "[engine] 批量清理完成: {} 个任务（解绑手机号: {:?}）",
             all_task_ids.len(),
-            phone_list
+            phones
         );
 
         self.emit_update().await;

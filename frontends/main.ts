@@ -38,7 +38,7 @@ function initTheme() {
     document.documentElement.classList.add('dark');
   }
 
-  // 异步从数据库读取真实主题设置并同步
+  // 异步从数据库读取真实主题设置并同步（同时预加载账号计数避免显示延迟）
   invoke<Record<string, string>>('get_settings')
     .then(settings => {
       const dbTheme = settings.theme || 'dark';
@@ -51,6 +51,15 @@ function initTheme() {
           document.documentElement.classList.remove('dark');
         }
         localStorage.setItem('theme', dbTheme);
+      }
+
+      // 提前更新账号同步标签（在开屏期间完成，避免进入主页时显示 "0 个账号" 的闪烁）
+      try {
+        const phones: string[] = JSON.parse(settings.synced_phones || '[]');
+        const label = document.getElementById('account-sync-label');
+        if (label) label.textContent = `已同步 ${phones.length} 个账号`;
+      } catch {
+        /* ignore */
       }
     })
     .catch(() => {});
@@ -120,7 +129,7 @@ function renderAccountList(phones: string[]) {
   if (!list) return;
 
   if (label) label.textContent = `已同步 ${phones.length} 个账号`;
-  if (count) count.textContent = `${phones.length} 个活动账号`;
+  if (count) count.textContent = `${phones.length} 个活跃账号`;
 
   if (phones.length === 0) {
     list.innerHTML = '<div class="text-s400 px-4 py-6 text-center text-xs">暂无已同步账号</div>';
@@ -170,7 +179,7 @@ function initAccountPanel() {
 
   if (!btn || !panel) return;
 
-  // Toggle
+  // Toggle — 每次打开面板时重新获取最新数据
   btn.addEventListener('click', e => {
     e.stopPropagation();
     const isOpen = panel.classList.contains('open');
@@ -182,6 +191,8 @@ function initAccountPanel() {
       panel.classList.remove('hidden');
       panel.classList.add('open');
       chevron?.classList.add('rotated');
+      // 每次展开时刷新列表，确保数据最新
+      refreshAccountList();
     }
   });
 
@@ -196,6 +207,57 @@ function initAccountPanel() {
   });
 
   // ── 删除账号逻辑（事件委托） ──
+
+  /** 显示自定义确认弹窗，返回 Promise<boolean>（支持键盘 Escape/Enter） */
+  function confirmRemoveAccount(maskedPhone: string): Promise<boolean> {
+    return new Promise(resolve => {
+      const modal = document.getElementById('confirm-remove-modal') as HTMLElement;
+      const phoneLabel = document.getElementById('confirm-remove-phone');
+      const cancelBtn = document.getElementById('confirm-remove-cancel');
+      const okBtn = document.getElementById('confirm-remove-ok');
+      if (!modal) {
+        resolve(false);
+        return;
+      }
+
+      // 填入手机号
+      if (phoneLabel) phoneLabel.textContent = maskedPhone;
+      modal.style.display = 'flex';
+
+      // 统一清理所有事件监听
+      const cleanup = () => {
+        modal.style.display = 'none';
+        cancelBtn?.removeEventListener('click', onCancel);
+        okBtn?.removeEventListener('click', onConfirm);
+        modal.removeEventListener('click', onMask);
+        document.removeEventListener('keydown', onKey);
+      };
+      const onCancel = () => {
+        cleanup();
+        resolve(false);
+      };
+      const onConfirm = () => {
+        cleanup();
+        resolve(true);
+      };
+      const onMask = (e: MouseEvent) => {
+        if (e.target === e.currentTarget) {
+          cleanup();
+          resolve(false);
+        }
+      };
+      // P3: 键盘支持 — Escape 取消，Enter 确认
+      const onKey = (e: KeyboardEvent) => {
+        if (e.key === 'Escape') onCancel();
+        if (e.key === 'Enter') onConfirm();
+      };
+      cancelBtn?.addEventListener('click', onCancel);
+      okBtn?.addEventListener('click', onConfirm);
+      modal.addEventListener('click', onMask);
+      document.addEventListener('keydown', onKey);
+    });
+  }
+
   accountList?.addEventListener('click', async e => {
     const target = (e.target as HTMLElement).closest('button[data-phone]') as HTMLElement | null;
     if (!target) return;
@@ -203,25 +265,31 @@ function initAccountPanel() {
     const phoneToRemove = target.dataset.phone;
     if (!phoneToRemove) return;
 
-    // 确认删除
     const masked = maskPhone(phoneToRemove);
-    if (!confirm(`确定要移除账号 ${masked} 吗？\n移除后该账号关联的任务将被清理。`)) return;
+
+    // 使用自定义确认弹窗
+    const confirmed = await confirmRemoveAccount(masked);
+    if (!confirmed) return;
 
     // 禁用按钮防止重复操作
     target.setAttribute('disabled', 'true');
     target.classList.add('opacity-50');
 
     try {
-      // 获取当前已同步列表
-      const settings = await invoke<Record<string, string>>('get_settings');
-      const currentPhones: string[] = JSON.parse(settings.synced_phones || '[]');
-      const remaining = currentPhones.filter(p => p !== phoneToRemove);
+      // P1 优化：从 DOM 读取当前列表，避免多余的 get_settings 调用
+      const allPhoneBtns = accountList!.querySelectorAll('button[data-phone]');
+      const remaining: string[] = [];
+      allPhoneBtns.forEach(btn => {
+        const p = (btn as HTMLElement).dataset.phone;
+        if (p && p !== phoneToRemove) remaining.push(p);
+      });
 
       // 用剩余号码重新同步（后端会自动清理被移除的号码，空列表也能正确处理）
       await invoke('sync_tasks_by_phones', { phones: remaining, force: true });
 
       showToast(`已移除账号 ${masked}`, 'info');
-      await refreshAccountList();
+      // P4 优化：并行刷新账号列表和任务视图
+      await Promise.all([refreshAccountList(), fullRefresh()]);
     } catch (err) {
       showToast(`移除失败: ${err}`, 'error');
       target.removeAttribute('disabled');
@@ -279,6 +347,17 @@ function initAccountPanel() {
         .map(s => s.trim())
         .filter(Boolean);
 
+      // P2: 校验手机号格式（中国大陆 11 位手机号）
+      const validPhoneRe = /^1\d{10}$/;
+      const invalidPhones = phones.filter(p => !validPhoneRe.test(p));
+      if (invalidPhones.length > 0) {
+        showToast(
+          `以下号码格式无效：${invalidPhones.slice(0, 3).join('、')}${invalidPhones.length > 3 ? '…' : ''}`,
+          'error',
+        );
+        return;
+      }
+
       // 去重
       const uniquePhones = [...new Set(phones)];
 
@@ -308,8 +387,8 @@ function initAccountPanel() {
           'info',
         );
 
-        // 刷新账号列表
-        await refreshAccountList();
+        // P4 优化：并行刷新账号列表和任务视图
+        await Promise.all([refreshAccountList(), fullRefresh()]);
       } catch (err) {
         showToast(`同步失败: ${err}`, 'error');
       } finally {
