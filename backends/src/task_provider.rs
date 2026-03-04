@@ -55,8 +55,19 @@ pub struct CityDef {
 // ─── 任务提供者 ─────────────────────────────────────────────────
 
 /// 同步任务缓存到数据库（仅在启动时调用一次）
-/// 仅当 DB 中没有任何缓存任务时才写入 mock 数据，避免覆盖真实数据
+/// 仅当 DB 中没有任何缓存任务 且 没有绑定手机号时才写入 mock 数据
+/// 有绑定手机号时由 startup_sync_tasks 从服务端拉取真实数据
 pub async fn sync_task_cache(db: &Database) {
+    // 已有绑定手机号 → 跳过 mock，等 startup_sync_tasks 拉取真实任务
+    let synced_phones = db
+        .get_setting(crate::constants::setting_key::SYNCED_PHONES)
+        .await
+        .unwrap_or_default();
+    if !synced_phones.is_empty() && synced_phones != "[]" {
+        eprintln!("[task_provider] 已有绑定手机号，跳过 mock 写入（由 startup_sync 拉取）");
+        return;
+    }
+
     let existing = db.load_all_task_defs().await;
     if !existing.is_empty() {
         eprintln!("[task_provider] DB 已有 {} 条任务定义，跳过 mock 写入", existing.len());

@@ -864,11 +864,18 @@ impl TaskEngine {
         self.storage.batch_cleanup_tasks(&all_task_ids).await;
 
         // 更新 synced_phones
-        let current = self.storage.get_setting("synced_phones").await.unwrap_or_default();
+        let current = self
+            .storage
+            .get_setting(crate::constants::setting_key::SYNCED_PHONES)
+            .await
+            .unwrap_or_default();
         let mut phone_list: Vec<String> = serde_json::from_str(&current).unwrap_or_default();
         phone_list.retain(|p| !phones.contains(p));
         self.storage
-            .set_setting("synced_phones", &serde_json::to_string(&phone_list).unwrap_or_default())
+            .set_setting(
+                crate::constants::setting_key::SYNCED_PHONES,
+                &serde_json::to_string(&phone_list).unwrap_or_default(),
+            )
             .await;
         eprintln!(
             "[engine] 批量清理完成: {} 个任务, synced_phones={:?}",

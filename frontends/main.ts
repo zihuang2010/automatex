@@ -1,38 +1,38 @@
 /**
  * AutomateX — Application Entry Point
  */
-
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { platform } from '@tauri-apps/plugin-os';
+
 import { DeviceState } from './constants';
-import { setActiveTask, setActiveCityIdx, globalQueue, activeTask, selectedDevice } from './state';
-import { $, showToast } from './utils';
 import {
-  refreshDevices,
   filterDeviceCards,
+  refreshDevices,
   setDeviceCallbacks,
   updateCardSelection,
 } from './devices';
 import {
-  renderTaskView,
-  registerViewActions,
+  hideAddDeviceDialog,
+  removeSelectedDevice,
+  showAddDeviceDialog,
+  showDeviceInfo,
+  submitAddDevice,
+  unflagSelectedDevice,
+} from './dialogs';
+import { loadChainForDevice } from './queue';
+import { initSettings, updateMqttStatusUI } from './settings';
+import { activeTask, globalQueue, selectedDevice, setActiveCityIdx, setActiveTask } from './state';
+import { initEngine, registerTaskActions, setRefreshCallbacks } from './task-engine';
+import {
   loadTasksForDevice,
+  registerViewActions,
+  renderTaskView,
   setTaskViewCallbacks,
 } from './task-view';
-import { loadChainForDevice } from './queue';
 import { needsTransition, showTransition } from './transition';
-import { registerTaskActions, setRefreshCallbacks, initEngine } from './task-engine';
-import {
-  showAddDeviceDialog,
-  hideAddDeviceDialog,
-  submitAddDevice,
-  removeSelectedDevice,
-  unflagSelectedDevice,
-  showDeviceInfo,
-} from './dialogs';
-import { initSettings, updateMqttStatusUI } from './settings';
+import { $, showToast } from './utils';
 
 /* ===== Theme Toggle ===== */
 
@@ -53,7 +53,6 @@ function initTheme() {
   if (saved !== 'light') {
     document.documentElement.classList.add('dark');
   }
-  updateThemeIcon();
 
   // 异步从数据库读取真实主题设置并同步
   invoke<Record<string, string>>('get_settings')
@@ -68,29 +67,9 @@ function initTheme() {
           document.documentElement.classList.remove('dark');
         }
         localStorage.setItem('theme', dbTheme);
-        updateThemeIcon();
       }
     })
     .catch(() => {});
-}
-
-function toggleTheme() {
-  const isDark = document.documentElement.classList.toggle('dark');
-  const theme = isDark ? 'dark' : 'light';
-  localStorage.setItem('theme', theme);
-  updateThemeIcon();
-  syncWindowBg();
-  // 持久化到数据库
-  invoke('save_settings', { settings: { theme } }).catch(() => {});
-}
-
-function updateThemeIcon() {
-  const icon = document.getElementById('theme-icon');
-  if (icon) {
-    icon.textContent = document.documentElement.classList.contains('dark')
-      ? 'light_mode'
-      : 'dark_mode';
-  }
 }
 
 /* ===== Splash Screen ===== */
@@ -138,7 +117,6 @@ async function fullRefresh() {
 window.addEventListener('DOMContentLoaded', () => {
   // ── Step 0: 初始化主题 ──
   initTheme();
-  $('#btn-theme-toggle')?.addEventListener('click', toggleTheme);
 
   // ── Step 0.5: 自定义窗口控件（全平台 decorations: false）──
   const currentPlatform = platform();
@@ -288,12 +266,12 @@ window.addEventListener('DOMContentLoaded', () => {
     const btn = document.getElementById('topbar-status');
     if (!icon || !btn) return;
     if (navigator.onLine) {
-      icon.textContent = 'wifi';
+      icon.textContent = 'language';
       btn.classList.remove('text-red-500');
       btn.classList.add('text-green-500');
       btn.title = '网络已连接';
     } else {
-      icon.textContent = 'wifi_off';
+      icon.textContent = 'language';
       btn.classList.remove('text-green-500');
       btn.classList.add('text-red-500');
       btn.title = '网络已断开';

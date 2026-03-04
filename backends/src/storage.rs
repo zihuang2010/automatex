@@ -686,6 +686,43 @@ impl Database {
             .await;
     }
 
+    /// 批量 upsert 任务定义（单事务，减少连接开销）
+    /// items: Vec<(task_id, name, payload, version, phone)>
+    pub async fn batch_upsert_task_defs(&self, items: Vec<(String, String, String, i64, String)>) {
+        if items.is_empty() {
+            return;
+        }
+        let Ok(conn) = self.pool.get().await else { return };
+        let _ = conn
+            .interact(move |conn| {
+                let now = now_unix();
+                let tx = match conn.transaction() {
+                    Ok(tx) => tx,
+                    Err(e) => {
+                        eprintln!("[db] batch_upsert_task_defs 事务失败: {}", e);
+                        return;
+                    }
+                };
+                for (task_id, name, payload, version, phone) in &items {
+                    let _ = tx.execute(
+                        "INSERT INTO a_task_defs (task_id, name, payload, version, fetched_at, phone)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                         ON CONFLICT(task_id) DO UPDATE SET
+                             name=excluded.name, payload=excluded.payload,
+                             version=excluded.version, fetched_at=excluded.fetched_at,
+                             phone=CASE WHEN excluded.phone = '' THEN a_task_defs.phone ELSE excluded.phone END",
+                        params![task_id, name, payload, version, now, phone],
+                    );
+                }
+                if let Err(e) = tx.commit() {
+                    eprintln!("[db] batch_upsert_task_defs 提交失败: {}", e);
+                } else {
+                    eprintln!("[db] batch_upsert: {} 条任务定义", items.len());
+                }
+            })
+            .await;
+    }
+
     #[allow(dead_code)]
     pub async fn delete_task_def(&self, task_id: &str) {
         let task_id = task_id.to_string();

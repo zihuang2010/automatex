@@ -592,18 +592,11 @@
           </div>
           <div class="flex items-center gap-1">
             <button
-              id="topbar-status"
-              class="hover:bg-s100 flex h-6 w-6 items-center justify-center rounded-md text-green-500 transition-colors"
-              title="网络状态"
-            >
-              <span class="material-symbols-outlined icon-sm" id="net-status-icon">wifi</span>
-            </button>
-            <button
-              id="btn-theme-toggle"
+              id="btn-settings"
               class="hover:bg-s100 text-s400 hover:text-s600 flex h-6 w-6 items-center justify-center rounded-md transition-colors"
-              title="切换主题"
+              title="设置"
             >
-              <span class="material-symbols-outlined icon-sm" id="theme-icon">dark_mode</span>
+              <span class="material-symbols-outlined icon-sm">settings</span>
             </button>
             <!-- Windows 窗口控制按钮（默认隐藏，JS 检测到 Windows 时显示） -->
             <div id="window-controls" class="-mr-3 ml-1 hidden items-center">
@@ -726,8 +719,14 @@
                 <span class="text-s400 text-[8px] font-bold tracking-widest uppercase">
                   v1.0.2-STABLE
                 </span>
-                <button class="text-s400 hover:text-s600 transition-colors" id="btn-settings">
-                  <span class="material-symbols-outlined text-lg">settings</span>
+                <button
+                  id="topbar-status"
+                  class="hover:bg-s100 flex h-6 w-6 items-center justify-center rounded-md text-green-500 transition-colors"
+                  title="网络状态"
+                >
+                  <span class="material-symbols-outlined icon-xs text-lg" id="net-status-icon">
+                    language
+                  </span>
                 </button>
               </div>
             </div>

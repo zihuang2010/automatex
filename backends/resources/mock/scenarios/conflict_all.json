@@ -1,0 +1,16 @@
+{
+  "bind_phones": {
+    "bound": [],
+    "conflicts": [
+      {
+        "phone": "13800138000",
+        "current_client": "atx-other-device-1"
+      },
+      {
+        "phone": "13900139000",
+        "current_client": "atx-other-device-2"
+      }
+    ]
+  },
+  "phone_tasks": {}
+}

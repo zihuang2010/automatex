@@ -5,6 +5,7 @@ mod mqtt;
 mod storage;
 mod task_engine;
 mod task_provider;
+pub mod utils;
 
 use connection::DeviceManager;
 use connection::ShellResult;
@@ -17,62 +18,47 @@ use task_engine::TaskEngine;
 use task_provider::Task;
 use tauri::{Emitter, Listener, Manager};
 
-/// 基于机器指纹生成稳定唯一的 clientId
-/// 采集 hostname + username + OS + arch，hash 后生成 16 位 hex 标识
-fn generate_machine_client_id() -> String {
-    use std::hash::{Hash, Hasher};
-
-    let hostname = std::env::var("HOSTNAME")
-        .or_else(|_| std::env::var("COMPUTERNAME"))
-        .or_else(|_| {
-            // macOS/Linux fallback
-            std::process::Command::new("hostname")
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        })
-        .unwrap_or_else(|_| "unknown-host".to_string());
-
-    let username = std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_else(|_| "unknown-user".to_string());
-
-    let os = std::env::consts::OS;
-    let arch = std::env::consts::ARCH;
-
-    let fingerprint = format!("{}|{}|{}|{}", hostname, username, os, arch);
-
-    // 使用两轮不同种子的 hash 来生成 16 位 hex（128 bit 空间）
-    let mut hasher1 = std::collections::hash_map::DefaultHasher::new();
-    fingerprint.hash(&mut hasher1);
-    let h1 = hasher1.finish();
-
-    let mut hasher2 = std::collections::hash_map::DefaultHasher::new();
-    format!("salt-v1-{}", fingerprint).hash(&mut hasher2);
-    let h2 = hasher2.finish();
-
-    let id = format!("automatex-{:08x}{:08x}", h1 as u32, h2 as u32);
-    eprintln!("[client_id] 机器指纹: {} → {}", fingerprint, id);
-    id
-}
-
 /// 确保 DB 中存在 mqtt_client_id，不存在则基于机器指纹生成并持久化
 async fn ensure_client_id(db: &storage::Database) -> String {
-    if let Some(existing) = db.get_setting("mqtt_client_id").await {
+    use constants::setting_key;
+    if let Some(existing) = db.get_setting(setting_key::MQTT_CLIENT_ID).await {
         if !existing.is_empty() {
             eprintln!("[client_id] 使用已有: {}", existing);
             return existing;
         }
     }
-    let id = generate_machine_client_id();
-    db.set_setting("mqtt_client_id", &id).await;
+    let id = utils::generate_machine_client_id();
+    db.set_setting(setting_key::MQTT_CLIENT_ID, &id).await;
     eprintln!("[client_id] 首次生成并持久化: {}", id);
     id
+}
+
+/// 确保 MQTT 默认配置存在（首次启动时写入）
+async fn ensure_mqtt_defaults(db: &storage::Database) {
+    use constants::{mqtt_default, setting_key};
+    let defaults: &[(&str, &str)] = &[
+        (setting_key::MQTT_HOST, mqtt_default::HOST),
+        (setting_key::MQTT_PORT, mqtt_default::PORT),
+        (setting_key::MQTT_USERNAME, mqtt_default::USERNAME),
+        (setting_key::MQTT_PASSWORD, mqtt_default::PASSWORD),
+    ];
+    let existing = db.get_all_settings().await;
+    for (key, default_val) in defaults {
+        let has_value = existing.get(*key).map(|v| !v.is_empty()).unwrap_or(false);
+        if !has_value {
+            db.set_setting(key, default_val).await;
+            eprintln!("[startup] MQTT 默认配置写入: {}={}", key, default_val);
+        }
+    }
 }
 
 /// 跨日检测：比较 last_active_date 与今天，不同则执行完整重置
 async fn check_daily_reset(db: &storage::Database) {
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let last_date = db.get_setting("last_active_date").await.unwrap_or_default();
+    let last_date = db
+        .get_setting(constants::setting_key::LAST_ACTIVE_DATE)
+        .await
+        .unwrap_or_default();
 
     if last_date == today {
         eprintln!("[startup] 日期未变 ({}), 跳过跨日重置", today);
@@ -97,11 +83,8 @@ async fn check_daily_reset(db: &storage::Database) {
     // 4. 清理已同步的进度（保留 pending 未上报的）
     db.cleanup_synced_progress().await;
 
-    // 5. 清理孤儿 run 记录
-    db.cleanup_orphan_runs().await;
-
-    // 6. 更新日期标记
-    db.set_setting("last_active_date", &today).await;
+    // 5. 更新日期标记
+    db.set_setting(constants::setting_key::LAST_ACTIVE_DATE, &today).await;
     eprintln!("[startup] 跨日重置完成, last_active_date={}", today);
 }
 
@@ -113,11 +96,11 @@ async fn startup_sync_tasks(
     client_id: &str,
     app_handle: &tauri::AppHandle,
 ) {
-    use constants::tauri_event;
+    use constants::{setting_key, tauri_event};
 
     // 读取已绑定的手机号
     let synced_phones: Vec<String> =
-        serde_json::from_str(&db.get_setting("synced_phones").await.unwrap_or_default())
+        serde_json::from_str(&db.get_setting(setting_key::SYNCED_PHONES).await.unwrap_or_default())
             .unwrap_or_default();
 
     if synced_phones.is_empty() {
@@ -157,7 +140,7 @@ async fn startup_sync_tasks(
             if valid_phones.is_empty() {
                 // 所有手机号都失效了
                 eprintln!("[startup] 所有手机号已失效，通知前端跳转绑定页面");
-                db.set_setting("synced_phones", "[]").await;
+                db.set_setting(setting_key::SYNCED_PHONES, "[]").await;
                 let _ = app_handle.emit(
                     tauri_event::REQUIRE_PHONE_BIND,
                     serde_json::json!({
@@ -171,18 +154,45 @@ async fn startup_sync_tasks(
 
                 match http.fetch_tasks_by_phones(client_id, &valid_phones).await {
                     Ok(resp) => {
-                        let mut count = 0usize;
+                        // 收集服务端全量任务 → 批量 upsert
+                        let mut server_task_ids: Vec<String> = Vec::new();
+                        let mut upsert_items: Vec<(String, String, String, i64, String)> =
+                            Vec::new();
                         for (phone, defs) in &resp.phone_tasks {
                             for def in defs {
                                 let payload =
                                     serde_json::to_string(&def.cities).unwrap_or_default();
-                                db.upsert_task_def(&def.id, &def.name, &payload, 1, phone).await;
-                                count += 1;
+                                upsert_items.push((
+                                    def.id.clone(),
+                                    def.name.clone(),
+                                    payload,
+                                    1,
+                                    phone.clone(),
+                                ));
+                                server_task_ids.push(def.id.clone());
                             }
                         }
-                        // 更新 synced_phones（可能去掉了冲突的）
+                        db.batch_upsert_task_defs(upsert_items).await;
+
+                        // 清理本地有但服务端不再返回的旧任务
+                        let local_defs = db.load_all_task_defs().await;
+                        let stale_ids: Vec<String> = local_defs
+                            .iter()
+                            .filter(|(id, _, _, _)| !server_task_ids.contains(id))
+                            .map(|(id, _, _, _)| id.clone())
+                            .collect();
+                        if !stale_ids.is_empty() {
+                            eprintln!(
+                                "[startup] 清理 {} 个本地过期任务: {:?}",
+                                stale_ids.len(),
+                                stale_ids
+                            );
+                            db.batch_cleanup_tasks(&stale_ids).await;
+                        }
+
+                        // 更新 synced_phones
                         db.set_setting(
-                            "synced_phones",
+                            setting_key::SYNCED_PHONES,
                             &serde_json::to_string(&valid_phones).unwrap_or_default(),
                         )
                         .await;
@@ -190,11 +200,13 @@ async fn startup_sync_tasks(
                         eprintln!(
                             "[startup] 同步完成: {} 个手机号, {} 个任务",
                             valid_phones.len(),
-                            count
+                            server_task_ids.len()
                         );
+                        let _ = app_handle.emit(tauri_event::STARTUP_SYNC_STATUS, "done");
                     },
                     Err(e) => {
                         eprintln!("[startup] 拉取任务失败: {}, 使用本地缓存", e);
+                        let _ = app_handle.emit(tauri_event::STARTUP_SYNC_STATUS, "error");
                     },
                 }
             }
@@ -202,10 +214,9 @@ async fn startup_sync_tasks(
         Err(e) => {
             // 网络不可用时静默降级，使用本地缓存
             eprintln!("[startup] 验证绑定失败(网络?): {}, 使用本地缓存", e);
+            let _ = app_handle.emit(tauri_event::STARTUP_SYNC_STATUS, "error");
         },
     }
-
-    let _ = app_handle.emit(tauri_event::STARTUP_SYNC_STATUS, "done");
 }
 
 // ─── State ─────────────────────────────────────────────────────
@@ -356,23 +367,22 @@ async fn pull_file(
 
 // ─── Settings Commands ─────────────────────────────────────────
 
-fn setting_or(map: &std::collections::HashMap<String, String>, key: &str, default: &str) -> String {
-    map.get(key).cloned().unwrap_or_else(|| default.to_string())
-}
+use utils::setting_or;
 
 #[tauri::command]
 async fn get_settings(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
     let s = state.db.get_all_settings().await;
 
+    use constants::{mqtt_default, setting_key};
     Ok(serde_json::json!({
-        "mqtt_host": setting_or(&s, "mqtt_host", ""),
-        "mqtt_port": setting_or(&s, "mqtt_port", "1883"),
-        "mqtt_client_id": s.get("mqtt_client_id").cloned()
-            .unwrap_or_else(|| format!("automatex-{}", std::process::id())),
-        "mqtt_username": setting_or(&s, "mqtt_username", ""),
-        "mqtt_password": setting_or(&s, "mqtt_password", ""),
-        "synced_phones": setting_or(&s, "synced_phones", "[]"),
-        "theme": setting_or(&s, "theme", "dark"),
+        setting_key::MQTT_HOST: setting_or(&s, setting_key::MQTT_HOST, ""),
+        setting_key::MQTT_PORT: setting_or(&s, setting_key::MQTT_PORT, mqtt_default::PORT),
+        setting_key::MQTT_CLIENT_ID: s.get(setting_key::MQTT_CLIENT_ID).cloned()
+            .unwrap_or_else(|| utils::generate_machine_client_id()),
+        setting_key::MQTT_USERNAME: setting_or(&s, setting_key::MQTT_USERNAME, ""),
+        setting_key::MQTT_PASSWORD: setting_or(&s, setting_key::MQTT_PASSWORD, ""),
+        setting_key::SYNCED_PHONES: setting_or(&s, setting_key::SYNCED_PHONES, "[]"),
+        setting_key::THEME: setting_or(&s, setting_key::THEME, "dark"),
     }))
 }
 
@@ -417,8 +427,10 @@ async fn sync_tasks_by_phones(
     let engine = state.engine()?;
 
     let s = state.db.get_all_settings().await;
-    let client_id =
-        s.get("mqtt_client_id").cloned().unwrap_or_else(|| generate_machine_client_id());
+    let client_id = s
+        .get(constants::setting_key::MQTT_CLIENT_ID)
+        .cloned()
+        .unwrap_or_else(|| utils::generate_machine_client_id());
 
     let bind_req = http_client::PhoneBindRequest {
         client_id: client_id.clone(),
@@ -438,9 +450,14 @@ async fn sync_tasks_by_phones(
     let bound_phones = if force { phones.clone() } else { bind_resp.bound };
 
     // 清理被移除的手机号（防止直接替换手机号时旧 task_defs 残留）
-    let old_phones: Vec<String> =
-        serde_json::from_str(&state.db.get_setting("synced_phones").await.unwrap_or_default())
-            .unwrap_or_default();
+    let old_phones: Vec<String> = serde_json::from_str(
+        &state
+            .db
+            .get_setting(constants::setting_key::SYNCED_PHONES)
+            .await
+            .unwrap_or_default(),
+    )
+    .unwrap_or_default();
     let removed_phones: Vec<String> =
         old_phones.into_iter().filter(|p| !bound_phones.contains(p)).collect();
     if !removed_phones.is_empty() {
@@ -460,7 +477,10 @@ async fn sync_tasks_by_phones(
     }
     state
         .db
-        .set_setting("synced_phones", &serde_json::to_string(&bound_phones).unwrap_or_default())
+        .set_setting(
+            constants::setting_key::SYNCED_PHONES,
+            &serde_json::to_string(&bound_phones).unwrap_or_default(),
+        )
         .await;
 
     engine.reload_tasks().await;
@@ -477,14 +497,18 @@ async fn sync_tasks_by_phones(
 // ─── MQTT Commands ─────────────────────────────────────────────
 
 fn build_mqtt_config_from(s: &std::collections::HashMap<String, String>) -> MqttConfig {
-    let host = setting_or(s, "mqtt_host", "127.0.0.1");
-    let port: u16 = s.get("mqtt_port").and_then(|v| v.parse().ok()).unwrap_or(30002);
+    use constants::{mqtt_default, setting_key};
+    let host = setting_or(s, setting_key::MQTT_HOST, mqtt_default::FALLBACK_HOST);
+    let port: u16 = s
+        .get(setting_key::MQTT_PORT)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(mqtt_default::PORT_NUM);
     let client_id = s
-        .get("mqtt_client_id")
+        .get(setting_key::MQTT_CLIENT_ID)
         .cloned()
-        .unwrap_or_else(|| format!("automatex-{}", std::process::id()));
-    let username = s.get("mqtt_username").filter(|v| !v.is_empty()).cloned();
-    let password = s.get("mqtt_password").filter(|v| !v.is_empty()).cloned();
+        .unwrap_or_else(|| utils::generate_machine_client_id());
+    let username = s.get(setting_key::MQTT_USERNAME).filter(|v| !v.is_empty()).cloned();
+    let password = s.get(setting_key::MQTT_PASSWORD).filter(|v| !v.is_empty()).cloned();
     MqttConfig { broker_host: host, broker_port: port, client_id, username, password }
 }
 
@@ -1077,13 +1101,26 @@ pub fn run() {
                     // 确保 clientId 存在（首次启动时基于机器指纹生成）
                     let client_id = ensure_client_id(&db_init).await;
 
+                    // 确保 MQTT 默认配置存在
+                    ensure_mqtt_defaults(&db_init).await;
+
                     // ── 跨日检测 + 重置 ──
                     check_daily_reset(&db_init).await;
 
                     // 创建 HTTP 客户端
-                    let http_base_url =
-                        db_init.get_setting("api_base_url").await.unwrap_or_default();
+                    let http_base_url = db_init
+                        .get_setting(constants::setting_key::API_BASE_URL)
+                        .await
+                        .unwrap_or_default();
                     let http_client = Arc::new(http_client::HttpClient::new(&http_base_url));
+                    // 加载 mock 场景（从 DB 设置读取，默认 "default"）
+                    if let Some(scenario) =
+                        db_init.get_setting(constants::setting_key::MOCK_SCENARIO).await
+                    {
+                        if !scenario.is_empty() {
+                            http_client.set_mock_scenario(&scenario);
+                        }
+                    }
                     let _ = http_cell.set(Arc::clone(&http_client));
 
                     // 创建引擎
@@ -1106,9 +1143,10 @@ pub fn run() {
                         let app_mqtt = app_handle.clone();
                         tokio::spawn(async move {
                             let startup_settings = db_mqtt.get_all_settings().await;
-                            let has_host = startup_settings.contains_key("mqtt_host");
+                            let has_host =
+                                startup_settings.contains_key(constants::setting_key::MQTT_HOST);
                             let auto_off = startup_settings
-                                .get("mqtt_auto_connect")
+                                .get(constants::setting_key::MQTT_AUTO_CONNECT)
                                 .map(|v| v == "false")
                                 .unwrap_or(false);
 
@@ -1160,9 +1198,9 @@ pub fn run() {
                         .collect();
 
                     let client_id = db_init
-                        .get_setting("mqtt_client_id")
+                        .get_setting(constants::setting_key::MQTT_CLIENT_ID)
                         .await
-                        .unwrap_or_else(|| generate_machine_client_id());
+                        .unwrap_or_else(|| utils::generate_machine_client_id());
 
                     let req = http_client::DeviceSyncRequest { client_id, online, offline_local };
 

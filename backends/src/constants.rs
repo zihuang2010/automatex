@@ -125,18 +125,46 @@ pub mod debug {
     pub const EMIT_THROTTLE_MS: u64 = 500;
 }
 
+/// DB 设置键名（a_settings.key）
+pub mod setting_key {
+    pub const MQTT_HOST: &str = "mqtt_host";
+    pub const MQTT_PORT: &str = "mqtt_port";
+    pub const MQTT_CLIENT_ID: &str = "mqtt_client_id";
+    pub const MQTT_USERNAME: &str = "mqtt_username";
+    pub const MQTT_PASSWORD: &str = "mqtt_password";
+    pub const MQTT_AUTO_CONNECT: &str = "mqtt_auto_connect";
+    pub const API_BASE_URL: &str = "api_base_url";
+    pub const SYNCED_PHONES: &str = "synced_phones";
+    pub const LAST_ACTIVE_DATE: &str = "last_active_date";
+    pub const MOCK_SCENARIO: &str = "mock_scenario";
+    pub const THEME: &str = "theme";
+}
+
+/// MQTT 连接默认值
+pub mod mqtt_default {
+    pub const HOST: &str = "39.98.170.208";
+    pub const PORT: &str = "30002";
+    pub const PORT_NUM: u16 = 30002;
+    pub const USERNAME: &str = "automatex";
+    pub const PASSWORD: &str = "zihuang2010=-0";
+    pub const FALLBACK_HOST: &str = "127.0.0.1";
+}
+
 /// 允许保存的设置键白名单
 pub mod settings {
+    use super::setting_key;
     pub const ALLOWED_KEYS: &[&str] = &[
-        "mqtt_host",
-        "mqtt_port",
-        "mqtt_client_id",
-        "mqtt_username",
-        "mqtt_password",
-        "mqtt_auto_connect",
-        "api_base_url",
-        "synced_phones",
-        "theme",
+        setting_key::MQTT_HOST,
+        setting_key::MQTT_PORT,
+        setting_key::MQTT_CLIENT_ID,
+        setting_key::MQTT_USERNAME,
+        setting_key::MQTT_PASSWORD,
+        setting_key::MQTT_AUTO_CONNECT,
+        setting_key::API_BASE_URL,
+        setting_key::SYNCED_PHONES,
+        setting_key::LAST_ACTIVE_DATE,
+        setting_key::MOCK_SCENARIO,
+        setting_key::THEME,
     ];
 }
 
@@ -185,15 +213,6 @@ pub mod mqtt_topic {
     pub const HEARTBEAT_INTERVAL_SECS: u64 = 30;
 }
 
-/// 当前 Unix 时间戳（秒）
-pub fn now_unix() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
-}
-
-/// 今日日期字符串 (YYYY-MM-DD)
-pub fn today_str() -> String {
-    chrono::Local::now().format("%Y-%m-%d").to_string()
-}
+// 时间工具函数已迁移至 utils.rs，此处为兼容性 re-export
+pub use crate::utils::now_unix;
+pub use crate::utils::today_str;

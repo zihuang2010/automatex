@@ -60,6 +60,8 @@ pub struct HttpClient {
     #[allow(dead_code)]
     base_url: String,
     mock_mode: bool,
+    /// 当前 mock 场景名（对应 resources/mock/scenarios/{name}.json）
+    mock_scenario: std::sync::Mutex<String>,
 }
 
 impl HttpClient {
@@ -70,7 +72,44 @@ impl HttpClient {
         if mock_mode {
             eprintln!("[http] Mock 模式启用（服务端 URL 未配置）");
         }
-        Self { base_url: base_url.to_string(), mock_mode }
+        Self {
+            base_url: base_url.to_string(),
+            mock_mode,
+            mock_scenario: std::sync::Mutex::new("default".to_string()),
+        }
+    }
+
+    /// 设置 mock 场景（运行时切换）
+    pub fn set_mock_scenario(&self, name: &str) {
+        if let Ok(mut s) = self.mock_scenario.lock() {
+            eprintln!("[http-mock] 切换场景: {} → {}", *s, name);
+            *s = name.to_string();
+        }
+    }
+
+    /// 加载当前 mock 场景 JSON
+    fn load_mock_scenario(&self) -> Option<serde_json::Value> {
+        let name = self.mock_scenario.lock().ok()?.clone();
+        // 优先从 ~/.automatex/mock/scenarios/ 加载（用户自定义）
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_default();
+        let user_path = format!("{}/.automatex/mock/scenarios/{}.json", home, name);
+        if let Ok(content) = std::fs::read_to_string(&user_path) {
+            eprintln!("[http-mock] 加载用户场景: {}", user_path);
+            return serde_json::from_str(&content).ok();
+        }
+
+        // fallback: 从嵌入资源中读取
+        let resource_path =
+            format!("{}/resources/mock/scenarios/{}.json", env!("CARGO_MANIFEST_DIR"), name);
+        if let Ok(content) = std::fs::read_to_string(&resource_path) {
+            eprintln!("[http-mock] 加载内置场景: {}", resource_path);
+            return serde_json::from_str(&content).ok();
+        }
+
+        eprintln!("[http-mock] 场景文件未找到: {}, 使用内置默认", name);
+        None
     }
 
     /// 启动同步 — 检查设备归属
@@ -81,8 +120,6 @@ impl HttpClient {
         }
 
         // TODO: 真实 HTTP 请求
-        // let url = format!("{}/api/devices/sync", self.base_url);
-        // let resp = reqwest::Client::new().post(&url).json(req).send().await...
         Err("HTTP 客户端未实现真实请求".into())
     }
 
@@ -103,15 +140,12 @@ impl HttpClient {
     // ─── Mock 实现 ───────────────────────────────────────────────
 
     /// 拉取单个任务的最新定义
-    /// Mock 模式：从 mock_tasks.json 中查找；真实模式：GET /api/tasks/{task_id}
     pub async fn fetch_task(&self, task_id: &str) -> Result<TaskDef, String> {
         if self.mock_mode {
             return self.mock_fetch_task(task_id);
         }
 
         // TODO: 真实 HTTP 请求
-        // let url = format!("{}/api/tasks/{}", self.base_url, task_id);
-        // let resp = reqwest::Client::new().get(&url).send().await...
         Err("HTTP 客户端未实现真实请求".into())
     }
 
@@ -182,12 +216,28 @@ impl HttpClient {
 
     fn mock_bind_phones(&self, req: &PhoneBindRequest) -> Result<PhoneBindResponse, String> {
         eprintln!(
-            "[http-mock] bind_phones: client={}, phones={}, force={}",
-            req.client_id,
-            req.phones.len(),
-            req.force
+            "[http-mock] bind_phones: client={}, phones={:?}, force={}",
+            req.client_id, req.phones, req.force
         );
-        // Mock: 全部绑定成功，无冲突
+
+        // 从场景 JSON 加载
+        if let Some(scenario) = self.load_mock_scenario() {
+            if let Some(bind_data) = scenario.get("bind_phones") {
+                let resp: PhoneBindResponse = serde_json::from_value(bind_data.clone())
+                    .unwrap_or_else(|e| {
+                        eprintln!("[http-mock] 解析 bind_phones 场景失败: {}", e);
+                        PhoneBindResponse { bound: req.phones.clone(), conflicts: Vec::new() }
+                    });
+                eprintln!(
+                    "[http-mock] bind_phones 场景响应: bound={}, conflicts={}",
+                    resp.bound.len(),
+                    resp.conflicts.len()
+                );
+                return Ok(resp);
+            }
+        }
+
+        // 默认：全部绑定成功
         Ok(PhoneBindResponse { bound: req.phones.clone(), conflicts: Vec::new() })
     }
 
@@ -196,13 +246,33 @@ impl HttpClient {
         client_id: &str,
         phones: &[String],
     ) -> Result<PhoneTasksResponse, String> {
+        eprintln!("[http-mock] fetch_tasks_by_phones: client={}, phones={:?}", client_id, phones);
+
+        // 优先从场景 JSON 的 phone_tasks 字段直接读取手机号→任务映射
+        if let Some(scenario) = self.load_mock_scenario() {
+            if let Some(pt) = scenario.get("phone_tasks") {
+                if let Ok(phone_tasks) = serde_json::from_value::<
+                    std::collections::HashMap<String, Vec<TaskDef>>,
+                >(pt.clone())
+                {
+                    // 只返回请求中包含的手机号对应的任务
+                    let filtered: std::collections::HashMap<String, Vec<TaskDef>> = phone_tasks
+                        .into_iter()
+                        .filter(|(phone, _)| phones.contains(phone))
+                        .collect();
+                    let total: usize = filtered.values().map(|v| v.len()).sum();
+                    eprintln!(
+                        "[http-mock] 场景返回: {} 个手机号, {} 个任务",
+                        filtered.len(),
+                        total
+                    );
+                    return Ok(PhoneTasksResponse { phone_tasks: filtered });
+                }
+            }
+        }
+
+        // fallback: 从 mock_tasks.json 加载，round-robin 分配
         use crate::task_provider::load_mock_definitions;
-        eprintln!(
-            "[http-mock] fetch_tasks_by_phones: client={}, phones={}",
-            client_id,
-            phones.len()
-        );
-        // Mock: 将所有 mock 任务平均分配给手机号
         let all_defs = load_mock_definitions();
         let mut phone_tasks: std::collections::HashMap<String, Vec<TaskDef>> =
             std::collections::HashMap::new();
