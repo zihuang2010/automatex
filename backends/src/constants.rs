@@ -48,6 +48,10 @@ pub mod tauri_event {
     pub const MQTT_MESSAGE: &str = "mqtt-message";
     pub const TASK_UPDATE: &str = "task://update";
     pub const RISK_CONTROL: &str = "risk-control";
+    /// 通知前端需要绑定手机号（跳转到绑定页面）
+    pub const REQUIRE_PHONE_BIND: &str = "require-phone-bind";
+    /// 启动同步状态通知
+    pub const STARTUP_SYNC_STATUS: &str = "startup-sync-status";
 }
 
 /// MQTT 状态推送到前端的字符串值
@@ -74,6 +78,14 @@ pub mod run_status {
     pub const COMPLETED: &str = "completed";
     pub const STOPPED: &str = "stopped";
     pub const PAUSED: &str = "paused";
+    pub const CRASHED: &str = "crashed";
+}
+
+/// 轮次状态（a_task_rounds.status）
+pub mod round_status {
+    pub const RUNNING: &str = "running";
+    pub const COMPLETED: &str = "completed";
+    pub const STOPPED: &str = "stopped";
     pub const CRASHED: &str = "crashed";
 }
 

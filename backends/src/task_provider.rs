@@ -30,6 +30,10 @@ pub struct Task {
     pub status: String, // "WAITING" | "EXECUTING" | "PAUSED" | "SUCCESS" | "ERROR"
     pub assigned_device: Option<String>,
     pub cities: Vec<TaskCity>,
+    /// 当天第几轮（0 = 尚未启动过）
+    pub round_no: i32,
+    /// 当前轮次 ID（用于内部关联，前端可忽略）
+    pub current_round_id: Option<i64>,
 }
 
 // ─── 任务定义格式（Mock / HTTP 共用）───────────────────────────────
@@ -69,26 +73,35 @@ pub async fn sync_task_cache(db: &Database) {
 /// 优先从 a_task_defs 读取，若 DB 为空则 fallback 到 mock
 pub async fn load_tasks(db: &Database) -> Vec<Task> {
     let cached = db.load_all_task_defs().await;
-    let defs: Vec<TaskDef> = if cached.is_empty() {
-        load_mock_definitions()
-    } else {
-        cached
-            .into_iter()
-            .filter_map(|(id, name, payload)| {
-                let cities: Vec<CityDef> = serde_json::from_str(&payload).ok()?;
-                Some(TaskDef { id, name, cities })
-            })
-            .collect()
-    };
+    let (defs, all_orders): (Vec<TaskDef>, std::collections::HashMap<String, Vec<String>>) =
+        if cached.is_empty() {
+            (load_mock_definitions(), Default::default())
+        } else {
+            let mut defs = Vec::new();
+            let mut orders = std::collections::HashMap::new();
+            for (id, name, payload, city_order) in cached {
+                let cities: Vec<CityDef> = match serde_json::from_str(&payload) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                if let Some(co) = city_order {
+                    if let Ok(order) = serde_json::from_str::<Vec<String>>(&co) {
+                        orders.insert(id.clone(), order);
+                    }
+                }
+                defs.push(TaskDef { id, name, cities });
+            }
+            (defs, orders)
+        };
 
     // 批量预加载所有数据
     let all_states = db.load_all_task_states().await;
-    let all_orders = db.load_all_city_orders().await;
 
-    // 收集所有有效的 round_id 用于批量加载进度
+    // 收集所有有效的 round_id 用于批量加载进度和轮次信息
     let round_ids: Vec<i64> =
         all_states.values().filter_map(|(_, _, round_id)| *round_id).collect();
     let all_progress = db.load_all_progress(&round_ids).await;
+    let all_round_info = db.load_all_round_info(&round_ids).await;
 
     // 按 task_id 分组进度记录
     let mut progress_map: std::collections::HashMap<String, Vec<crate::storage::ProgressRow>> =
@@ -102,7 +115,10 @@ pub async fn load_tasks(db: &Database) -> Vec<Task> {
         let progress = progress_map.remove(&def.id).unwrap_or_default();
         let state = all_states.get(&def.id).cloned();
         let order = all_orders.get(&def.id).cloned();
-        tasks.push(build_task_batched(def, progress, state, order));
+        // 从 state 取 round_id → 从 round_info 取 round_no
+        let round_id = state.as_ref().and_then(|(_, _, rid)| *rid);
+        let round_no = round_id.and_then(|rid| all_round_info.get(&rid).copied()).unwrap_or(0);
+        tasks.push(build_task_batched(def, progress, state, order, round_no));
     }
     tasks
 }
@@ -156,7 +172,8 @@ pub async fn build_task(db: &Database, def: TaskDef) -> Task {
     let round_id = state.as_ref().and_then(|(_, _, rid)| *rid).unwrap_or(0);
     let progress = db.load_task_progress(&def.id, round_id).await;
     let order = db.load_city_order(&def.id).await;
-    build_task_batched(def, progress, state, order)
+    let round_no = if round_id > 0 { db.get_round_no(round_id).await.unwrap_or(0) } else { 0 };
+    build_task_batched(def, progress, state, order, round_no)
 }
 
 /// 从预加载数据构建单个 Task（无 DB 访问）
@@ -165,6 +182,7 @@ fn build_task_batched(
     progress: Vec<crate::storage::ProgressRow>,
     saved_state: Option<(String, Option<String>, Option<i64>)>,
     city_order: Option<Vec<String>>,
+    round_no: i32,
 ) -> Task {
     let completed: HashSet<(String, String)> = progress
         .iter()
@@ -269,7 +287,17 @@ fn build_task_batched(
         }
     }
 
-    Task { id: def.id, name: def.name, status: final_status, assigned_device, cities }
+    let current_round_id = saved_state.as_ref().and_then(|(_, _, rid)| *rid);
+
+    Task {
+        id: def.id,
+        name: def.name,
+        status: final_status,
+        assigned_device,
+        cities,
+        round_no,
+        current_round_id,
+    }
 }
 
 /// 从嵌入资源读取 Mock 任务定义（OnceLock 缓存，只解析一次）

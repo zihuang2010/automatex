@@ -21,7 +21,7 @@ impl Default for MqttConfig {
         Self {
             broker_host: "127.0.0.1".to_string(),
             broker_port: 1883,
-            client_id: format!("automatex-{}", std::process::id()),
+            client_id: String::new(), // 实际由 ensure_client_id 从 DB 提供
             username: None,
             password: None,
         }

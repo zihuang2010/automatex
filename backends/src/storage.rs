@@ -546,7 +546,6 @@ impl Database {
         .flatten()
     }
 
-    #[allow(dead_code)]
     /// 删除全部设备（跨日重置用）
     pub async fn delete_all_devices(&self) {
         let Ok(conn) = self.pool.get().await else { return };
@@ -610,15 +609,21 @@ impl Database {
 
     // ─── 任务定义操作（a_task_defs）─────────────────────────────────
 
-    pub async fn load_all_task_defs(&self) -> Vec<(String, String, String)> {
+    pub async fn load_all_task_defs(&self) -> Vec<(String, String, String, Option<String>)> {
         let conn = match self.pool.get().await {
             Ok(c) => c,
             Err(_) => return Vec::new(),
         };
         conn.interact(|conn| {
-            let mut stmt = conn.prepare("SELECT task_id, name, payload FROM a_task_defs")?;
+            let mut stmt =
+                conn.prepare("SELECT task_id, name, payload, city_order FROM a_task_defs")?;
             let rows = stmt.query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
             })?;
             Ok::<_, rusqlite::Error>(rows.filter_map(|r| r.ok()).collect())
         })
@@ -747,6 +752,7 @@ impl Database {
     }
 
     /// 批量加载全部 city_order（用于 load_tasks 消除 N+1）
+    #[allow(dead_code)]
     pub async fn load_all_city_orders(&self) -> std::collections::HashMap<String, Vec<String>> {
         let Ok(conn) = self.pool.get().await else {
             return Default::default();
@@ -866,7 +872,6 @@ impl Database {
         .unwrap_or_default()
     }
 
-    #[allow(dead_code)]
     /// 跨日重置：所有任务状态回到 WAITING
     pub async fn daily_reset_tasks(&self) {
         let Ok(conn) = self.pool.get().await else { return };
@@ -884,6 +889,41 @@ impl Database {
             .await;
     }
 
+    /// 跨日重置：关闭所有未结束的 running 轮次
+    pub async fn close_all_running_rounds(&self) {
+        let Ok(conn) = self.pool.get().await else { return };
+        let _ = conn
+            .interact(|conn| {
+                let now = now_unix();
+                let result = conn.execute(
+                    "UPDATE a_task_rounds SET ended_at = ?1, status = 'stopped' WHERE status = 'running'",
+                    params![now],
+                );
+                match result {
+                    Ok(n) if n > 0 => eprintln!("[db] 跨日重置: 关闭了 {} 个 running 轮次", n),
+                    Err(e) => eprintln!("[db] close_all_running_rounds 失败: {}", e),
+                    _ => {},
+                }
+            })
+            .await;
+    }
+
+    /// 跨日重置：清除已同步的进度记录，保留未上报的
+    pub async fn cleanup_synced_progress(&self) {
+        let Ok(conn) = self.pool.get().await else { return };
+        let _ = conn
+            .interact(|conn| {
+                let result =
+                    conn.execute("DELETE FROM a_task_progress WHERE sync_status = 'synced'", []);
+                match result {
+                    Ok(n) if n > 0 => eprintln!("[db] 跨日重置: 清理了 {} 条已同步进度", n),
+                    Err(e) => eprintln!("[db] cleanup_synced_progress 失败: {}", e),
+                    _ => {},
+                }
+            })
+            .await;
+    }
+
     // ─── 轮次操作（a_task_rounds）────────────────────────────────────
 
     /// 创建新轮次，返回 round_id
@@ -895,6 +935,11 @@ impl Database {
             let now = now_unix();
             // 事务保证 MAX+INSERT 原子性，避免并发 round_no 重复
             let tx = conn.transaction().ok()?;
+            // 先关闭该任务所有旧的 running 轮次，防止僵尸记录
+            tx.execute(
+                "UPDATE a_task_rounds SET ended_at = ?1, status = 'stopped' WHERE task_id = ?2 AND status = 'running'",
+                params![now, task_id],
+            ).ok();
             let round_no: i32 = tx
                 .query_row(
                     "SELECT COALESCE(MAX(round_no), 0) + 1 FROM a_task_rounds WHERE task_id = ?1 AND run_date = ?2",
@@ -944,6 +989,65 @@ impl Database {
             conn.query_row(
                 "SELECT id FROM a_task_rounds WHERE task_id = ?1 AND status = 'running' ORDER BY id DESC LIMIT 1",
                 params![task_id],
+                |row| row.get(0),
+            )
+            .ok()
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    /// 批量加载轮次信息（round_id → round_no），用于 load_tasks 消除 N+1
+    pub async fn load_all_round_info(
+        &self,
+        round_ids: &[i64],
+    ) -> std::collections::HashMap<i64, i32> {
+        if round_ids.is_empty() {
+            return Default::default();
+        }
+        let round_ids = round_ids.to_vec();
+        let Ok(conn) = self.pool.get().await else {
+            return Default::default();
+        };
+        conn.interact(move |conn| {
+            let mut map = std::collections::HashMap::new();
+            for chunk in round_ids.chunks(500) {
+                let placeholders: Vec<String> =
+                    (0..chunk.len()).map(|i| format!("?{}", i + 1)).collect();
+                let sql = format!(
+                    "SELECT id, round_no FROM a_task_rounds WHERE id IN ({})",
+                    placeholders.join(",")
+                );
+                if let Ok(mut stmt) = conn.prepare(&sql) {
+                    let param_values: Vec<Box<dyn rusqlite::types::ToSql>> = chunk
+                        .iter()
+                        .map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>)
+                        .collect();
+                    let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+                        param_values.iter().map(|p| p.as_ref()).collect();
+                    if let Ok(rows) = stmt.query_map(params_ref.as_slice(), |row| {
+                        Ok((row.get::<_, i64>(0)?, row.get::<_, i32>(1)?))
+                    }) {
+                        for row in rows.flatten() {
+                            map.insert(row.0, row.1);
+                        }
+                    }
+                }
+            }
+            map
+        })
+        .await
+        .unwrap_or_default()
+    }
+
+    /// 加载单个任务的轮次号（单任务构建用）
+    pub async fn get_round_no(&self, round_id: i64) -> Option<i32> {
+        let conn = self.pool.get().await.ok()?;
+        conn.interact(move |conn| {
+            conn.query_row(
+                "SELECT round_no FROM a_task_rounds WHERE id = ?1",
+                params![round_id],
                 |row| row.get(0),
             )
             .ok()
@@ -1210,8 +1314,8 @@ impl Database {
                 conn.execute(
                     "UPDATE a_task_runs
                      SET ended_at = ?1, duration_sec = ?2, status = ?3,
-                         keywords_done = (SELECT COUNT(*) FROM a_task_progress WHERE task_id = ?4) - keywords_baseline,
-                         cities_done = (SELECT COUNT(DISTINCT city_name) FROM a_task_progress WHERE task_id = ?4)
+                         keywords_done = (SELECT COUNT(*) FROM a_task_progress WHERE task_id = ?4 AND round_id = a_task_runs.round_id) - keywords_baseline,
+                         cities_done = (SELECT COUNT(DISTINCT city_name) FROM a_task_progress WHERE task_id = ?4 AND round_id = a_task_runs.round_id)
                      WHERE task_id = ?4 AND started_at = ?5",
                     params![now, duration, status, task_id, started_at],
                 ),
@@ -1251,7 +1355,7 @@ impl Database {
                      duration_sec = ?1 - started_at,
                      status = ?2,
                      keywords_done = COALESCE(
-                         (SELECT COUNT(*) FROM a_task_progress WHERE task_id = a_task_runs.task_id) - keywords_baseline,
+                         (SELECT COUNT(*) FROM a_task_progress WHERE task_id = a_task_runs.task_id AND round_id = a_task_runs.round_id) - keywords_baseline,
                          0
                      )
                  WHERE status = ?3",

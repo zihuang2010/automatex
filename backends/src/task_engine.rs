@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::http_client::HttpClient;
 
-use crate::constants::{city_status, keyword_status, run_status, task_status};
+use crate::constants::{city_status, keyword_status, round_status, run_status, task_status};
 use crate::storage::{Database, DeviceRow};
 use crate::task_provider::{self, Task};
 use rand::RngExt;
@@ -265,7 +265,8 @@ impl TaskEngine {
             running.remove(task_id)
         };
 
-        if let Some(run) = run_info {
+        if let Some(run) = &run_info {
+            self.storage.finish_round(run.round_id, round_status::STOPPED).await;
             self.storage.finish_task_run(task_id, run.started_at, run_status::STOPPED).await;
         }
         self.storage.clear_task_progress(task_id).await;
@@ -431,7 +432,7 @@ impl TaskEngine {
             if completed {
                 if let Some(ref run) = run_info {
                     // 双保险：tick 中可能已调用 finish_round，这里再确保一次
-                    engine.storage.finish_round(run.round_id, "completed").await;
+                    engine.storage.finish_round(run.round_id, round_status::COMPLETED).await;
                 }
                 let sa = run_info.map(|r| r.started_at).unwrap_or(started_at);
                 engine.storage.finish_task_run(&tid, sa, run_status::COMPLETED).await;
@@ -571,7 +572,7 @@ impl TaskEngine {
             TickEffect::TaskSuccess { task_id } => {
                 // 结束当前轮次
                 if let Some(run) = self.running.read().await.get(&task_id) {
-                    self.storage.finish_round(run.round_id, "completed").await;
+                    self.storage.finish_round(run.round_id, round_status::COMPLETED).await;
                 }
                 self.storage.save_task_state(&task_id, task_status::SUCCESS, None, None).await;
                 true
