@@ -27,7 +27,11 @@ pub trait ApiClient: Send + Sync {
     async fn bind_phones(&self, req: &PhoneBindRequest) -> Result<PhoneBindResponse, String>;
 
     /// 按手机号拉取任务列表
-    async fn fetch_tasks_by_phones(&self, client_id: &str, phones: &[String]) -> Result<PhoneTasksResponse, String>;
+    async fn fetch_tasks_by_phones(
+        &self,
+        client_id: &str,
+        phones: &[String],
+    ) -> Result<PhoneTasksResponse, String>;
 
     /// 拉取单个任务定义
     async fn fetch_task(&self, task_id: &str) -> Result<TaskDef, String>;
@@ -36,5 +40,9 @@ pub trait ApiClient: Send + Sync {
     async fn report_progress(&self, req: &ProgressReportRequest) -> Result<ApiResponse, String>;
 
     /// 解绑手机号
-    async fn unbind_phones(&self, client_id: &str, phones: &[String]) -> Result<ApiResponse, String>;
+    async fn unbind_phones(
+        &self,
+        client_id: &str,
+        phones: &[String],
+    ) -> Result<ApiResponse, String>;
 }
