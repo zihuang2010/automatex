@@ -73,6 +73,7 @@ pub(crate) async fn check_daily_reset(db: &storage::Database) {
     );
 
     db.close_all_running_rounds().await;
+    db.close_all_unfinished_runs().await;
     db.daily_reset_tasks().await;
     db.delete_all_devices().await;
     db.cleanup_synced_progress().await;

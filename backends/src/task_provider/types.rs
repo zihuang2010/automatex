@@ -23,7 +23,7 @@ pub struct TaskCity {
 pub struct Task {
     pub id: String,
     pub name: String,
-    pub status: String, // "WAITING" | "EXECUTING" | "PAUSED" | "SUCCESS" | "ERROR"
+    pub status: String, // "waiting" | "executing" | "paused" | "success" | "error"
     pub assigned_device: Option<String>,
     pub cities: Vec<TaskCity>,
     /// 当天第几轮（0 = 尚未启动过）

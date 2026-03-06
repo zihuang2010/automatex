@@ -1,11 +1,11 @@
 // 状态字面量统一管理（与后端 constants.rs 保持一致）
 
 export const TaskStatus = {
-  WAITING: 'WAITING',
-  EXECUTING: 'EXECUTING',
-  PAUSED: 'PAUSED',
-  SUCCESS: 'SUCCESS',
-  ERROR: 'ERROR',
+  WAITING: 'waiting',
+  EXECUTING: 'executing',
+  PAUSED: 'paused',
+  SUCCESS: 'success',
+  ERROR: 'error',
 } as const;
 
 export const CityStatus = {

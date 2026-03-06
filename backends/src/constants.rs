@@ -3,11 +3,11 @@
 
 /// 任务状态
 pub mod task_status {
-    pub const WAITING: &str = "WAITING";
-    pub const EXECUTING: &str = "EXECUTING";
-    pub const PAUSED: &str = "PAUSED";
-    pub const SUCCESS: &str = "SUCCESS";
-    pub const ERROR: &str = "ERROR";
+    pub const WAITING: &str = "waiting";
+    pub const EXECUTING: &str = "executing";
+    pub const PAUSED: &str = "paused";
+    pub const SUCCESS: &str = "success";
+    pub const ERROR: &str = "error";
 }
 
 /// 城市状态
@@ -78,7 +78,6 @@ pub mod run_status {
     pub const COMPLETED: &str = "completed";
     pub const STOPPED: &str = "stopped";
     pub const PAUSED: &str = "paused";
-    pub const CRASHED: &str = "crashed";
 }
 
 /// 轮次状态（a_task_rounds.status）
@@ -86,7 +85,6 @@ pub mod round_status {
     pub const RUNNING: &str = "running";
     pub const COMPLETED: &str = "completed";
     pub const STOPPED: &str = "stopped";
-    pub const CRASHED: &str = "crashed";
 }
 
 /// 时间间隔常量（秒）

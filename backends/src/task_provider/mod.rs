@@ -14,8 +14,6 @@ use crate::storage::Database;
 
 // ─── 任务提供者 ─────────────────────────────────────────────────
 
-/// 同步任务缓存到数据库（仅在启动时调用一次）
-/// 仅当 DB 中没有任何缓存任务 且 没有绑定手机号时才写入 mock 数据
 /// 有绑定手机号时由 startup_sync_tasks 从服务端拉取真实数据
 pub async fn sync_task_cache(db: &Database) {
     let synced_phones = db

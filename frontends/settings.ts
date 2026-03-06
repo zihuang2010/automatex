@@ -29,6 +29,8 @@ function initThemeSwitcher() {
         document.documentElement.classList.remove('dark');
       }
       localStorage.setItem('theme', theme!);
+      // 同步主题到后端数据库，确保重启后生效
+      invoke('save_settings', { settings: { theme } }).catch(() => {});
       syncThemeSwitcher();
     });
   });
@@ -74,6 +76,9 @@ export function initSettings() {
   const settingsOverlay = $('#settings-overlay') as HTMLElement;
   initThemeSwitcher();
 
+  // 缓存打开设置面板时的 MQTT 配置快照，用于保存时对比是否有变化
+  let savedMqttSnapshot = { host: '', port: '', client_id: '', username: '', password: '' };
+
   $('#btn-settings')?.addEventListener('click', async () => {
     try {
       const settings = await invoke<Record<string, string>>('get_settings');
@@ -83,6 +88,15 @@ export function initSettings() {
       ($('#set-mqtt-username') as HTMLInputElement).value = settings.mqtt_username || '';
       ($('#set-mqtt-password') as HTMLInputElement).value = settings.mqtt_password || '';
       ($('#set-api-base-url') as HTMLInputElement).value = settings.api_base_url || '';
+
+      // 记录当前 MQTT 配置快照
+      savedMqttSnapshot = {
+        host: settings.mqtt_host || '',
+        port: settings.mqtt_port || '30002',
+        client_id: settings.mqtt_client_id || '',
+        username: settings.mqtt_username || '',
+        password: settings.mqtt_password || '',
+      };
     } catch {
       /* ignore */
     }
@@ -114,20 +128,35 @@ export function initSettings() {
       return;
     }
 
+    const newMqtt = {
+      host: host,
+      port: portStr || '30002',
+      client_id: ($('#set-mqtt-client-id') as HTMLInputElement).value,
+      username: ($('#set-mqtt-username') as HTMLInputElement).value,
+      password: ($('#set-mqtt-password') as HTMLInputElement).value,
+    };
+
     const settings = {
-      mqtt_host: host,
-      mqtt_port: portStr || '30002',
-      mqtt_client_id: ($('#set-mqtt-client-id') as HTMLInputElement).value,
-      mqtt_username: ($('#set-mqtt-username') as HTMLInputElement).value,
-      mqtt_password: ($('#set-mqtt-password') as HTMLInputElement).value,
+      mqtt_host: newMqtt.host,
+      mqtt_port: newMqtt.port,
+      mqtt_client_id: newMqtt.client_id,
+      mqtt_username: newMqtt.username,
+      mqtt_password: newMqtt.password,
       api_base_url: ($('#set-api-base-url') as HTMLInputElement).value.trim(),
     };
     try {
       await invoke('save_settings', { settings });
       settingsOverlay.style.display = 'none';
 
-      // 保存后自动连接 MQTT（如果配置了主机地址）
-      if (host) {
+      // 仅当 MQTT 配置实际发生变化时才重连
+      const mqttChanged =
+        newMqtt.host !== savedMqttSnapshot.host ||
+        newMqtt.port !== savedMqttSnapshot.port ||
+        newMqtt.client_id !== savedMqttSnapshot.client_id ||
+        newMqtt.username !== savedMqttSnapshot.username ||
+        newMqtt.password !== savedMqttSnapshot.password;
+
+      if (host && mqttChanged) {
         try {
           // 先断开旧连接（忽略错误）
           try {

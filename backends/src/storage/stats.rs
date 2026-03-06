@@ -50,9 +50,16 @@ impl Database {
         conn.interact(move |conn| {
             let now = now_unix();
             let today = today_str();
-            let baseline: i32 = conn
+            let kw_baseline: i32 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM a_task_progress WHERE task_id = ?1 AND round_id = ?2",
+                    params![task_id, round_id],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            let city_baseline: i32 = conn
+                .query_row(
+                    "SELECT COUNT(DISTINCT city_name) FROM a_task_progress WHERE task_id = ?1 AND round_id = ?2",
                     params![task_id, round_id],
                     |row| row.get(0),
                 )
@@ -60,9 +67,9 @@ impl Database {
             log_exec(
                 conn.execute(
                     "INSERT INTO a_task_runs
-                        (task_id, device_serial, round_id, run_date, started_at, status, sync_status, keywords_baseline)
-                     VALUES (?1, ?2, ?3, ?4, ?5, 'running', 'pending', ?6)",
-                    params![task_id, device_serial, round_id, today, now, baseline],
+                        (task_id, device_serial, round_id, run_date, started_at, status, sync_status, keywords_baseline, cities_baseline)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'running', 'pending', ?6, ?7)",
+                    params![task_id, device_serial, round_id, today, now, kw_baseline, city_baseline],
                 ),
                 "start_task_run",
             );
@@ -81,8 +88,14 @@ impl Database {
                 conn.execute(
                     "UPDATE a_task_runs
                      SET ended_at = ?1, duration_sec = ?2, status = ?3,
-                         keywords_done = (SELECT COUNT(*) FROM a_task_progress WHERE task_id = ?4 AND round_id = a_task_runs.round_id) - keywords_baseline,
-                         cities_done = (SELECT COUNT(DISTINCT city_name) FROM a_task_progress WHERE task_id = ?4 AND round_id = a_task_runs.round_id)
+                         keywords_done = MAX(0,
+                             (SELECT COUNT(*) FROM a_task_progress WHERE task_id = ?4 AND round_id = a_task_runs.round_id)
+                             - keywords_baseline
+                         ),
+                         cities_done = MAX(0,
+                             (SELECT COUNT(DISTINCT city_name) FROM a_task_progress WHERE task_id = ?4 AND round_id = a_task_runs.round_id)
+                             - cities_baseline
+                         )
                      WHERE task_id = ?4 AND started_at = ?5",
                     params![now, duration, status, task_id, started_at],
                 ),
@@ -114,7 +127,7 @@ impl Database {
         let Ok(conn) = self.pool.get().await else { return };
         let _ = conn.interact(|conn| {
             let now = now_unix();
-            let crashed = crate::constants::run_status::CRASHED;
+            let stopped = crate::constants::run_status::STOPPED;
             let running = crate::constants::run_status::RUNNING;
             let affected = conn.execute(
                 "UPDATE a_task_runs
@@ -126,10 +139,10 @@ impl Database {
                          0
                      )
                  WHERE status = ?3",
-                params![now, crashed, running],
+                params![now, stopped, running],
             );
             match affected {
-                Ok(n) if n > 0 => eprintln!("[db] 清理了 {} 条孤儿 run 记录", n),
+                Ok(n) if n > 0 => eprintln!("[db] 清理了 {} 条孤儿 run 记录 (running → stopped)", n),
                 Err(e) => eprintln!("[db] cleanup_orphan_runs 失败: {}", e),
                 _ => {},
             }
@@ -148,7 +161,7 @@ impl Database {
         let Ok(conn) = self.pool.get().await else { return Vec::new() };
         conn.interact(move |conn| {
             let mut stmt = conn.prepare(
-                "SELECT task_id, COUNT(*) as runs, COALESCE(SUM(duration_sec), 0) as total_sec,
+                "SELECT task_id, COUNT(DISTINCT round_id) as runs, COALESCE(SUM(duration_sec), 0) as total_sec,
                         COALESCE(SUM(cities_done), 0), COALESCE(SUM(keywords_done), 0)
                  FROM a_task_runs
                  WHERE device_serial = ?1 AND run_date = ?2
@@ -184,7 +197,7 @@ impl Database {
         let rd = run_date.clone();
         conn.interact(move |conn| {
             conn.query_row(
-                "SELECT COUNT(*) as total_runs,
+                "SELECT COUNT(DISTINCT round_id) as total_runs,
                         COALESCE(SUM(duration_sec), 0),
                         COALESCE(SUM(cities_done), 0),
                         COALESCE(SUM(keywords_done), 0)
@@ -236,7 +249,7 @@ impl Database {
                     params![task_id], |row| row.get(0),
                 ).ok();
             let today_runs: i32 = conn
-                .query_row("SELECT COUNT(*) FROM a_task_runs WHERE task_id = ?1 AND run_date = ?2",
+                .query_row("SELECT COUNT(DISTINCT round_id) FROM a_task_runs WHERE task_id = ?1 AND run_date = ?2",
                     params![task_id, today], |row| row.get(0)).unwrap_or(0);
             let today_duration_sec: i64 = conn
                 .query_row("SELECT COALESCE(SUM(duration_sec), 0) FROM a_task_runs WHERE task_id = ?1 AND run_date = ?2",

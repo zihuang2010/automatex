@@ -126,7 +126,7 @@ impl Database {
 
             CREATE TABLE IF NOT EXISTS a_task_state (
                 task_id          TEXT PRIMARY KEY,
-                status           TEXT NOT NULL DEFAULT 'WAITING',
+                status           TEXT NOT NULL DEFAULT 'waiting',
                 assigned_device  TEXT,
                 current_round_id INTEGER
             );
@@ -155,6 +155,7 @@ impl Database {
                 cities_done       INTEGER NOT NULL DEFAULT 0,
                 keywords_done     INTEGER NOT NULL DEFAULT 0,
                 keywords_baseline INTEGER NOT NULL DEFAULT 0,
+                cities_baseline   INTEGER NOT NULL DEFAULT 0,
                 sync_status       TEXT NOT NULL DEFAULT 'pending'
             );
 
@@ -185,6 +186,11 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_runs_device_date ON a_task_runs(device_serial, run_date);",
             )
             .map_err(|e| format!("建表失败: {}", e))?;
+
+            // 迁移：为已有数据库添加新列（忽略 duplicate column 错误）
+            let _ = conn.execute_batch(
+                "ALTER TABLE a_task_runs ADD COLUMN cities_baseline INTEGER NOT NULL DEFAULT 0;",
+            );
         }
 
         // Phase 2: 创建 deadpool-sqlite 连接池（带 PRAGMA hook + 限制池大小）

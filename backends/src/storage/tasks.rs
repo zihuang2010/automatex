@@ -273,7 +273,7 @@ impl Database {
         let _ = conn
             .interact(|conn| {
                 let result = conn.execute(
-                    "UPDATE a_task_state SET status = 'WAITING', assigned_device = NULL, current_round_id = NULL",
+                    "UPDATE a_task_state SET status = 'waiting', assigned_device = NULL, current_round_id = NULL",
                     [],
                 );
                 match result {
@@ -297,6 +297,29 @@ impl Database {
                 match result {
                     Ok(n) if n > 0 => eprintln!("[db] 跨日重置: 关闭了 {} 个 running 轮次", n),
                     Err(e) => eprintln!("[db] close_all_running_rounds 失败: {}", e),
+                    _ => {},
+                }
+            })
+            .await;
+    }
+
+    /// 跨日重置：关闭所有未结束的 run（running/paused → stopped）
+    pub async fn close_all_unfinished_runs(&self) {
+        let Ok(conn) = self.pool.get().await else { return };
+        let _ = conn
+            .interact(|conn| {
+                let now = now_unix();
+                let result = conn.execute(
+                    "UPDATE a_task_runs
+                     SET ended_at = ?1,
+                         duration_sec = ?1 - started_at,
+                         status = 'stopped'
+                     WHERE status IN ('running', 'paused')",
+                    params![now],
+                );
+                match result {
+                    Ok(n) if n > 0 => eprintln!("[db] 跨日重置: 关闭了 {} 条未结束 run", n),
+                    Err(e) => eprintln!("[db] close_all_unfinished_runs 失败: {}", e),
                     _ => {},
                 }
             })

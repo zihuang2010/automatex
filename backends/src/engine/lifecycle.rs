@@ -78,6 +78,7 @@ impl TaskEngine {
             running.remove(task_id)
         };
 
+        let round_id = run_info.as_ref().map(|r| r.round_id);
         if let Some(run) = run_info {
             self.storage.finish_task_run(task_id, run.started_at, run_status::PAUSED).await;
         }
@@ -91,7 +92,7 @@ impl TaskEngine {
             }
         }
 
-        self.storage.save_task_state(task_id, task_status::PAUSED, None, None).await;
+        self.storage.save_task_state(task_id, task_status::PAUSED, None, round_id).await;
         self.emit_update().await;
         Ok(())
     }
@@ -119,20 +120,26 @@ impl TaskEngine {
             serial
         };
 
-        // FIX #6: resume 检查轮次状态，若已结束或无效则创建新轮次
+        // 继续在当前轮次上执行
         let saved_round_id =
             self.storage.load_task_state(task_id).await.and_then(|(_, _, rid)| rid);
 
-        let round_id = if let Some(rid) = saved_round_id {
-            let round_no = self.storage.get_round_no(rid).await;
-            if round_no.is_some() {
-                rid
-            } else {
-                eprintln!("[engine] resume: 旧轮次 {} 已结束，创建新轮次", rid);
-                self.storage.create_round(task_id).await.unwrap_or(0)
-            }
-        } else {
-            self.storage.create_round(task_id).await.unwrap_or(0)
+        let round_id = match saved_round_id {
+            Some(rid) => rid,
+            None => {
+                // 无已保存轮次 — 只能创建新轮次（异常恢复路径）
+                match self.storage.create_round(task_id).await {
+                    Some(id) => id,
+                    None => {
+                        let mut tasks = self.tasks.write().await;
+                        if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
+                            task.status = task_status::PAUSED.to_string();
+                            task.assigned_device = None;
+                        }
+                        return Err("创建轮次失败，无法继续任务".into());
+                    },
+                }
+            },
         };
 
         self.storage
@@ -266,7 +273,8 @@ impl TaskEngine {
                 if let Some(run) = ri {
                     self.storage.finish_task_run(tid, run.started_at, run_status::STOPPED).await;
                 }
-                self.storage.save_task_state(tid, task_status::ERROR, None, None).await;
+                let round_id = ri.as_ref().map(|r| r.round_id);
+                self.storage.save_task_state(tid, task_status::ERROR, None, round_id).await;
             }
             released = run_infos.len() as u32;
         }
