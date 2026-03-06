@@ -259,33 +259,50 @@ impl Database {
         let Ok(conn) = self.pool.get().await else { return };
         let _ = conn
             .interact(move |conn| {
-                // 使用 (city_name, keyword_name) 双列判断，避免分隔符拼接导致误匹配
-                let pair_conditions: Vec<String> = (0..valid_pairs.len())
-                    .map(|i| {
-                        format!("(city_name = ?{} AND keyword_name = ?{})", i * 2 + 2, i * 2 + 3)
-                    })
-                    .collect();
-                let sql = format!(
-                    "DELETE FROM a_task_progress WHERE task_id = ?1 AND NOT ({})",
-                    pair_conditions.join(" OR ")
-                );
-                let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> =
-                    Vec::with_capacity(valid_pairs.len() * 2 + 1);
-                param_values.push(Box::new(task_id.clone()));
-                for (city, keyword) in &valid_pairs {
-                    param_values.push(Box::new(city.clone()));
-                    param_values.push(Box::new(keyword.clone()));
+                // 分批处理：每批最多 400 对（800 参数 + 1 task_id = 801 < SQLite 999 上限）
+                const BATCH_SIZE: usize = 400;
+
+                // 用临时表方式：先插入有效对，再删除不在其中的
+                conn.execute_batch(
+                    "CREATE TEMP TABLE IF NOT EXISTS _valid_pairs (city TEXT, keyword TEXT)",
+                )
+                .ok();
+                conn.execute("DELETE FROM _valid_pairs", []).ok();
+
+                for chunk in valid_pairs.chunks(BATCH_SIZE) {
+                    let placeholders: Vec<String> = (0..chunk.len())
+                        .map(|i| format!("(?{}, ?{})", i * 2 + 1, i * 2 + 2))
+                        .collect();
+                    let sql = format!(
+                        "INSERT INTO _valid_pairs (city, keyword) VALUES {}",
+                        placeholders.join(", ")
+                    );
+                    let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> =
+                        Vec::with_capacity(chunk.len() * 2);
+                    for (city, keyword) in chunk {
+                        param_values.push(Box::new(city.clone()));
+                        param_values.push(Box::new(keyword.clone()));
+                    }
+                    let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+                        param_values.iter().map(|p| p.as_ref()).collect();
+                    conn.execute(&sql, params_ref.as_slice()).ok();
                 }
-                let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-                    param_values.iter().map(|p| p.as_ref()).collect();
-                let result = conn.execute(&sql, params_ref.as_slice());
+
+                let result = conn.execute(
+                    "DELETE FROM a_task_progress WHERE task_id = ?1 AND NOT EXISTS (
+                        SELECT 1 FROM _valid_pairs WHERE city = city_name AND keyword = keyword_name
+                    )",
+                    params![task_id],
+                );
                 match result {
                     Ok(n) if n > 0 => {
-                        eprintln!("[db] 清理了 {} 条孤儿进度记录 (task={})", n, task_id)
+                        eprintln!("[db] 清理了 {} 条孤儿进度记录 (task={})", n, task_id);
                     },
                     Err(e) => eprintln!("[db] cleanup_orphan_progress 失败: {}", e),
                     _ => {},
                 }
+
+                conn.execute("DROP TABLE IF EXISTS _valid_pairs", []).ok();
             })
             .await;
     }

@@ -91,9 +91,26 @@ impl TaskEngine {
             if is_running {
                 let saved_status = local.status.clone();
                 let saved_device = local.assigned_device.clone();
+                // 保留当前 cities/keywords 的运行时进度状态
+                let old_cities = std::mem::take(&mut local.cities);
                 *local = merged;
                 local.status = saved_status;
                 local.assigned_device = saved_device;
+                // 将旧的进度状态合并回来
+                for city in &mut local.cities {
+                    if let Some(old_city) = old_cities.iter().find(|c| c.name == city.name) {
+                        city.status = old_city.status.clone();
+                        city.done = old_city.done;
+                        city.progress = old_city.progress;
+                        for kw in &mut city.keywords {
+                            if let Some(old_kw) =
+                                old_city.keywords.iter().find(|k| k.name == kw.name)
+                            {
+                                kw.status = old_kw.status.clone();
+                            }
+                        }
+                    }
+                }
                 eprintln!("[engine] merge_single_task: 任务 {} 执行中，增量合并完成", task_id);
             } else {
                 *local = merged;
@@ -151,7 +168,8 @@ impl TaskEngine {
                         tasks.iter().any(|t| {
                             t.id == tid
                                 && (t.status == task_status::EXECUTING
-                                    || t.status == task_status::PAUSED)
+                                    || t.status == task_status::PAUSED
+                                    || t.status == task_status::ERROR)
                         })
                     };
                     if is_running {
@@ -188,7 +206,7 @@ impl TaskEngine {
 
         let all_ids_set: HashSet<String> = all_task_ids.iter().cloned().collect();
 
-        // ── 1. 取消正在运行的任务循环 + 释放设备 ──
+        // ── 1. 取消正在运行的任务循环 + 释放设备 + 结束 run ──
         {
             let mut running = self.running.write().await;
             for task_id in &all_task_ids {
@@ -196,7 +214,20 @@ impl TaskEngine {
                     entry.cancel.cancel();
                     eprintln!("[engine] 取消运行中任务: {}", task_id);
                 }
-                running.remove(task_id);
+                if let Some(run) = running.remove(task_id) {
+                    // 正确结束 run 记录
+                    let storage = Arc::clone(&self.storage);
+                    let tid = task_id.clone();
+                    tokio::spawn(async move {
+                        storage
+                            .finish_task_run(
+                                &tid,
+                                run.started_at,
+                                crate::constants::run_status::STOPPED,
+                            )
+                            .await;
+                    });
+                }
             }
         }
 

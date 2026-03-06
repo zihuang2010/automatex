@@ -218,10 +218,15 @@ impl TaskEngine {
             serial
         };
 
-        // FIX #7: retry 创建新轮次 — 失败时返回错误
+        // FIX #7: retry 创建新轮次 — 失败时回滚状态并返回错误
         let round_id = match self.storage.create_round(task_id).await {
             Some(id) => id,
             None => {
+                let mut tasks = self.tasks.write().await;
+                if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
+                    task.status = task_status::WAITING.to_string();
+                    task.assigned_device = None;
+                }
                 return Err("创建轮次失败（数据库错误），无法重试任务".into());
             },
         };
@@ -247,7 +252,7 @@ impl TaskEngine {
                 .iter()
                 .filter(|t| {
                     t.assigned_device.is_some()
-                        && (t.status == task_status::EXECUTING || t.status == task_status::PAUSED)
+                        && t.status == task_status::EXECUTING
                         && !online_set.contains(t.assigned_device.as_deref().unwrap_or(""))
                 })
                 .map(|t| t.id.clone())

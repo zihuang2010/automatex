@@ -173,11 +173,6 @@ pub fn run() {
                         .map(|d| d.hw_serial.clone())
                         .collect();
 
-                    let client_id = db_init
-                        .get_setting(constants::setting_key::MQTT_CLIENT_ID)
-                        .await
-                        .unwrap_or_else(|| utils::generate_machine_client_id());
-
                     let req = http::DeviceSyncRequest { client_id, online, offline_local };
 
                     match http_client.device_sync(&req).await {

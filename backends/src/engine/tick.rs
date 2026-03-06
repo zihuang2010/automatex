@@ -17,21 +17,27 @@ pub(crate) enum TickEffect {
         city_name: String,
         kw_name: String,
         device_serial: String,
+        round_id: i64,
     },
     /// 整个任务执行完成（可能包含最后一个完成的关键词）
     TaskSuccess {
         task_id: String,
         last_keyword: Option<(String, String, String)>, // (city, kw, device)
+        round_id: i64,
     },
     /// 设备离线，任务需要标记 ERROR
     DeviceOffline {
         task_id: String,
         device_serial: String,
+        started_at: i64,
+        round_id: i64,
     },
     /// 风控触发：标记设备 + 任务 ERROR
     RiskControl {
         task_id: String,
         device_serial: String,
+        started_at: i64,
+        round_id: i64,
     },
     /// 无需任何 DB 操作（城市切换、初始 RUN 标记等）
     None,
@@ -101,6 +107,16 @@ impl TaskEngine {
             None => false,
         };
 
+        // Step 1.5: snapshot running info（在 tasks 写锁外获取）
+        let run_snapshot = {
+            let running = self.running.read().await;
+            running.get(task_id).map(|r| (r.started_at, r.round_id))
+        };
+        let Some((run_started_at, run_round_id)) = run_snapshot else {
+            eprintln!("[engine] tick: task {} 不在 running map 中，跳过", task_id);
+            return None;
+        };
+
         // Step 2: 获取写锁执行状态变更
         let effect = 'effect: {
             let mut tasks = self.tasks.write().await;
@@ -122,6 +138,8 @@ impl TaskEngine {
                 break 'effect TickEffect::DeviceOffline {
                     task_id: task_id.to_string(),
                     device_serial,
+                    started_at: run_started_at,
+                    round_id: run_round_id,
                 };
             }
 
@@ -139,6 +157,8 @@ impl TaskEngine {
                     break 'effect TickEffect::RiskControl {
                         task_id: task_id.to_string(),
                         device_serial,
+                        started_at: run_started_at,
+                        round_id: run_round_id,
                     };
                 }
             }
@@ -157,6 +177,7 @@ impl TaskEngine {
                 break 'effect TickEffect::TaskSuccess {
                     task_id: task_id.to_string(),
                     last_keyword: None,
+                    round_id: run_round_id,
                 };
             };
 
@@ -189,6 +210,7 @@ impl TaskEngine {
                         city_name: done_city,
                         kw_name: done_kw,
                         device_serial,
+                        round_id: run_round_id,
                     }
                 } else {
                     TickEffect::None
@@ -212,6 +234,7 @@ impl TaskEngine {
                         city_name: done_city,
                         kw_name: done_kw,
                         device_serial,
+                        round_id: run_round_id,
                     }
                 } else {
                     task.status = task_status::SUCCESS.to_string();
@@ -219,6 +242,7 @@ impl TaskEngine {
                     TickEffect::TaskSuccess {
                         task_id: task_id.to_string(),
                         last_keyword: Some((done_city, done_kw, device_serial)),
+                        round_id: run_round_id,
                     }
                 }
             } else {
@@ -231,32 +255,32 @@ impl TaskEngine {
                 } else {
                     task.status = task_status::SUCCESS.to_string();
                     task.assigned_device = None;
-                    TickEffect::TaskSuccess { task_id: task_id.to_string(), last_keyword: None }
+                    TickEffect::TaskSuccess {
+                        task_id: task_id.to_string(),
+                        last_keyword: None,
+                        round_id: run_round_id,
+                    }
                 }
             }
         }; // ← 写锁释放
 
         // Step 3: 锁外执行 DB 操作
         match effect {
-            TickEffect::KeywordDone { task_id, city_name, kw_name, device_serial } => {
-                let round_id =
-                    self.running.read().await.get(&task_id).map(|r| r.round_id).unwrap_or(0);
+            TickEffect::KeywordDone { task_id, city_name, kw_name, device_serial, round_id } => {
                 self.storage
                     .record_keyword_done(&task_id, &city_name, &kw_name, &device_serial, round_id)
                     .await;
                 None
             },
-            TickEffect::TaskSuccess { task_id, last_keyword } => {
+            TickEffect::TaskSuccess { task_id, last_keyword, round_id } => {
                 if let Some((city, kw, device)) = last_keyword {
-                    let round_id =
-                        self.running.read().await.get(&task_id).map(|r| r.round_id).unwrap_or(0);
                     self.storage.record_keyword_done(&task_id, &city, &kw, &device, round_id).await;
                 }
                 // finish_round + finish_task_run 由 spawn_loop 统一处理
                 self.storage.save_task_state(&task_id, task_status::SUCCESS, None, None).await;
                 Some(true)
             },
-            TickEffect::DeviceOffline { task_id, device_serial } => {
+            TickEffect::DeviceOffline { task_id, device_serial, started_at, round_id } => {
                 let still_offline = self
                     .storage
                     .get_device_by_serial(&device_serial)
@@ -269,37 +293,37 @@ impl TaskEngine {
                         task.status = task_status::EXECUTING.to_string();
                         task.assigned_device = Some(device_serial.clone());
                     }
-                    let round_id = self.running.read().await.get(&task_id).map(|r| r.round_id);
                     self.storage
                         .save_task_state(
                             &task_id,
                             task_status::EXECUTING,
                             Some(&device_serial),
-                            round_id,
+                            Some(round_id),
                         )
                         .await;
                     eprintln!("[engine] 设备已恢复在线，回滚任务状态: {}", task_id);
                     return None;
                 }
                 // 设备确认离线 — 只结束 run，round 保持 running（支持 resume 同轮次）
-                if let Some(run) = self.running.read().await.get(&task_id) {
+                if self.running.read().await.contains_key(&task_id) {
+                    self.storage.finish_task_run(&task_id, started_at, run_status::STOPPED).await;
                     self.storage
-                        .finish_task_run(&task_id, run.started_at, run_status::STOPPED)
+                        .save_task_state(&task_id, task_status::ERROR, None, Some(round_id))
                         .await;
+                } else {
+                    // 已被 release_offline_devices 处理，跳过
+                    eprintln!("[engine] DeviceOffline: task {} 已被其他路径处理", task_id);
                 }
-                let round_id = self.running.read().await.get(&task_id).map(|r| r.round_id);
-                self.storage.save_task_state(&task_id, task_status::ERROR, None, round_id).await;
                 Some(false)
             },
-            TickEffect::RiskControl { task_id, device_serial } => {
+            TickEffect::RiskControl { task_id, device_serial, started_at, round_id } => {
                 // 风控触发 — 只结束 run，round 保持 running
-                if let Some(run) = self.running.read().await.get(&task_id) {
+                if self.running.read().await.contains_key(&task_id) {
+                    self.storage.finish_task_run(&task_id, started_at, run_status::STOPPED).await;
                     self.storage
-                        .finish_task_run(&task_id, run.started_at, run_status::STOPPED)
+                        .save_task_state(&task_id, task_status::ERROR, None, Some(round_id))
                         .await;
                 }
-                let round_id = self.running.read().await.get(&task_id).map(|r| r.round_id);
-                self.storage.save_task_state(&task_id, task_status::ERROR, None, round_id).await;
                 self.storage.flag_device(&device_serial).await;
                 let _ = self.app_handle.emit(
                     crate::constants::tauri_event::RISK_CONTROL,

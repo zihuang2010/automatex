@@ -40,6 +40,18 @@ pub struct DailySummary {
     pub total_keywords_done: i32,
 }
 
+impl DailySummary {
+    pub fn empty(run_date: String) -> Self {
+        Self {
+            run_date,
+            total_runs: 0,
+            total_duration_sec: 0,
+            total_cities_done: 0,
+            total_keywords_done: 0,
+        }
+    }
+}
+
 // ─── 执行记录操作 ──────────────────────────────────────────────
 
 impl Database {
@@ -186,13 +198,7 @@ impl Database {
     pub async fn query_daily_summary(&self, run_date: &str) -> DailySummary {
         let run_date = run_date.to_string();
         let Ok(conn) = self.pool.get().await else {
-            return DailySummary {
-                run_date,
-                total_runs: 0,
-                total_duration_sec: 0,
-                total_cities_done: 0,
-                total_keywords_done: 0,
-            };
+            return DailySummary::empty(run_date);
         };
         let rd = run_date.clone();
         conn.interact(move |conn| {
@@ -213,22 +219,10 @@ impl Database {
                     })
                 },
             )
-            .unwrap_or(DailySummary {
-                run_date: rd,
-                total_runs: 0,
-                total_duration_sec: 0,
-                total_cities_done: 0,
-                total_keywords_done: 0,
-            })
+            .unwrap_or_else(|_| DailySummary::empty(rd))
         })
         .await
-        .unwrap_or(DailySummary {
-            run_date,
-            total_runs: 0,
-            total_duration_sec: 0,
-            total_cities_done: 0,
-            total_keywords_done: 0,
-        })
+        .unwrap_or_else(|_| DailySummary::empty(run_date))
     }
 
     pub async fn query_task_run_stats(&self, task_id: &str) -> TaskRunStats {
