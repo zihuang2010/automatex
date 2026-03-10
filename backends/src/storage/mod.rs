@@ -170,9 +170,27 @@ impl Database {
                 device_serial TEXT NOT NULL,
                 sync_status   TEXT NOT NULL DEFAULT 'pending',
                 UNIQUE(task_id, city_name, keyword_name, round_id)
-            );
+            );",
+            )
+            .map_err(|e| format!("建表失败: {}", e))?;
 
-            CREATE INDEX IF NOT EXISTS idx_devices_hw_serial ON a_devices(hw_serial);
+            // 迁移：为旧数据库添加新列（ignore duplicate column 错误）
+            let migrations = [
+                "ALTER TABLE a_task_progress ADD COLUMN round_id INTEGER NOT NULL DEFAULT 0;",
+                "ALTER TABLE a_task_progress ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'pending';",
+                "ALTER TABLE a_task_progress ADD COLUMN device_serial TEXT NOT NULL DEFAULT '';",
+                "ALTER TABLE a_task_runs ADD COLUMN round_id INTEGER;",
+                "ALTER TABLE a_task_runs ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'pending';",
+                "ALTER TABLE a_task_runs ADD COLUMN cities_baseline INTEGER NOT NULL DEFAULT 0;",
+                "ALTER TABLE a_task_runs ADD COLUMN keywords_baseline INTEGER NOT NULL DEFAULT 0;",
+            ];
+            for sql in &migrations {
+                let _ = conn.execute_batch(sql); // 列已存在时忽略错误
+            }
+
+            // 建索引（此时所有列已确保存在）
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_devices_hw_serial ON a_devices(hw_serial);
             CREATE INDEX IF NOT EXISTS idx_task_defs_phone ON a_task_defs(phone);
             CREATE INDEX IF NOT EXISTS idx_rounds_task ON a_task_rounds(task_id);
             CREATE INDEX IF NOT EXISTS idx_rounds_date ON a_task_rounds(run_date);
@@ -185,12 +203,7 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_runs_sync ON a_task_runs(sync_status);
             CREATE INDEX IF NOT EXISTS idx_runs_device_date ON a_task_runs(device_serial, run_date);",
             )
-            .map_err(|e| format!("建表失败: {}", e))?;
-
-            // 迁移：为已有数据库添加新列（忽略 duplicate column 错误）
-            let _ = conn.execute_batch(
-                "ALTER TABLE a_task_runs ADD COLUMN cities_baseline INTEGER NOT NULL DEFAULT 0;",
-            );
+            .map_err(|e| format!("建索引失败: {}", e))?;
         }
 
         // Phase 2: 创建 deadpool-sqlite 连接池（带 PRAGMA hook + 限制池大小）

@@ -35,6 +35,7 @@ pub async fn read_device_name(stream: &mut TcpStream) -> Result<String, String> 
 
 /// 视频流 header 信息（scrcpy v3.x）
 pub struct VideoHeader {
+    #[allow(dead_code)]
     pub codec: String,
     pub width: u32,
     pub height: u32,

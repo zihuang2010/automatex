@@ -9,8 +9,6 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Mutex;
 use tokio::net::TcpStream;
 
-// ─── C-1 修复：端口池（带上界保护） ─────────────────────────────
-
 /// 全局端口池：回收已释放的端口，避免端口耗尽
 static PORT_POOL: Mutex<VecDeque<u16>> = Mutex::new(VecDeque::new());
 /// 回退分配器：仅在池为空时使用
@@ -24,11 +22,12 @@ fn allocate_port() -> Result<u16, String> {
     if let Some(port) = pool.pop_front() {
         return Ok(port);
     }
-    let port = NEXT_PORT.fetch_add(1, Ordering::Relaxed);
-    if port > PORT_RANGE_MAX {
-        return Err("端口池耗尽 (最大 1000 个并发投屏)".into());
-    }
-    Ok(port)
+    // fetch_update 确保不会超出范围后仍递增
+    NEXT_PORT
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |p| {
+            if p < PORT_RANGE_MAX { Some(p + 1) } else { None }
+        })
+        .map_err(|_| "端口池耗尽 (最大 1000 个并发投屏)".to_string())
 }
 
 fn release_port(port: u16) {
@@ -175,7 +174,6 @@ impl ScrcpyServer {
         // 获取本地 JAR 文件大小
         let local_size = std::fs::metadata(jar_path).map(|m| m.len()).unwrap_or(0);
 
-        // S-1: 路径加引号防止命令注入（虽然当前为常量，防御性编程）
         let check = run_adb_timed(
             adb_command().args([
                 "-s",
@@ -222,8 +220,8 @@ impl ScrcpyServer {
         serial: &str,
     ) -> Result<(tokio::process::Child, tokio::process::ChildStderr), String> {
         let adb_path = crate::connection::adb::adb_path().to_string();
-        let mut child = tokio::process::Command::new(&adb_path)
-            .args([
+        let mut cmd = tokio::process::Command::new(&adb_path);
+        cmd.args([
                 "-s",
                 serial,
                 "shell",
@@ -235,8 +233,16 @@ impl ScrcpyServer {
                 ),
             ])
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
+            .stderr(std::process::Stdio::piped());
+
+        // Windows: 隐藏控制台窗口
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+
+        let mut child = cmd.spawn()
             .map_err(|e| format!("启动 scrcpy-server 失败: {}", e))?;
 
         let stderr = child.stderr.take().ok_or("无法获取 server stderr")?;
@@ -284,7 +290,7 @@ impl ScrcpyServer {
                                 last_err = "server 未就绪".to_string();
                                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms))
                                     .await;
-                                delay_ms = (delay_ms * 3 / 2).min(1000);
+                                delay_ms = (delay_ms * 2).min(2000);
                                 continue;
                             },
                         }
@@ -297,7 +303,7 @@ impl ScrcpyServer {
                 Err(e) => {
                     last_err = format!("{}", e);
                     tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                    delay_ms = (delay_ms * 3 / 2).min(1000);
+                    delay_ms = (delay_ms * 2).min(2000);
                 },
             }
         }

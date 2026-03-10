@@ -1573,6 +1573,16 @@
                   id="scrcpy-canvas"
                   class="h-full w-full cursor-crosshair object-contain"
                 ></canvas>
+                <!-- 隐藏文本输入框（IME 中文输入 + 粘贴） -->
+                <input
+                  id="mirror-text-input"
+                  type="text"
+                  class="pointer-events-none absolute top-0 left-0 h-0 w-0 opacity-0"
+                  autocomplete="off"
+                  autocorrect="off"
+                  autocapitalize="off"
+                  spellcheck="false"
+                />
                 <!-- 加载占位 -->
                 <div
                   id="mirror-loading"

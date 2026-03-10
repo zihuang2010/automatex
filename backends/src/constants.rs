@@ -194,7 +194,7 @@ pub mod mqtt_topic {
     /// 设备上线事件
     pub const UP_DEVICE_ONLINE: &str = "upstream/device/online";
     /// 设备下线事件
-    pub const UP_DEVICE_OFFLINE: &str = "upstream/device/offline";
+    pub const UP_DEVICE_OFFLINE: &str = "upstream/device/offline"; 
     /// 心跳上报
     pub const UP_HEARTBEAT: &str = "upstream/heartbeat";
     /// 任务状态事件

@@ -203,6 +203,10 @@ export async function startMirror(serial: string) {
     if (container) {
       container.style.aspectRatio = `${result.width} / ${result.height}`;
     }
+
+    // 聚焦隐藏 input 以接收键盘/IME 输入
+    const mirrorInput = $('#mirror-text-input') as HTMLInputElement;
+    if (mirrorInput) mirrorInput.focus();
   } catch (e) {
     if (statusEl) statusEl.textContent = `连接失败: ${e}`;
     console.error('[mirror] 启动失败:', e);
@@ -273,7 +277,7 @@ export function initMirror() {
       invoke('scrcpy_inject_key', {
         serial: activeMirror.serial,
         keycode: 3,
-        meta_state: 0,
+        metaState: 0,
       }).catch(console.warn);
     }
   });
@@ -297,6 +301,7 @@ export function initMirror() {
 
   canvas.addEventListener('mousedown', e => {
     e.preventDefault();
+    if (textInput) textInput.focus(); // 点击画面时聚焦隐藏 input
     isDown = true;
     const coords = getDeviceCoords(e);
     if (coords && activeMirror) {
@@ -368,6 +373,163 @@ export function initMirror() {
       }).catch(console.warn);
     }
   });
+
+  // ── 键盘事件（方案 C：特殊键 keycode + 文本 inject_text + IME） ──
+
+  // PC key → Android KEYCODE 映射
+  const KEY_MAP: Record<string, number> = {
+    Enter: 66,
+    Backspace: 67,
+    Delete: 112,
+    Tab: 61,
+    Escape: 111,
+    ArrowUp: 19,
+    ArrowDown: 20,
+    ArrowLeft: 21,
+    ArrowRight: 22,
+    Home: 122,
+    End: 123,
+    PageUp: 92,
+    PageDown: 93,
+    F1: 131,
+    F2: 132,
+    F3: 133,
+    F4: 134,
+    F5: 135,
+    F6: 136,
+    F7: 137,
+    F8: 138,
+    F9: 139,
+    F10: 140,
+    F11: 141,
+    F12: 142,
+    // 音量/电源
+    AudioVolumeUp: 24,
+    AudioVolumeDown: 25,
+  };
+
+  // 修饰键 key → Android META flag
+  const META_ALT_ON = 0x02;
+  const META_SHIFT_ON = 0x01;
+  const META_CTRL_ON = 0x1000;
+
+  function getMetaState(e: KeyboardEvent): number {
+    let meta = 0;
+    if (e.altKey) meta |= META_ALT_ON;
+    if (e.shiftKey) meta |= META_SHIFT_ON;
+    if (e.ctrlKey || e.metaKey) meta |= META_CTRL_ON;
+    return meta;
+  }
+
+  // 判断是否为纯修饰键
+  const MODIFIER_KEYS = new Set(['Control', 'Shift', 'Alt', 'Meta', 'CapsLock']);
+
+  // 单字符 key → Android KEYCODE（仅用于 Ctrl+字母 组合）
+  function charToKeycode(key: string): number {
+    const c = key.toUpperCase();
+    if (c >= 'A' && c <= 'Z') return c.charCodeAt(0) - 65 + 29; // KEYCODE_A=29
+    if (c >= '0' && c <= '9') return c.charCodeAt(0) - 48 + 7; // KEYCODE_0=7
+    return 0;
+  }
+
+  // 隐藏文本输入框（用于 IME 和普通文本输入）
+  const textInput = $('#mirror-text-input') as HTMLInputElement;
+
+  // ── 隐藏 input 始终聚焦，承接所有文本输入（英文 + 中文 IME） ──
+  if (textInput) {
+    // 使 input 可聚焦但不可见
+    textInput.style.position = 'fixed';
+    textInput.style.opacity = '0';
+    textInput.style.pointerEvents = 'none';
+    textInput.style.width = '1px';
+    textInput.style.height = '1px';
+    textInput.style.left = '0';
+    textInput.style.top = '0';
+    textInput.style.border = 'none';
+    textInput.style.padding = '0';
+    textInput.style.outline = 'none';
+    // 允许 focus（programmatic）
+    textInput.removeAttribute('tabindex');
+
+    let isComposing = false;
+
+    // ── 特殊键：在 input 上拦截（Backspace/Enter/方向键等） ──
+    textInput.addEventListener('keydown', e => {
+      if (!activeMirror) return;
+      if (MODIFIER_KEYS.has(e.key)) return;
+
+      // 特殊键 → inject_key（始终处理，包括 IME 状态下的 Backspace）
+      if (KEY_MAP[e.key] && !isComposing) {
+        e.preventDefault();
+        const meta = getMetaState(e);
+        invoke('scrcpy_inject_key', {
+          serial: activeMirror.serial,
+          keycode: KEY_MAP[e.key],
+          metaState: meta,
+        }).catch(err => console.error('[mirror] inject_key 失败:', err));
+        return;
+      }
+
+      // Ctrl/Meta + 普通键组合（如 Ctrl+C / Cmd+A）
+      // 禁止 Ctrl+V / Cmd+V（粘贴会导致阻塞卡死）
+      if ((e.ctrlKey || e.metaKey) && e.key.length === 1) {
+        if (e.key === 'v' || e.key === 'V') return; // 禁止粘贴
+        e.preventDefault();
+        const keycode = charToKeycode(e.key);
+        if (keycode === 0) return;
+        const meta = getMetaState(e);
+        invoke('scrcpy_inject_key', {
+          serial: activeMirror.serial,
+          keycode,
+          metaState: meta,
+        }).catch(err => console.error('[mirror] inject_key 失败:', err));
+        return;
+      }
+
+      // 普通字符：不 preventDefault，让 input 自然接收
+      // → 通过下面的 input/compositionend 事件发送
+    });
+
+    // ── IME 组合状态跟踪 ──
+    textInput.addEventListener('compositionstart', () => {
+      isComposing = true;
+    });
+
+    textInput.addEventListener('compositionend', () => {
+      isComposing = false;
+      const text = textInput.value;
+      if (text && activeMirror) {
+        invoke('scrcpy_inject_text', {
+          serial: activeMirror.serial,
+          text,
+        }).catch(err => console.error('[mirror] inject_text 失败:', err));
+      }
+      textInput.value = '';
+    });
+
+    // ── 非 IME 文本输入（英文字符、粘贴等） ──
+    textInput.addEventListener('input', () => {
+      if (isComposing) return;
+      const text = textInput.value;
+      if (text && activeMirror) {
+        invoke('scrcpy_inject_text', {
+          serial: activeMirror.serial,
+          text,
+        }).catch(err => console.error('[mirror] inject_text 失败:', err));
+      }
+      textInput.value = '';
+    });
+
+    // 防止 input 失焦（仅在 modal 可见时 re-focus）
+    textInput.addEventListener('blur', () => {
+      setTimeout(() => {
+        const modal = $('#mirror-modal') as HTMLElement;
+        if (activeMirror && textInput && modal?.style.display !== 'none') {
+          textInput.focus();
+        }
+      }, 50);
+    });
+  }
 }
 
 // ─── 工具函数 ─────────────────────────────────────────

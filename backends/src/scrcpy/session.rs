@@ -16,7 +16,8 @@ use tokio_util::sync::CancellationToken;
 // ─── 常量 ─────────────────────────────────────────────
 
 /// SG-3: 帧读取超时秒数（无帧则视为 server 挂死）
-const FRAME_READ_TIMEOUT_SECS: u64 = 10;
+/// 注意：scrcpy 在屏幕静止时可能长时间不发送新帧，超时不能太短
+const FRAME_READ_TIMEOUT_SECS: u64 = 120;
 
 // ─── 事件载荷 ─────────────────────────────────────────────
 
@@ -118,7 +119,7 @@ impl SessionManager {
     }
 
     /// 停止投屏
-    /// C-2 修复：cancel 后等待 pump 任务完成，确保 server.stop() 不会双重执行
+    /// pump 可能已自行退出并清理，因此 session 不存在时不报错
     pub async fn stop_mirror(&self, serial: &str) -> Result<(), String> {
         let session = { self.sessions.write().await.remove(serial) };
 
@@ -128,10 +129,9 @@ impl SessionManager {
             let _ =
                 tokio::time::timeout(std::time::Duration::from_secs(5), session.pump_handle).await;
             eprintln!("[scrcpy] 停止投屏: {}", serial);
-            Ok(())
-        } else {
-            Err(format!("设备 {} 未在投屏", serial))
         }
+        // pump 可能已先于用户操作退出并清理，不报错
+        Ok(())
     }
 
     /// 注入触控事件
@@ -169,6 +169,15 @@ impl SessionManager {
 
         let mut stream = session.control_stream.lock().await;
         ScrcpyControl::inject_key(&mut stream, keycode, meta_state).await
+    }
+
+    /// 注入文本（UTF-8 直传，支持中文等）
+    pub async fn inject_text(&self, serial: &str, text: &str) -> Result<(), String> {
+        let sessions = self.sessions.read().await;
+        let session = sessions.get(serial).ok_or_else(|| format!("设备 {} 未在投屏", serial))?;
+
+        let mut stream = session.control_stream.lock().await;
+        ScrcpyControl::inject_text(&mut stream, text).await
     }
 
     /// 注入返回键
@@ -236,8 +245,11 @@ impl SessionManager {
         }
 
         server.stop().await;
-        sessions.write().await.remove(&serial);
-        let _ = app_handle.emit("scrcpy-stopped", &serial);
+        // 仅在 session 仍存在时移除（stop_mirror 可能已先移除）
+        let was_present = sessions.write().await.remove(&serial).is_some();
+        if was_present {
+            let _ = app_handle.emit("scrcpy-stopped", &serial);
+        }
         eprintln!("[scrcpy] 帧推送结束: {}", serial);
     }
 }
