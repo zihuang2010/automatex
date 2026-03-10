@@ -26,22 +26,10 @@ pub(super) fn spawn_worker(
     db: Arc<Database>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let exit_success = task_worker_loop(
-            &task_id,
-            &device_serial,
-            &cancel,
-            &tx,
-            &db,
-        )
-        .await;
+        let exit_success = task_worker_loop(&task_id, &device_serial, &cancel, &tx, &db).await;
 
         // 通知 event loop worker 已退出
-        let _ = tx
-            .send(EngineMsg::WorkerExited {
-                task_id,
-                success: exit_success,
-            })
-            .await;
+        let _ = tx.send(EngineMsg::WorkerExited { task_id, success: exit_success }).await;
     })
 }
 

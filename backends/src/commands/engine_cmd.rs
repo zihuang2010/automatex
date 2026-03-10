@@ -98,7 +98,7 @@ pub async fn subscribe_task_progress(
                     "message": "任务不存在"
                 }));
                 return Ok(());
-            }
+            },
         };
 
         let total_kw: i32 = task.cities.iter().map(|c| c.total).sum();

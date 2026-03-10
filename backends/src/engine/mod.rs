@@ -128,10 +128,7 @@ impl TaskEngine {
         msg_fn: impl FnOnce(oneshot::Sender<T>) -> EngineMsg,
     ) -> Result<T, String> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .send(msg_fn(reply_tx))
-            .await
-            .map_err(|_| "引擎已关闭".to_string())?;
+        self.tx.send(msg_fn(reply_tx)).await.map_err(|_| "引擎已关闭".to_string())?;
         reply_rx.await.map_err(|_| "引擎响应丢失".to_string())
     }
 
@@ -148,43 +145,28 @@ impl TaskEngine {
     }
 
     pub async fn start_task(self: &Arc<Self>, task_id: &str) -> Result<(), String> {
-        self.send_and_recv(|reply| EngineMsg::StartTask {
-            task_id: task_id.to_string(),
-            reply,
-        })
-        .await?
+        self.send_and_recv(|reply| EngineMsg::StartTask { task_id: task_id.to_string(), reply })
+            .await?
     }
 
     pub async fn pause_task(self: &Arc<Self>, task_id: &str) -> Result<(), String> {
-        self.send_and_recv(|reply| EngineMsg::PauseTask {
-            task_id: task_id.to_string(),
-            reply,
-        })
-        .await?
+        self.send_and_recv(|reply| EngineMsg::PauseTask { task_id: task_id.to_string(), reply })
+            .await?
     }
 
     pub async fn resume_task(self: &Arc<Self>, task_id: &str) -> Result<(), String> {
-        self.send_and_recv(|reply| EngineMsg::ResumeTask {
-            task_id: task_id.to_string(),
-            reply,
-        })
-        .await?
+        self.send_and_recv(|reply| EngineMsg::ResumeTask { task_id: task_id.to_string(), reply })
+            .await?
     }
 
     pub async fn stop_task(self: &Arc<Self>, task_id: &str) -> Result<(), String> {
-        self.send_and_recv(|reply| EngineMsg::StopTask {
-            task_id: task_id.to_string(),
-            reply,
-        })
-        .await?
+        self.send_and_recv(|reply| EngineMsg::StopTask { task_id: task_id.to_string(), reply })
+            .await?
     }
 
     pub async fn retry_task(self: &Arc<Self>, task_id: &str) -> Result<(), String> {
-        self.send_and_recv(|reply| EngineMsg::RetryTask {
-            task_id: task_id.to_string(),
-            reply,
-        })
-        .await?
+        self.send_and_recv(|reply| EngineMsg::RetryTask { task_id: task_id.to_string(), reply })
+            .await?
     }
 
     pub async fn get_ready_serials(&self) -> Vec<String> {

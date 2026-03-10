@@ -70,16 +70,12 @@ async fn control_actor(
         let result = match msg {
             ControlMsg::Touch { action, x, y } => {
                 ScrcpyControl::inject_touch(&mut stream, action, x, y, screen_w, screen_h).await
-            }
+            },
             ControlMsg::Key { keycode, meta_state } => {
                 ScrcpyControl::inject_key(&mut stream, keycode, meta_state).await
-            }
-            ControlMsg::Text(text) => {
-                ScrcpyControl::inject_text(&mut stream, &text).await
-            }
-            ControlMsg::Back => {
-                ScrcpyControl::press_back(&mut stream).await
-            }
+            },
+            ControlMsg::Text(text) => ScrcpyControl::inject_text(&mut stream, &text).await,
+            ControlMsg::Back => ScrcpyControl::press_back(&mut stream).await,
         };
         if let Err(e) = result {
             eprintln!("[control-actor] 发送失败: {}", e);
@@ -146,11 +142,7 @@ impl SessionManager {
 
         sessions.insert(
             serial.to_string(),
-            ScrcpySession {
-                cancel: cancel.clone(),
-                pump_handle,
-                control_tx,
-            },
+            ScrcpySession { cancel: cancel.clone(), pump_handle, control_tx },
         );
         drop(sessions);
 
@@ -185,7 +177,8 @@ impl SessionManager {
         let session = sessions.get(serial).ok_or_else(|| format!("设备 {} 未在投屏", serial))?;
 
         // 高频 mousemove：try_send 满队列时丢弃，避免积压
-        session.control_tx
+        session
+            .control_tx
             .try_send(ControlMsg::Touch { action, x, y })
             .map_err(|e| format!("控制消息发送失败: {}", e))
     }
@@ -200,7 +193,8 @@ impl SessionManager {
         let sessions = self.sessions.read().await;
         let session = sessions.get(serial).ok_or_else(|| format!("设备 {} 未在投屏", serial))?;
 
-        session.control_tx
+        session
+            .control_tx
             .send(ControlMsg::Key { keycode, meta_state })
             .await
             .map_err(|e| format!("控制消息发送失败: {}", e))
@@ -211,7 +205,8 @@ impl SessionManager {
         let sessions = self.sessions.read().await;
         let session = sessions.get(serial).ok_or_else(|| format!("设备 {} 未在投屏", serial))?;
 
-        session.control_tx
+        session
+            .control_tx
             .send(ControlMsg::Text(text.to_string()))
             .await
             .map_err(|e| format!("控制消息发送失败: {}", e))
@@ -222,7 +217,8 @@ impl SessionManager {
         let sessions = self.sessions.read().await;
         let session = sessions.get(serial).ok_or_else(|| format!("设备 {} 未在投屏", serial))?;
 
-        session.control_tx
+        session
+            .control_tx
             .send(ControlMsg::Back)
             .await
             .map_err(|e| format!("控制消息发送失败: {}", e))

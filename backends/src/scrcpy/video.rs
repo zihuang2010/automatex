@@ -30,9 +30,7 @@ pub struct FramePool {
 impl FramePool {
     /// 预分配 512KB（可容纳大多数 I-frame）
     pub fn new() -> Self {
-        Self {
-            buf: Vec::with_capacity(512 * 1024),
-        }
+        Self { buf: Vec::with_capacity(512 * 1024) }
     }
 
     /// 读取一帧视频数据（复用内部缓冲）
@@ -68,10 +66,7 @@ impl FramePool {
             .map_err(|e| format!("读取帧数据失败: {}", e))?;
 
         // 拷贝数据到独立 Vec（buf 保留容量供下次复用）
-        Ok(VideoFrame {
-            is_config,
-            data: self.buf[..size].to_vec(),
-        })
+        Ok(VideoFrame { is_config, data: self.buf[..size].to_vec() })
     }
 }
 

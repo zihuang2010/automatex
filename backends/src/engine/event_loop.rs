@@ -105,28 +105,28 @@ async fn engine_loop(mut s: EngineState, mut rx: mpsc::Receiver<EngineMsg>) {
             EngineMsg::StartTask { task_id, reply } => {
                 let result = handle_start(&mut s, &task_id).await;
                 let _ = reply.send(result);
-            }
+            },
             EngineMsg::PauseTask { task_id, reply } => {
                 let result = handle_pause(&mut s, &task_id).await;
                 let _ = reply.send(result);
-            }
+            },
             EngineMsg::ResumeTask { task_id, reply } => {
                 let result = handle_resume(&mut s, &task_id).await;
                 let _ = reply.send(result);
-            }
+            },
             EngineMsg::StopTask { task_id, reply } => {
                 let result = handle_stop(&mut s, &task_id).await;
                 let _ = reply.send(result);
-            }
+            },
             EngineMsg::RetryTask { task_id, reply } => {
                 let result = handle_retry(&mut s, &task_id).await;
                 let _ = reply.send(result);
-            }
+            },
 
             // ── 查询 ──
             EngineMsg::GetTasks { reply } => {
                 let _ = reply.send(s.tasks.clone());
-            }
+            },
             EngineMsg::GetReadySerials { reply } => {
                 let devices = s.storage.load_all_devices().await;
                 let assigned = compute_assigned_set(&s.tasks);
@@ -140,63 +140,50 @@ async fn engine_loop(mut s: EngineState, mut rx: mpsc::Receiver<EngineMsg>) {
                     .map(|d| d.serial)
                     .collect();
                 let _ = reply.send(ready);
-            }
+            },
 
             // ── 状态管理 ──
-            EngineMsg::ReorderCities {
-                task_id,
-                new_order,
-                reply,
-            } => {
+            EngineMsg::ReorderCities { task_id, new_order, reply } => {
                 let result = handle_reorder(&mut s, &task_id, new_order).await;
                 let _ = reply.send(result);
-            }
+            },
             EngineMsg::ReloadTasks => {
                 handle_reload_tasks(&mut s).await;
-            }
+            },
 
             // ── MQTT 处理 ──
             EngineMsg::HandleTaskReload { action, task_id } => {
                 handle_task_reload_msg(&mut s, &action, task_id.as_deref()).await;
-            }
+            },
             EngineMsg::HandleDeviceKick { hw_serials, reply } => {
                 let n = handle_device_kick(&mut s, hw_serials).await;
                 let _ = reply.send(n);
-            }
+            },
             EngineMsg::HandlePhonesUnbind { phones, reply } => {
                 let n = handle_phones_unbind(&mut s, phones).await;
                 let _ = reply.send(n);
-            }
-            EngineMsg::ReleaseOfflineDevices {
-                online_serials,
-                reply,
-            } => {
+            },
+            EngineMsg::ReleaseOfflineDevices { online_serials, reply } => {
                 let n = handle_release_offline(&mut s, &online_serials).await;
                 let _ = reply.send(n);
-            }
+            },
 
             // ── Worker 回报 ──
-            EngineMsg::TickRequest {
-                task_id,
-                device_online,
-                reply,
-            } => {
+            EngineMsg::TickRequest { task_id, device_online, reply } => {
                 let outcome = process_tick(&mut s, &task_id, device_online).await;
                 let _ = reply.send(outcome);
-            }
+            },
             EngineMsg::WorkerExited { task_id, success } => {
                 if let Some(info) = s.running.remove(&task_id) {
                     if success {
-                        s.storage
-                            .finish_round(info.round_id, round_status::COMPLETED)
-                            .await;
+                        s.storage.finish_round(info.round_id, round_status::COMPLETED).await;
                         s.storage
                             .finish_task_run(&task_id, info.started_at, run_status::COMPLETED)
                             .await;
                     }
                 }
                 emit_update(&mut s).await;
-            }
+            },
         }
 
         // 每条消息处理后自动 emit（带节流）
@@ -220,9 +207,7 @@ async fn emit_update(s: &mut EngineState) {
     s.last_hash = hash;
     s.last_emit = Instant::now();
     let snapshot = TaskSnapshotRef { tasks: &s.tasks };
-    let _ = s
-        .app_handle
-        .emit(constants::tauri_event::TASK_UPDATE, &snapshot);
+    let _ = s.app_handle.emit(constants::tauri_event::TASK_UPDATE, &snapshot);
 }
 
 /// 计算任务列表的轻量摘要 hash（仅基于 status/progress/device，微秒级）
@@ -245,9 +230,7 @@ fn compute_tasks_hash(tasks: &[Task]) -> u64 {
 async fn force_emit(s: &mut EngineState) {
     s.last_emit = Instant::now();
     let snapshot = TaskSnapshotRef { tasks: &s.tasks };
-    let _ = s
-        .app_handle
-        .emit(constants::tauri_event::TASK_UPDATE, &snapshot);
+    let _ = s.app_handle.emit(constants::tauri_event::TASK_UPDATE, &snapshot);
 }
 
 // ─── 生命周期处理 ──────────────────────────────────────
@@ -277,16 +260,13 @@ async fn handle_start(s: &mut EngineState, task_id: &str) -> Result<(), String> 
             task.status = task_status::WAITING.to_string();
             task.assigned_device = None;
             return Err("创建轮次失败（数据库错误），无法启动任务".into());
-        }
+        },
     };
 
     s.storage
         .save_task_state(task_id, task_status::EXECUTING, Some(&serial), Some(round_id))
         .await;
-    let started_at = s
-        .storage
-        .start_task_run(task_id, &serial, round_id)
-        .await;
+    let started_at = s.storage.start_task_run(task_id, &serial, round_id).await;
 
     spawn_task_worker(s, task_id, &serial, started_at, round_id);
     Ok(())
@@ -307,9 +287,7 @@ async fn handle_pause(s: &mut EngineState, task_id: &str) -> Result<(), String> 
     let round_id = info.as_ref().map(|r| r.round_id);
 
     if let Some(ref run) = info {
-        s.storage
-            .finish_task_run(task_id, run.started_at, run_status::PAUSED)
-            .await;
+        s.storage.finish_task_run(task_id, run.started_at, run_status::PAUSED).await;
     }
 
     if let Some(task) = s.tasks.iter_mut().find(|t| t.id == task_id) {
@@ -318,9 +296,7 @@ async fn handle_pause(s: &mut EngineState, task_id: &str) -> Result<(), String> 
         task.assigned_device = None;
     }
 
-    s.storage
-        .save_task_state(task_id, task_status::PAUSED, None, round_id)
-        .await;
+    s.storage.save_task_state(task_id, task_status::PAUSED, None, round_id).await;
     Ok(())
 }
 
@@ -332,10 +308,7 @@ async fn handle_resume(s: &mut EngineState, task_id: &str) -> Result<(), String>
         .map(|t| t.status.clone())
         .ok_or("任务不存在")?;
     if status != task_status::PAUSED && status != task_status::ERROR {
-        return Err(format!(
-            "任务状态为 {}，只有 PAUSED/ERROR 可以继续",
-            status
-        ));
+        return Err(format!("任务状态为 {}，只有 PAUSED/ERROR 可以继续", status));
     }
 
     let devices = s.storage.load_all_devices().await;
@@ -346,11 +319,7 @@ async fn handle_resume(s: &mut EngineState, task_id: &str) -> Result<(), String>
     task.status = task_status::EXECUTING.to_string();
     task.assigned_device = Some(serial.clone());
 
-    let saved_round_id = s
-        .storage
-        .load_task_state(task_id)
-        .await
-        .and_then(|(_, _, rid)| rid);
+    let saved_round_id = s.storage.load_task_state(task_id).await.and_then(|(_, _, rid)| rid);
 
     let round_id = match saved_round_id {
         Some(rid) => rid,
@@ -361,17 +330,14 @@ async fn handle_resume(s: &mut EngineState, task_id: &str) -> Result<(), String>
                 task.status = task_status::PAUSED.to_string();
                 task.assigned_device = None;
                 return Err("创建轮次失败，无法继续任务".into());
-            }
+            },
         },
     };
 
     s.storage
         .save_task_state(task_id, task_status::EXECUTING, Some(&serial), Some(round_id))
         .await;
-    let started_at = s
-        .storage
-        .start_task_run(task_id, &serial, round_id)
-        .await;
+    let started_at = s.storage.start_task_run(task_id, &serial, round_id).await;
 
     spawn_task_worker(s, task_id, &serial, started_at, round_id);
     Ok(())
@@ -411,16 +377,13 @@ async fn handle_retry(s: &mut EngineState, task_id: &str) -> Result<(), String> 
                 task.assigned_device = None;
             }
             return Err("创建轮次失败（数据库错误），无法重试任务".into());
-        }
+        },
     };
 
     s.storage
         .save_task_state(task_id, task_status::EXECUTING, Some(&serial), Some(round_id))
         .await;
-    let started_at = s
-        .storage
-        .start_task_run(task_id, &serial, round_id)
-        .await;
+    let started_at = s.storage.start_task_run(task_id, &serial, round_id).await;
 
     spawn_task_worker(s, task_id, &serial, started_at, round_id);
     Ok(())
@@ -435,10 +398,7 @@ fn cancel_worker(s: &mut EngineState, task_id: &str) -> Option<WorkerInfo> {
     s.running.remove(task_id)
 }
 
-async fn cancel_and_cleanup(
-    s: &mut EngineState,
-    task_id: &str,
-) -> Result<Option<Task>, String> {
+async fn cancel_and_cleanup(s: &mut EngineState, task_id: &str) -> Result<Option<Task>, String> {
     if !s.tasks.iter().any(|t| t.id == task_id) {
         return Err("任务不存在".into());
     }
@@ -446,12 +406,8 @@ async fn cancel_and_cleanup(
     let info = cancel_worker(s, task_id);
 
     if let Some(ref run) = info {
-        s.storage
-            .finish_round(run.round_id, round_status::STOPPED)
-            .await;
-        s.storage
-            .finish_task_run(task_id, run.started_at, run_status::STOPPED)
-            .await;
+        s.storage.finish_round(run.round_id, round_status::STOPPED).await;
+        s.storage.finish_task_run(task_id, run.started_at, run_status::STOPPED).await;
     }
 
     s.storage.clear_task_progress(task_id).await;
@@ -475,15 +431,8 @@ fn spawn_task_worker(
         s.tx.clone(),
         Arc::clone(&s.storage),
     );
-    s.running.insert(
-        task_id.to_string(),
-        WorkerInfo {
-            cancel,
-            handle,
-            started_at,
-            round_id,
-        },
-    );
+    s.running
+        .insert(task_id.to_string(), WorkerInfo { cancel, handle, started_at, round_id });
 }
 
 // ─── 状态管理 ──────────────────────────────────────────
@@ -493,23 +442,13 @@ async fn handle_reorder(
     task_id: &str,
     new_order: Vec<String>,
 ) -> Result<(), String> {
-    let task = s
-        .tasks
-        .iter_mut()
-        .find(|t| t.id == task_id)
-        .ok_or("任务不存在")?;
+    let task = s.tasks.iter_mut().find(|t| t.id == task_id).ok_or("任务不存在")?;
 
-    let (fixed, mut pending): (Vec<_>, Vec<_>) = task
-        .cities
-        .drain(..)
-        .partition(|c| c.status != city_status::PENDING);
+    let (fixed, mut pending): (Vec<_>, Vec<_>) =
+        task.cities.drain(..).partition(|c| c.status != city_status::PENDING);
 
-    pending.sort_by_key(|c| {
-        new_order
-            .iter()
-            .position(|name| name == &c.name)
-            .unwrap_or(usize::MAX)
-    });
+    pending
+        .sort_by_key(|c| new_order.iter().position(|name| name == &c.name).unwrap_or(usize::MAX));
 
     task.cities = fixed.into_iter().chain(pending).collect();
     s.storage.save_city_order(task_id, &new_order).await;
@@ -536,11 +475,7 @@ async fn handle_reload_tasks(s: &mut EngineState) {
 
 // ─── Tick 处理 ─────────────────────────────────────────
 
-async fn process_tick(
-    s: &mut EngineState,
-    task_id: &str,
-    device_online: bool,
-) -> TickOutcome {
+async fn process_tick(s: &mut EngineState, task_id: &str, device_online: bool) -> TickOutcome {
     let Some(run_info) = s.running.get(task_id) else {
         return TickOutcome::Continue;
     };
@@ -574,9 +509,7 @@ async fn process_tick(
         rollback_running_keywords(task);
         task.status = task_status::ERROR.to_string();
         task.assigned_device = None;
-        s.storage
-            .finish_task_run(task_id, run_started_at, run_status::STOPPED)
-            .await;
+        s.storage.finish_task_run(task_id, run_started_at, run_status::STOPPED).await;
         s.storage
             .save_task_state(task_id, task_status::ERROR, None, Some(run_round_id))
             .await;
@@ -598,9 +531,7 @@ async fn process_tick(
             task.status = task_status::ERROR.to_string();
             task.assigned_device = None;
 
-            s.storage
-                .finish_task_run(task_id, run_started_at, run_status::STOPPED)
-                .await;
+            s.storage.finish_task_run(task_id, run_started_at, run_status::STOPPED).await;
             s.storage
                 .save_task_state(task_id, task_status::ERROR, None, Some(run_round_id))
                 .await;
@@ -613,23 +544,15 @@ async fn process_tick(
                     "message": "设备风控触发，任务已停止，设备已标记"
                 }),
             );
-            let _ = s
-                .app_handle
-                .emit(constants::tauri_event::DEVICES_CHANGED, ());
+            let _ = s.app_handle.emit(constants::tauri_event::DEVICES_CHANGED, ());
             return TickOutcome::TaskError;
         }
     }
 
     // 找活跃城市或激活第一个 pending
-    let active_idx = task
-        .cities
-        .iter()
-        .position(|c| c.status == city_status::ACTIVE)
-        .or_else(|| {
-            let idx = task
-                .cities
-                .iter()
-                .position(|c| c.status == city_status::PENDING)?;
+    let active_idx =
+        task.cities.iter().position(|c| c.status == city_status::ACTIVE).or_else(|| {
+            let idx = task.cities.iter().position(|c| c.status == city_status::PENDING)?;
             task.cities[idx].status = city_status::ACTIVE.to_string();
             Some(idx)
         });
@@ -637,9 +560,7 @@ async fn process_tick(
     let Some(active_idx) = active_idx else {
         task.status = task_status::SUCCESS.to_string();
         task.assigned_device = None;
-        s.storage
-            .save_task_state(task_id, task_status::SUCCESS, None, None)
-            .await;
+        s.storage.save_task_state(task_id, task_status::SUCCESS, None, None).await;
         return TickOutcome::TaskDone;
     };
 
@@ -661,10 +582,7 @@ async fn process_tick(
     }
 
     // 找下一个 pending 关键词
-    let next_idx = city
-        .keywords
-        .iter()
-        .position(|k| k.status == keyword_status::PENDING);
+    let next_idx = city.keywords.iter().position(|k| k.status == keyword_status::PENDING);
 
     if let Some(idx) = next_idx {
         city.keywords[idx].status = keyword_status::RUN.to_string();
@@ -697,27 +615,20 @@ async fn process_tick(
         } else {
             task.status = task_status::SUCCESS.to_string();
             task.assigned_device = None;
-            s.storage
-                .save_task_state(task_id, task_status::SUCCESS, None, None)
-                .await;
+            s.storage.save_task_state(task_id, task_status::SUCCESS, None, None).await;
             TickOutcome::TaskDone
         }
     } else {
         city.status = city_status::DONE.to_string();
         city.progress = 100;
-        let next = task
-            .cities
-            .iter_mut()
-            .find(|c| c.status == city_status::PENDING);
+        let next = task.cities.iter_mut().find(|c| c.status == city_status::PENDING);
         if let Some(nc) = next {
             nc.status = city_status::ACTIVE.to_string();
             TickOutcome::Continue
         } else {
             task.status = task_status::SUCCESS.to_string();
             task.assigned_device = None;
-            s.storage
-                .save_task_state(task_id, task_status::SUCCESS, None, None)
-                .await;
+            s.storage.save_task_state(task_id, task_status::SUCCESS, None, None).await;
             TickOutcome::TaskDone
         }
     }
@@ -749,17 +660,12 @@ async fn handle_device_kick(s: &mut EngineState, hw_serials: Vec<String>) -> u32
         }
 
         s.storage.delete_device(&serial).await;
-        eprintln!(
-            "[engine] 设备已踢下线: hw_serial={}, serial={}",
-            hw_serial, serial
-        );
+        eprintln!("[engine] 设备已踢下线: hw_serial={}, serial={}", hw_serial, serial);
         kicked += 1;
     }
 
     if kicked > 0 {
-        let _ = s
-            .app_handle
-            .emit(constants::tauri_event::DEVICES_CHANGED, ());
+        let _ = s.app_handle.emit(constants::tauri_event::DEVICES_CHANGED, ());
     }
     kicked
 }
@@ -782,9 +688,7 @@ async fn handle_phones_unbind(s: &mut EngineState, phones: Vec<String>) -> u32 {
     // 取消 workers + 结束 runs
     for task_id in &all_task_ids {
         if let Some(info) = cancel_worker(s, task_id) {
-            s.storage
-                .finish_task_run(task_id, info.started_at, run_status::STOPPED)
-                .await;
+            s.storage.finish_task_run(task_id, info.started_at, run_status::STOPPED).await;
         }
     }
 
@@ -793,24 +697,17 @@ async fn handle_phones_unbind(s: &mut EngineState, phones: Vec<String>) -> u32 {
     s.storage.batch_cleanup_tasks(&all_task_ids).await;
 
     let removed = all_task_ids.len() as u32;
-    eprintln!(
-        "[engine] 批量清理完成: {} 个任务（解绑手机号: {:?}）",
-        removed, phones
-    );
+    eprintln!("[engine] 批量清理完成: {} 个任务（解绑手机号: {:?}）", removed, phones);
     removed
 }
 
-async fn handle_task_reload_msg(
-    s: &mut EngineState,
-    action: &str,
-    task_id: Option<&str>,
-) {
+async fn handle_task_reload_msg(s: &mut EngineState, action: &str, task_id: Option<&str>) {
     match action {
         "reload_all" => {
             eprintln!("[engine] 收到 reload_all，重新加载所有任务");
             handle_reload_tasks(s).await;
             force_emit(s).await;
-        }
+        },
         "reload_task" => {
             if let Some(tid) = task_id {
                 if s.reloading.contains(tid) {
@@ -824,7 +721,7 @@ async fn handle_task_reload_msg(
                 force_emit(s).await;
                 s.reloading.remove(tid);
             }
-        }
+        },
         "delete_task" => {
             if let Some(tid) = task_id {
                 eprintln!("[engine] 收到 delete_task: {}", tid);
@@ -838,15 +735,13 @@ async fn handle_task_reload_msg(
                     let _ = handle_stop(s, tid).await;
                 }
                 s.tasks.retain(|t| t.id != tid);
-                s.storage
-                    .batch_cleanup_tasks(&[tid.to_string()])
-                    .await;
+                s.storage.batch_cleanup_tasks(&[tid.to_string()]).await;
                 force_emit(s).await;
             }
-        }
+        },
         _ => {
             eprintln!("[engine] 未知的 task reload action: {}", action);
-        }
+        },
     }
 }
 
@@ -854,12 +749,9 @@ async fn merge_single_task(s: &mut EngineState, task_id: &str) {
     let new_def = match s.http.fetch_task(task_id).await {
         Ok(def) => def,
         Err(e) => {
-            eprintln!(
-                "[engine] merge_single_task: 获取任务定义失败 {}: {}",
-                task_id, e
-            );
+            eprintln!("[engine] merge_single_task: 获取任务定义失败 {}: {}", task_id, e);
             return;
-        }
+        },
     };
 
     let payload = match serde_json::to_string(&new_def.cities) {
@@ -867,17 +759,12 @@ async fn merge_single_task(s: &mut EngineState, task_id: &str) {
         Err(e) => {
             eprintln!("[engine] merge_single_task: 序列化 payload 失败: {}", e);
             return;
-        }
+        },
     };
 
-    s.storage
-        .upsert_task_def(task_id, &new_def.name, &payload, 1, "")
-        .await;
+    s.storage.upsert_task_def(task_id, &new_def.name, &payload, 1, "").await;
 
-    let was_success = s
-        .tasks
-        .iter()
-        .any(|t| t.id == task_id && t.status == task_status::SUCCESS);
+    let was_success = s.tasks.iter().any(|t| t.id == task_id && t.status == task_status::SUCCESS);
     if was_success {
         s.storage.clear_task_progress(task_id).await;
         s.storage.delete_task_state(task_id).await;
@@ -928,9 +815,7 @@ async fn merge_single_task(s: &mut EngineState, task_id: &str) {
         })
         .unwrap_or_default();
 
-    s.storage
-        .cleanup_orphan_progress(task_id, valid_pairs)
-        .await;
+    s.storage.cleanup_orphan_progress(task_id, valid_pairs).await;
 }
 
 async fn handle_release_offline(s: &mut EngineState, online_serials: &[String]) -> u32 {
@@ -950,9 +835,7 @@ async fn handle_release_offline(s: &mut EngineState, online_serials: &[String]) 
 
     for task_id in &task_ids_to_release {
         if let Some(info) = cancel_worker(s, task_id) {
-            s.storage
-                .finish_task_run(task_id, info.started_at, run_status::STOPPED)
-                .await;
+            s.storage.finish_task_run(task_id, info.started_at, run_status::STOPPED).await;
             let round_id = info.round_id;
             s.storage
                 .save_task_state(task_id, task_status::ERROR, None, Some(round_id))

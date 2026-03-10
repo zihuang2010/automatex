@@ -56,9 +56,8 @@ async fn kill_with_timeout(
             if let Some(pid) = child.id() {
                 #[cfg(unix)]
                 {
-                    let _ = std::process::Command::new("kill")
-                        .args(["-9", &pid.to_string()])
-                        .output();
+                    let _ =
+                        std::process::Command::new("kill").args(["-9", &pid.to_string()]).output();
                 }
                 #[cfg(windows)]
                 {
@@ -69,7 +68,7 @@ async fn kill_with_timeout(
                 eprintln!("[scrcpy] watchdog: 进程 {} 超时，已强制终止", pid);
             }
             Err("进程终止超时，已强制杀死".into())
-        }
+        },
     }
 }
 

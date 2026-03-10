@@ -26,13 +26,14 @@ pub fn adb_path() -> &'static str {
 /// 检测点：文件存在、大小 > 100KB（防截断）、可读。
 /// 在启动时调用一次即可，结果缓存在日志中。
 pub fn verify_sidecar_integrity() {
-    let exe_dir = match std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())) {
-        Some(d) => d,
-        None => {
-            eprintln!("[integrity] 无法获取可执行文件目录");
-            return;
-        }
-    };
+    let exe_dir =
+        match std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())) {
+            Some(d) => d,
+            None => {
+                eprintln!("[integrity] 无法获取可执行文件目录");
+                return;
+            },
+        };
 
     let adb_name = if cfg!(windows) { "adb.exe" } else { "adb" };
     let sidecars = [adb_name, "scrcpy-server"];
@@ -50,10 +51,10 @@ pub fn verify_sidecar_integrity() {
                 } else {
                     eprintln!("[integrity] ✓ {} ({} bytes)", name, size);
                 }
-            }
+            },
             Err(_) => {
                 eprintln!("[integrity] ⚠ {} 未找到: {:?}", name, path);
-            }
+            },
         }
     }
 }
@@ -149,10 +150,7 @@ pub async fn run_adb_async(
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
-        Err(format!(
-            "adb 失败: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ))
+        Err(format!("adb 失败: {}", String::from_utf8_lossy(&output.stderr).trim()))
     }
 }
 
@@ -194,15 +192,12 @@ pub fn batch_shell_commands(serial: &str, commands: &[&str]) -> Vec<Result<Strin
     match adb_shell(serial, &combined) {
         Ok(output) => {
             let parts: Vec<&str> = output.split(SEP).collect();
-            parts
-                .iter()
-                .map(|p| Ok(p.trim().to_string()))
-                .collect()
-        }
+            parts.iter().map(|p| Ok(p.trim().to_string())).collect()
+        },
         Err(e) => {
             // 合并执行失败时，对所有命令返回相同错误
             commands.iter().map(|_| Err(e.clone())).collect()
-        }
+        },
     }
 }
 

@@ -295,7 +295,8 @@ pub fn spawn_device_monitor(
             // 并行刷新电池（spawn_blocking 复用 Tokio 阻塞线程池）
             let mut changed = false;
             let mut handles = Vec::new();
-            for serial in online_serials.iter().take(constants::limits::MAX_BATTERY_REFRESH_THREADS) {
+            for serial in online_serials.iter().take(constants::limits::MAX_BATTERY_REFRESH_THREADS)
+            {
                 let serial = serial.clone();
                 handles.push(tokio::task::spawn_blocking(move || {
                     let raw = connection::run_adb_timed(
