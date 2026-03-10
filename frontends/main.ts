@@ -16,6 +16,7 @@ import {
   submitAddDevice,
   unflagSelectedDevice,
 } from './dialogs';
+import { initMirror, startMirror } from './mirror';
 import { loadChainForDevice } from './queue';
 import { initSettings, updateMqttStatusUI } from './settings';
 import { activeTask, globalQueue, selectedDevice, setActiveCityIdx, setActiveTask } from './state';
@@ -453,6 +454,7 @@ window.addEventListener('DOMContentLoaded', () => {
   setDeviceCallbacks(
     (serial: string) => loadTasksForDevice(serial),
     (serial: string) => showDeviceInfo(serial),
+    (serial: string) => startMirror(serial),
   );
   setTaskViewCallbacks(
     () => updateCardSelection(),
@@ -516,6 +518,9 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // ── Account Panel ──
   initAccountPanel();
+
+  // ── Mirror ──
+  initMirror();
 
   // ── Step 6: 监听后台设备事件 ──
   let devicesChangedTimer: ReturnType<typeof setTimeout> | null = null;

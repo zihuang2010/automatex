@@ -5,6 +5,7 @@ mod engine;
 mod http;
 mod monitor;
 mod mqtt;
+pub(crate) mod scrcpy;
 mod startup;
 mod storage;
 mod task_provider;
@@ -25,6 +26,7 @@ pub(crate) struct AppState {
     pub mqtt: Arc<MqttManager>,
     pub engine: Arc<tokio::sync::OnceCell<Arc<TaskEngine>>>,
     pub http: Arc<tokio::sync::OnceCell<Arc<dyn http::ApiClient>>>,
+    pub scrcpy: Arc<scrcpy::session::SessionManager>,
 }
 
 impl AppState {
@@ -318,7 +320,8 @@ pub fn run() {
                 });
             }
 
-            app.manage(AppState { db, mqtt, engine, http });
+            let scrcpy = Arc::new(scrcpy::session::SessionManager::new());
+            app.manage(AppState { db, mqtt, engine, http, scrcpy });
 
             Ok(())
         })
@@ -357,6 +360,11 @@ pub fn run() {
             flag_device,
             unflag_device,
             sync_tasks_by_phones,
+            scrcpy_start_mirror,
+            scrcpy_stop_mirror,
+            scrcpy_inject_touch,
+            scrcpy_inject_key,
+            scrcpy_press_back,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

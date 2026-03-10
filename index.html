@@ -1493,6 +1493,132 @@
       </div>
     </div>
 
+    <!-- ===== 投屏抽屉 ===== -->
+    <div id="mirror-modal" class="pointer-events-none fixed inset-0 z-[2000]" style="display: none">
+      <!-- 遮罩 -->
+      <div
+        id="mirror-backdrop"
+        class="pointer-events-auto absolute inset-0 bg-black/40 opacity-0 backdrop-blur-sm transition-opacity duration-300"
+      ></div>
+
+      <!-- 右侧抽屉面板 -->
+      <div
+        id="mirror-drawer"
+        class="pointer-events-auto absolute top-0 right-0 flex h-full translate-x-full items-center pr-6 pl-4 transition-transform duration-300 ease-out"
+      >
+        <div class="flex flex-col items-center gap-3">
+          <!-- 信息栏 -->
+          <div class="flex w-full items-center justify-between px-1">
+            <div class="flex items-center gap-2">
+              <span class="material-symbols-outlined fill-1 text-blue-400" style="font-size: 16px">
+                cast
+              </span>
+              <span class="mono-technical text-s300 text-xs font-bold" id="mirror-title">
+                设备投屏
+              </span>
+              <span
+                class="text-s500 bg-s800/80 border-s700 rounded-full border px-2 py-0.5 text-[10px] font-semibold backdrop-blur-sm"
+                id="mirror-status"
+              >
+                连接中…
+              </span>
+            </div>
+            <button
+              id="mirror-close"
+              title="关闭投屏"
+              class="bg-s800/80 border-s700 text-s400 flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border backdrop-blur-sm transition-all hover:border-red-500/40 hover:bg-red-500/20 hover:text-red-400"
+            >
+              <span class="material-symbols-outlined" style="font-size: 15px">close</span>
+            </button>
+          </div>
+
+          <!-- 手机外壳 -->
+          <div
+            class="relative flex flex-col rounded-[40px] p-[3px]"
+            style="
+              background: linear-gradient(
+                145deg,
+                var(--color-s600),
+                var(--color-s800) 40%,
+                var(--color-s900)
+              );
+              box-shadow:
+                0 0 0 1px rgba(255, 255, 255, 0.05),
+                0 30px 70px -15px rgba(0, 0, 0, 0.7),
+                0 0 40px -10px rgba(59, 130, 246, 0.08);
+            "
+          >
+            <div class="bg-s900 flex flex-col rounded-[38px] px-1 py-1">
+              <!-- 听筒 Dynamic Island -->
+              <div class="flex h-6 items-center justify-center gap-2 py-1.5">
+                <div
+                  class="bg-s800 flex items-center gap-1.5 rounded-full px-3 py-0.5"
+                  style="box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4)"
+                >
+                  <div class="bg-s600 h-0.5 w-8 rounded-full"></div>
+                  <div
+                    class="bg-s600 border-s500/30 h-1.5 w-1.5 rounded-full border"
+                    style="box-shadow: 0 0 4px rgba(59, 130, 246, 0.3)"
+                  ></div>
+                </div>
+              </div>
+
+              <!-- 屏幕 -->
+              <div
+                id="mirror-video-wrap"
+                class="relative overflow-hidden rounded-2xl bg-black"
+                style="aspect-ratio: 9 / 19.5; height: 78vh; max-height: 740px; min-height: 420px"
+              >
+                <canvas
+                  id="scrcpy-canvas"
+                  class="h-full w-full cursor-crosshair object-contain"
+                ></canvas>
+                <!-- 加载占位 -->
+                <div
+                  id="mirror-loading"
+                  class="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/80"
+                >
+                  <span
+                    class="material-symbols-outlined animate-pulse text-blue-400"
+                    style="font-size: 40px"
+                  >
+                    cast
+                  </span>
+                  <span class="text-s400 text-xs font-medium">正在连接设备…</span>
+                </div>
+              </div>
+
+              <!-- Android 导航栏 -->
+              <div class="flex h-9 items-center justify-center gap-10 py-2">
+                <button
+                  id="mirror-back"
+                  title="返回"
+                  class="text-s500 hover:text-s300 hover:bg-s700/50 flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border-none bg-transparent transition-all"
+                >
+                  <span class="material-symbols-outlined" style="font-size: 18px">arrow_back</span>
+                </button>
+                <button
+                  id="mirror-home"
+                  title="主页"
+                  class="text-s500 hover:text-s300 hover:bg-s700/50 flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border-none bg-transparent transition-all"
+                >
+                  <span class="material-symbols-outlined" style="font-size: 22px">circle</span>
+                </button>
+                <button
+                  title="多任务"
+                  class="text-s500 hover:text-s300 hover:bg-s700/50 flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border-none bg-transparent transition-all"
+                >
+                  <span class="material-symbols-outlined" style="font-size: 16px">
+                    check_box_outline_blank
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script type="module" src="/frontends/main.ts"></script>
   </body>
 </html>

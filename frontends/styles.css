@@ -1058,3 +1058,25 @@
 .sync-icon-spin {
   animation: sync-spin 2s linear infinite;
 }
+
+/* ══════ MIRROR ══════ */
+
+/* 设备卡片投屏按钮 */
+.dev-mirror-btn {
+  @apply flex items-center justify-center rounded-md transition-all;
+  width: 22px;
+  height: 22px;
+  color: var(--color-s400);
+  cursor: pointer;
+  background: transparent;
+  border: none;
+}
+
+.dev-mirror-btn:hover {
+  color: var(--color-blue);
+  background: rgba(37, 99, 235, 0.1);
+}
+
+.dev-mirror-btn .material-symbols-outlined {
+  font-size: 14px;
+}

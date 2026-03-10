@@ -1,19 +1,23 @@
 import { invoke } from '@tauri-apps/api/core';
+
 import { DeviceState } from './constants';
+import { getAssignedDeviceSerials, globalQueue, selectedDevice, setSelectedDevice } from './state';
 import { DeviceRow } from './types';
-import { selectedDevice, globalQueue, setSelectedDevice, getAssignedDeviceSerials } from './state';
-import { $, esc, timeAgo, getDeviceName } from './utils';
+import { $, esc, getDeviceName, timeAgo } from './utils';
 
 // 回调注册（由 main.ts 初始化后设置，避免循环依赖）
 let _onLoadTasksForDevice: ((serial: string) => void) | null = null;
 let _onShowDeviceInfo: ((serial: string) => void) | null = null;
+let _onStartMirror: ((serial: string) => void) | null = null;
 
 export function setDeviceCallbacks(
   onLoadTasks: (serial: string) => void,
   onShowDeviceInfo: (serial: string) => void,
+  onStartMirror?: (serial: string) => void,
 ) {
   _onLoadTasksForDevice = onLoadTasks;
   _onShowDeviceInfo = onShowDeviceInfo;
+  _onStartMirror = onStartMirror ?? null;
 }
 
 /* ===== Device List ===== */
@@ -95,13 +99,18 @@ function renderDeviceCards(devs: DeviceRow[]) {
           <div class="h-full bg-blue-500 rounded-full" style="width: ${progress}%"></div>
         </div>
       </div>
-      <div class="mt-2.5 flex items-center gap-3 text-[10px] font-bold">
-        <span class="flex items-center gap-1 text-blue-600">
-          <span class="material-symbols-outlined icon-sm fill-1">${batteryIcon}</span>${battery}%
-        </span>
-        <span class="flex items-center gap-1 text-s500">
-          <span class="material-symbols-outlined icon-sm">device_thermostat</span>${temp}°C
-        </span>
+      <div class="mt-2.5 flex items-center justify-between text-[10px] font-bold">
+        <div class="flex items-center gap-3">
+          <span class="flex items-center gap-1 text-blue-600">
+            <span class="material-symbols-outlined icon-sm fill-1">${batteryIcon}</span>${battery}%
+          </span>
+          <span class="flex items-center gap-1 text-s500">
+            <span class="material-symbols-outlined icon-sm">device_thermostat</span>${temp}°C
+          </span>
+        </div>
+        <button class="dev-mirror-btn" data-mirror="${esc(d.serial)}" title="投屏">
+          <span class="material-symbols-outlined">cast</span>
+        </button>
       </div>
     </div>`;
   };
@@ -141,13 +150,18 @@ function renderDeviceCards(devs: DeviceRow[]) {
           <p class="mono-technical text-[10px] text-s500 mt-0.5 font-medium">${esc(shortHwid)}</p>
         </div>
       </div>
-      <div class="mt-2.5 flex items-center gap-3 text-[10px] font-bold">
-        <span class="flex items-center gap-1 ${batteryColor}">
-          <span class="material-symbols-outlined icon-sm fill-1">${batteryIcon}</span>${battery}%
-        </span>
-        <span class="flex items-center gap-1 ${tempColor}">
-          <span class="material-symbols-outlined icon-sm">device_thermostat</span>${temp}°C
-        </span>
+      <div class="mt-2.5 flex items-center justify-between text-[10px] font-bold">
+        <div class="flex items-center gap-3">
+          <span class="flex items-center gap-1 ${batteryColor}">
+            <span class="material-symbols-outlined icon-sm fill-1">${batteryIcon}</span>${battery}%
+          </span>
+          <span class="flex items-center gap-1 ${tempColor}">
+            <span class="material-symbols-outlined icon-sm">device_thermostat</span>${temp}°C
+          </span>
+        </div>
+        <button class="dev-mirror-btn" data-mirror="${esc(d.serial)}" title="投屏">
+          <span class="material-symbols-outlined">cast</span>
+        </button>
       </div>
     </div>`;
   };
@@ -253,6 +267,15 @@ function renderDeviceCards(devs: DeviceRow[]) {
     el.addEventListener('dblclick', e => {
       e.stopPropagation();
       _onShowDeviceInfo?.(s);
+    });
+  });
+
+  // 投屏按钮事件
+  tree.querySelectorAll('.dev-mirror-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const serial = (btn as HTMLElement).dataset.mirror;
+      if (serial) _onStartMirror?.(serial);
     });
   });
 }
