@@ -64,6 +64,7 @@ pub async fn scrcpy_inject_touch(
     y: u32,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    validate_serial(&serial)?;
     state.scrcpy.inject_touch(&serial, action, x, y).await
 }
 
@@ -76,6 +77,7 @@ pub async fn scrcpy_inject_key(
     meta_state: u32,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    validate_serial(&serial)?;
     state.scrcpy.inject_key(&serial, keycode, meta_state).await
 }
 
@@ -85,5 +87,6 @@ pub async fn scrcpy_press_back(
     serial: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    validate_serial(&serial)?;
     state.scrcpy.press_back(&serial).await
 }

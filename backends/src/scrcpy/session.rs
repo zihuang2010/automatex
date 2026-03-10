@@ -13,12 +13,18 @@ use tauri::Emitter;
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
+// ─── 常量 ─────────────────────────────────────────────
+
+/// SG-3: 帧读取超时秒数（无帧则视为 server 挂死）
+const FRAME_READ_TIMEOUT_SECS: u64 = 10;
+
 // ─── 事件载荷 ─────────────────────────────────────────────
 
 /// P-1 优化：帧数据以 Vec<u8> 直传，不再 base64 编码
-#[derive(Clone, Serialize)]
+/// 移除 Clone 避免误用产生大量堆拷贝
+#[derive(Serialize)]
 pub struct FramePayload {
-    /// H.264 NAL unit 原始字节（前端收到 number[]，直接 new Uint8Array）
+    /// H.264 NAL unit 原始字节
     pub data: Vec<u8>,
     pub is_config: bool,
     /// 帧发送时间戳（毫秒）
@@ -36,6 +42,8 @@ pub struct MirrorStartedPayload {
 
 struct ScrcpySession {
     cancel: CancellationToken,
+    /// C-2 修复：持有 pump 任务句柄，stop 时等待完成
+    pump_handle: tokio::task::JoinHandle<()>,
     screen_width: u32,
     screen_height: u32,
     control_stream: Arc<Mutex<tokio::net::TcpStream>>,
@@ -53,7 +61,6 @@ impl SessionManager {
     }
 
     /// 启动投屏
-    /// P-1 优化：接收 Channel 用于直接推送帧，替代全局 event + base64
     pub async fn start_mirror(
         &self,
         serial: &str,
@@ -77,21 +84,12 @@ impl SessionManager {
         let control_stream = Arc::new(Mutex::new(control_stream));
         let cancel = CancellationToken::new();
 
-        sessions.insert(
-            serial.to_string(),
-            ScrcpySession {
-                cancel: cancel.clone(),
-                screen_width: screen_w,
-                screen_height: screen_h,
-                control_stream: Arc::clone(&control_stream),
-            },
-        );
-        drop(sessions);
-
         let serial_owned = serial.to_string();
         let cancel_clone = cancel.clone();
         let sessions_ref = Arc::clone(&self.sessions);
-        tokio::spawn(async move {
+
+        // C-2 修复：保存 JoinHandle
+        let pump_handle = tokio::spawn(async move {
             Self::frame_pump(
                 serial_owned,
                 video_stream,
@@ -104,18 +102,31 @@ impl SessionManager {
             .await;
         });
 
+        sessions.insert(
+            serial.to_string(),
+            ScrcpySession {
+                cancel: cancel.clone(),
+                pump_handle,
+                screen_width: screen_w,
+                screen_height: screen_h,
+                control_stream: Arc::clone(&control_stream),
+            },
+        );
+        drop(sessions);
+
         Ok(MirrorStartedPayload { serial: serial.to_string(), width: screen_w, height: screen_h })
     }
 
     /// 停止投屏
+    /// C-2 修复：cancel 后等待 pump 任务完成，确保 server.stop() 不会双重执行
     pub async fn stop_mirror(&self, serial: &str) -> Result<(), String> {
-        let session = {
-            let mut sessions = self.sessions.write().await;
-            sessions.remove(serial)
-        };
+        let session = { self.sessions.write().await.remove(serial) };
 
         if let Some(session) = session {
             session.cancel.cancel();
+            // 等待 pump 任务完成清理（最长 5s）
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(5), session.pump_handle).await;
             eprintln!("[scrcpy] 停止投屏: {}", serial);
             Ok(())
         } else {
@@ -189,28 +200,34 @@ impl SessionManager {
                     eprintln!("[scrcpy] 帧推送取消: {}", serial);
                     break;
                 }
-                result = super::video::read_frame(&mut video_stream) => {
+                // SG-3: 帧读取加超时 — 10s 无帧视为 server 挂死
+                result = tokio::time::timeout(
+                    std::time::Duration::from_secs(FRAME_READ_TIMEOUT_SECS),
+                    super::video::read_frame(&mut video_stream),
+                ) => {
                     match result {
-                        Ok(frame) => {
+                        Ok(Ok(frame)) => {
                             if frame.data.is_empty() {
                                 continue;
                             }
 
-                            // P-1 优化：直接发送 Vec<u8>，不再 base64 编码
                             let payload = FramePayload {
                                 data: frame.data,
                                 is_config: frame.is_config,
                                 ts: start.elapsed().as_millis() as u64,
                             };
 
-                            // 通过 Channel 直接推送（不经过全局事件系统）
                             if channel.send(payload).is_err() {
                                 eprintln!("[scrcpy] channel 已关闭: {}", serial);
                                 break;
                             }
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             eprintln!("[scrcpy] 帧读取失败: {} - {}", serial, e);
+                            break;
+                        }
+                        Err(_) => {
+                            eprintln!("[scrcpy] 帧读取超时 {}s，断开: {}", FRAME_READ_TIMEOUT_SECS, serial);
                             break;
                         }
                     }

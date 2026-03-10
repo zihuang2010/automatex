@@ -6,6 +6,12 @@ use byteorder::{BigEndian, ByteOrder};
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 
+// Q-3: 协议常量
+const DEVICE_NAME_LEN: usize = 64;
+const VIDEO_HEADER_LEN: usize = 13;
+const FRAME_HEADER_LEN: usize = 12;
+const MAX_FRAME_SIZE: usize = 8 * 1024 * 1024; // 8MB
+
 /// 视频帧
 pub struct VideoFrame {
     /// 是否为配置帧（SPS/PPS）
@@ -16,7 +22,7 @@ pub struct VideoFrame {
 
 /// 读取 64 字节设备名（scrcpy 连接握手的第一步）
 pub async fn read_device_name(stream: &mut TcpStream) -> Result<String, String> {
-    let mut name_buf = [0u8; 64];
+    let mut name_buf = [0u8; DEVICE_NAME_LEN];
     stream
         .read_exact(&mut name_buf)
         .await
@@ -38,7 +44,7 @@ pub struct VideoHeader {
 ///
 /// 格式: [0x00] [codec: 4B] [width: 4B] [height: 4B]
 pub async fn read_video_header(stream: &mut TcpStream) -> Result<VideoHeader, String> {
-    let mut header = [0u8; 13];
+    let mut header = [0u8; VIDEO_HEADER_LEN];
     stream
         .read_exact(&mut header)
         .await
@@ -60,7 +66,7 @@ pub async fn read_video_header(stream: &mut TcpStream) -> Result<VideoHeader, St
 /// PTS 的 bit 63 为 config 标志位
 pub async fn read_frame(stream: &mut TcpStream) -> Result<VideoFrame, String> {
     // 读 12 字节 header
-    let mut header = [0u8; 12];
+    let mut header = [0u8; FRAME_HEADER_LEN];
     stream
         .read_exact(&mut header)
         .await
@@ -75,7 +81,7 @@ pub async fn read_frame(stream: &mut TcpStream) -> Result<VideoFrame, String> {
     }
 
     // 安全限制：单帧不应超过 8MB
-    if size > 8 * 1024 * 1024 {
+    if size > MAX_FRAME_SIZE {
         return Err(format!("帧数据过大: {} bytes", size));
     }
 

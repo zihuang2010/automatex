@@ -54,6 +54,9 @@ impl ScrcpyControl {
         screen_w: u32,
         screen_h: u32,
     ) -> Result<(), String> {
+        // S-3: 坐标钳制到屏幕范围内
+        let x = x.min(screen_w);
+        let y = y.min(screen_h);
         let pressure = if action == ACTION_UP { PRESSURE_NONE } else { PRESSURE_FULL };
 
         let mut buf: Vec<u8> = Vec::with_capacity(32);

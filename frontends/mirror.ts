@@ -30,6 +30,13 @@ const TOUCH_ACTION = {
   MOVE: 2,
 } as const;
 
+// Q-3: H.264 NAL 类型常量
+const NAL_TYPE_IDR = 5;
+const NAL_TYPE_SPS = 7;
+const NAL_HEADER_OFFSET = 4;
+// SG-2: 解码队列积压阈值
+const MAX_DECODE_QUEUE_SIZE = 3;
+
 // ─── 状态 ─────────────────────────────────────────────
 
 let activeMirror: {
@@ -133,17 +140,22 @@ export async function startMirror(serial: string) {
 
       if (decoder.state !== 'configured') return;
 
-      // 判断是否为关键帧（NAL type 5 = IDR）
-      const nalType = chunk[4] & 0x1f;
-      const isKey = nalType === 5;
+      // Q-3: 判断是否为关键帧（NAL type 5 = IDR）
+      const nalType = chunk[NAL_HEADER_OFFSET] & 0x1f;
+      const isKey = nalType === NAL_TYPE_IDR;
 
       // 等待第一个关键帧
       if (isKeyFrameNeeded && !isKey) return;
       isKeyFrameNeeded = false;
 
+      // SG-2: 解码队列积压时丢弃 delta 帧，等下个 keyframe
+      if (!isKey && decoder.decodeQueueSize > MAX_DECODE_QUEUE_SIZE) {
+        isKeyFrameNeeded = true;
+        return;
+      }
+
       // 关键帧需要附带 SPS/PPS
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let frameData: any = chunk;
+      let frameData: Uint8Array = chunk;
       if (isKey && configData) {
         frameData = concatUint8Arrays(configData, chunk);
       }
@@ -379,7 +391,7 @@ function parseCodecFromSPS(configData: Uint8Array): string {
 
     if (nalStart >= 0 && nalStart < configData.length) {
       const nalType = configData[nalStart] & 0x1f;
-      if (nalType === 7 && nalStart + 3 < configData.length) {
+      if (nalType === NAL_TYPE_SPS && nalStart + 3 < configData.length) {
         // SPS 找到：profile_idc, constraint_flags, level_idc
         const profile = configData[nalStart + 1];
         const constraints = configData[nalStart + 2];
