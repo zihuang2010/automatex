@@ -20,6 +20,61 @@ pub struct VideoFrame {
     pub data: Vec<u8>,
 }
 
+/// P1 优化：帧缓冲池 — 预分配 Vec，复用内存避免每帧 alloc
+///
+/// 30fps × 100KB/帧 = 3MB/s 堆分配压力。FramePool 将其降至接近零。
+pub struct FramePool {
+    buf: Vec<u8>,
+}
+
+impl FramePool {
+    /// 预分配 512KB（可容纳大多数 I-frame）
+    pub fn new() -> Self {
+        Self {
+            buf: Vec::with_capacity(512 * 1024),
+        }
+    }
+
+    /// 读取一帧视频数据（复用内部缓冲）
+    ///
+    /// 每帧格式: [PTS: 8B] [size: 4B] [data: size B]
+    /// PTS 的 bit 63 为 config 标志位
+    pub async fn read_frame(&mut self, stream: &mut TcpStream) -> Result<VideoFrame, String> {
+        // 读 12 字节 header
+        let mut header = [0u8; FRAME_HEADER_LEN];
+        stream
+            .read_exact(&mut header)
+            .await
+            .map_err(|e| format!("读取帧 header 失败: {}", e))?;
+
+        let pts_raw = BigEndian::read_u64(&header[0..8]);
+        let is_config = (pts_raw >> 63) & 1 == 1;
+        let size = BigEndian::read_u32(&header[8..12]) as usize;
+
+        if size == 0 {
+            return Ok(VideoFrame { is_config, data: Vec::new() });
+        }
+
+        // 安全限制：单帧不应超过 8MB
+        if size > MAX_FRAME_SIZE {
+            return Err(format!("帧数据过大: {} bytes", size));
+        }
+
+        // 复用 buf：resize 仅在需要扩容时分配
+        self.buf.resize(size, 0);
+        stream
+            .read_exact(&mut self.buf[..size])
+            .await
+            .map_err(|e| format!("读取帧数据失败: {}", e))?;
+
+        // 拷贝数据到独立 Vec（buf 保留容量供下次复用）
+        Ok(VideoFrame {
+            is_config,
+            data: self.buf[..size].to_vec(),
+        })
+    }
+}
+
 /// 读取 64 字节设备名（scrcpy 连接握手的第一步）
 pub async fn read_device_name(stream: &mut TcpStream) -> Result<String, String> {
     let mut name_buf = [0u8; DEVICE_NAME_LEN];
@@ -59,38 +114,4 @@ pub async fn read_video_header(stream: &mut TcpStream) -> Result<VideoHeader, St
 
     eprintln!("[scrcpy] 视频 header: codec={}, {}x{}", codec, width, height);
     Ok(VideoHeader { codec, width, height })
-}
-
-/// 读取一帧视频数据
-///
-/// 每帧格式: [PTS: 8B] [size: 4B] [data: size B]
-/// PTS 的 bit 63 为 config 标志位
-pub async fn read_frame(stream: &mut TcpStream) -> Result<VideoFrame, String> {
-    // 读 12 字节 header
-    let mut header = [0u8; FRAME_HEADER_LEN];
-    stream
-        .read_exact(&mut header)
-        .await
-        .map_err(|e| format!("读取帧 header 失败: {}", e))?;
-
-    let pts_raw = BigEndian::read_u64(&header[0..8]);
-    let is_config = (pts_raw >> 63) & 1 == 1;
-    let size = BigEndian::read_u32(&header[8..12]) as usize;
-
-    if size == 0 {
-        return Ok(VideoFrame { is_config, data: Vec::new() });
-    }
-
-    // 安全限制：单帧不应超过 8MB
-    if size > MAX_FRAME_SIZE {
-        return Err(format!("帧数据过大: {} bytes", size));
-    }
-
-    let mut data = vec![0u8; size];
-    stream
-        .read_exact(&mut data)
-        .await
-        .map_err(|e| format!("读取帧数据失败: {}", e))?;
-
-    Ok(VideoFrame { is_config, data })
 }

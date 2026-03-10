@@ -25,7 +25,11 @@ fn allocate_port() -> Result<u16, String> {
     // fetch_update 确保不会超出范围后仍递增
     NEXT_PORT
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |p| {
-            if p < PORT_RANGE_MAX { Some(p + 1) } else { None }
+            if p < PORT_RANGE_MAX {
+                Some(p + 1)
+            } else {
+                None
+            }
         })
         .map_err(|_| "端口池耗尽 (最大 1000 个并发投屏)".to_string())
 }
@@ -33,6 +37,39 @@ fn allocate_port() -> Result<u16, String> {
 fn release_port(port: u16) {
     if let Ok(mut pool) = PORT_POOL.lock() {
         pool.push_back(port);
+    }
+}
+
+/// P1 watchdog: 带超时的进程终止（防僵尸 adb 进程）
+///
+/// 先发 kill 信号，等待指定时间。若进程未退出，则使用 OS 级强制终止。
+async fn kill_with_timeout(
+    child: &mut tokio::process::Child,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let _ = child.kill().await;
+    match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) => Err(format!("等待进程退出失败: {}", e)),
+        Err(_) => {
+            // 超时 → OS 级强制终止
+            if let Some(pid) = child.id() {
+                #[cfg(unix)]
+                {
+                    let _ = std::process::Command::new("kill")
+                        .args(["-9", &pid.to_string()])
+                        .output();
+                }
+                #[cfg(windows)]
+                {
+                    let _ = std::process::Command::new("taskkill")
+                        .args(["/F", "/PID", &pid.to_string()])
+                        .output();
+                }
+                eprintln!("[scrcpy] watchdog: 进程 {} 超时，已强制终止", pid);
+            }
+            Err("进程终止超时，已强制杀死".into())
+        }
     }
 }
 
@@ -137,12 +174,13 @@ impl ScrcpyServer {
             h.abort();
         }
 
-        // Kill 进程
-        if let Some(ref mut child) = self.child {
-            let _ = child.kill().await;
+        // P1 watchdog: 带超时的进程终止（防僵尸 adb 进程）
+        if let Some(mut child) = self.child.take() {
+            if let Err(e) = kill_with_timeout(&mut child, std::time::Duration::from_secs(5)).await {
+                eprintln!("[scrcpy] watchdog: {}: {}", self.serial, e);
+            }
             eprintln!("[scrcpy] 已终止 server 进程: {}", self.serial);
         }
-        self.child = None;
 
         // 关闭 streams（drop 即可）
         self.video_stream = None;
@@ -222,18 +260,18 @@ impl ScrcpyServer {
         let adb_path = crate::connection::adb::adb_path().to_string();
         let mut cmd = tokio::process::Command::new(&adb_path);
         cmd.args([
-                "-s",
-                serial,
-                "shell",
-                &format!(
-                    "CLASSPATH={} app_process / com.genymobile.scrcpy.Server {} \
+            "-s",
+            serial,
+            "shell",
+            &format!(
+                "CLASSPATH={} app_process / com.genymobile.scrcpy.Server {} \
                      tunnel_forward=true video=true audio=false control=true \
                      video_codec=h264 max_size=0 max_fps=30",
-                    DEVICE_JAR_PATH, SCRCPY_VERSION
-                ),
-            ])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped());
+                DEVICE_JAR_PATH, SCRCPY_VERSION
+            ),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
 
         // Windows: 隐藏控制台窗口
         #[cfg(windows)]
@@ -242,8 +280,7 @@ impl ScrcpyServer {
             cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
         }
 
-        let mut child = cmd.spawn()
-            .map_err(|e| format!("启动 scrcpy-server 失败: {}", e))?;
+        let mut child = cmd.spawn().map_err(|e| format!("启动 scrcpy-server 失败: {}", e))?;
 
         let stderr = child.stderr.take().ok_or("无法获取 server stderr")?;
         Ok((child, stderr))

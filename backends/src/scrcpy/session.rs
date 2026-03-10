@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::ipc::Channel;
 use tauri::Emitter;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 // ─── 常量 ─────────────────────────────────────────────
@@ -21,15 +21,16 @@ const FRAME_READ_TIMEOUT_SECS: u64 = 120;
 
 // ─── 事件载荷 ─────────────────────────────────────────────
 
-/// P-1 优化：帧数据以 Vec<u8> 直传，不再 base64 编码
-/// 移除 Clone 避免误用产生大量堆拷贝
-#[derive(Serialize)]
-pub struct FramePayload {
-    /// H.264 NAL unit 原始字节
-    pub data: Vec<u8>,
-    pub is_config: bool,
-    /// 帧发送时间戳（毫秒）
-    pub ts: u64,
+/// 将帧数据编码为二进制（9 字节头 + 原始 H.264 数据）
+///
+/// 格式: [is_config: 1B][ts: 8B big-endian][data: NB]
+/// 通过 Channel<Vec<u8>> 直传 ArrayBuffer，零 JSON 序列化
+fn encode_frame_binary(data: &[u8], is_config: bool, ts: u64) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(9 + data.len());
+    buf.push(if is_config { 1 } else { 0 });
+    buf.extend_from_slice(&ts.to_be_bytes());
+    buf.extend_from_slice(data);
+    buf
 }
 
 #[derive(Clone, Serialize)]
@@ -39,15 +40,52 @@ pub struct MirrorStartedPayload {
     pub height: u32,
 }
 
+// ─── 控制流 Actor 消息 ─────────────────────────────────────
+
+enum ControlMsg {
+    Touch { action: u8, x: u32, y: u32 },
+    Key { keycode: u32, meta_state: u32 },
+    Text(String),
+    Back,
+}
+
 // ─── Session ─────────────────────────────────────────────
 
 struct ScrcpySession {
     cancel: CancellationToken,
     /// C-2 修复：持有 pump 任务句柄，stop 时等待完成
     pump_handle: tokio::task::JoinHandle<()>,
-    screen_width: u32,
-    screen_height: u32,
-    control_stream: Arc<Mutex<tokio::net::TcpStream>>,
+    /// P0 优化：控制流 Actor 通道（替代 Arc<Mutex<TcpStream>>）
+    control_tx: tokio::sync::mpsc::Sender<ControlMsg>,
+}
+
+/// 控制流 Actor：独占 TcpStream，串行发送，零锁竞争
+async fn control_actor(
+    mut stream: tokio::net::TcpStream,
+    mut rx: tokio::sync::mpsc::Receiver<ControlMsg>,
+    screen_w: u32,
+    screen_h: u32,
+) {
+    while let Some(msg) = rx.recv().await {
+        let result = match msg {
+            ControlMsg::Touch { action, x, y } => {
+                ScrcpyControl::inject_touch(&mut stream, action, x, y, screen_w, screen_h).await
+            }
+            ControlMsg::Key { keycode, meta_state } => {
+                ScrcpyControl::inject_key(&mut stream, keycode, meta_state).await
+            }
+            ControlMsg::Text(text) => {
+                ScrcpyControl::inject_text(&mut stream, &text).await
+            }
+            ControlMsg::Back => {
+                ScrcpyControl::press_back(&mut stream).await
+            }
+        };
+        if let Err(e) = result {
+            eprintln!("[control-actor] 发送失败: {}", e);
+            break;
+        }
+    }
 }
 
 // ─── SessionManager ─────────────────────────────────────────
@@ -67,7 +105,7 @@ impl SessionManager {
         serial: &str,
         jar_path: &str,
         app_handle: tauri::AppHandle,
-        on_frame: Channel<FramePayload>,
+        on_frame: Channel<Vec<u8>>,
     ) -> Result<MirrorStartedPayload, String> {
         let mut sessions = self.sessions.write().await;
         if sessions.contains_key(serial) {
@@ -82,7 +120,10 @@ impl SessionManager {
         let video_stream = server.video_stream.take().ok_or("video stream 未建立")?;
         let control_stream = server.control_stream.take().ok_or("control stream 未建立")?;
 
-        let control_stream = Arc::new(Mutex::new(control_stream));
+        // P0 优化：启动控制流 Actor（bounded=32，try_send 背压丢帧）
+        let (control_tx, control_rx) = tokio::sync::mpsc::channel::<ControlMsg>(32);
+        tokio::spawn(control_actor(control_stream, control_rx, screen_w, screen_h));
+
         let cancel = CancellationToken::new();
 
         let serial_owned = serial.to_string();
@@ -108,9 +149,7 @@ impl SessionManager {
             ScrcpySession {
                 cancel: cancel.clone(),
                 pump_handle,
-                screen_width: screen_w,
-                screen_height: screen_h,
-                control_stream: Arc::clone(&control_stream),
+                control_tx,
             },
         );
         drop(sessions);
@@ -134,7 +173,7 @@ impl SessionManager {
         Ok(())
     }
 
-    /// 注入触控事件
+    /// 注入触控事件（P0 优化：单次 mpsc send，触控用 try_send 背压丢帧）
     pub async fn inject_touch(
         &self,
         serial: &str,
@@ -145,16 +184,10 @@ impl SessionManager {
         let sessions = self.sessions.read().await;
         let session = sessions.get(serial).ok_or_else(|| format!("设备 {} 未在投屏", serial))?;
 
-        let mut stream = session.control_stream.lock().await;
-        ScrcpyControl::inject_touch(
-            &mut stream,
-            action,
-            x,
-            y,
-            session.screen_width,
-            session.screen_height,
-        )
-        .await
+        // 高频 mousemove：try_send 满队列时丢弃，避免积压
+        session.control_tx
+            .try_send(ControlMsg::Touch { action, x, y })
+            .map_err(|e| format!("控制消息发送失败: {}", e))
     }
 
     /// 注入按键事件
@@ -167,8 +200,10 @@ impl SessionManager {
         let sessions = self.sessions.read().await;
         let session = sessions.get(serial).ok_or_else(|| format!("设备 {} 未在投屏", serial))?;
 
-        let mut stream = session.control_stream.lock().await;
-        ScrcpyControl::inject_key(&mut stream, keycode, meta_state).await
+        session.control_tx
+            .send(ControlMsg::Key { keycode, meta_state })
+            .await
+            .map_err(|e| format!("控制消息发送失败: {}", e))
     }
 
     /// 注入文本（UTF-8 直传，支持中文等）
@@ -176,8 +211,10 @@ impl SessionManager {
         let sessions = self.sessions.read().await;
         let session = sessions.get(serial).ok_or_else(|| format!("设备 {} 未在投屏", serial))?;
 
-        let mut stream = session.control_stream.lock().await;
-        ScrcpyControl::inject_text(&mut stream, text).await
+        session.control_tx
+            .send(ControlMsg::Text(text.to_string()))
+            .await
+            .map_err(|e| format!("控制消息发送失败: {}", e))
     }
 
     /// 注入返回键
@@ -185,8 +222,10 @@ impl SessionManager {
         let sessions = self.sessions.read().await;
         let session = sessions.get(serial).ok_or_else(|| format!("设备 {} 未在投屏", serial))?;
 
-        let mut stream = session.control_stream.lock().await;
-        ScrcpyControl::press_back(&mut stream).await
+        session.control_tx
+            .send(ControlMsg::Back)
+            .await
+            .map_err(|e| format!("控制消息发送失败: {}", e))
     }
 
     // ── 内部：帧推送循环 ──
@@ -196,12 +235,14 @@ impl SessionManager {
         mut video_stream: tokio::net::TcpStream,
         mut server: ScrcpyServer,
         app_handle: tauri::AppHandle,
-        channel: Channel<FramePayload>,
+        channel: Channel<Vec<u8>>,
         cancel: CancellationToken,
         sessions: Arc<RwLock<HashMap<String, ScrcpySession>>>,
     ) {
         eprintln!("[scrcpy] 帧推送启动: {}", serial);
         let start = std::time::Instant::now();
+        // P1 优化：预分配帧缓冲池
+        let mut pool = super::video::FramePool::new();
 
         loop {
             tokio::select! {
@@ -209,10 +250,10 @@ impl SessionManager {
                     eprintln!("[scrcpy] 帧推送取消: {}", serial);
                     break;
                 }
-                // SG-3: 帧读取加超时 — 10s 无帧视为 server 挂死
+                // SG-3: 帧读取加超时 — 120s 无帧视为 server 挂死
                 result = tokio::time::timeout(
                     std::time::Duration::from_secs(FRAME_READ_TIMEOUT_SECS),
-                    super::video::read_frame(&mut video_stream),
+                    pool.read_frame(&mut video_stream),
                 ) => {
                     match result {
                         Ok(Ok(frame)) => {
@@ -220,11 +261,12 @@ impl SessionManager {
                                 continue;
                             }
 
-                            let payload = FramePayload {
-                                data: frame.data,
-                                is_config: frame.is_config,
-                                ts: start.elapsed().as_millis() as u64,
-                            };
+                            let ts = start.elapsed().as_millis() as u64;
+                            let payload = encode_frame_binary(
+                                &frame.data,
+                                frame.is_config,
+                                ts,
+                            );
 
                             if channel.send(payload).is_err() {
                                 eprintln!("[scrcpy] channel 已关闭: {}", serial);

@@ -1,184 +1,254 @@
-mod handlers;
-mod lifecycle;
-mod tick;
+mod event_loop;
+mod worker;
 
-use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde::Serialize;
-use tauri::Emitter;
-use tokio::sync::{Mutex, RwLock};
-use tokio_util::sync::CancellationToken;
+use tokio::sync::{mpsc, oneshot};
 
-use crate::constants::{keyword_status, task_status};
 use crate::http;
-use crate::storage::{Database, DeviceRow};
+use crate::storage::Database;
 use crate::task_provider::{self, Task};
 
-// ─── 运行中任务的状态 ──────────────────────────────────────────
+// ─── 公共类型 ──────────────────────────────────────────
 
-/// 回退任务中所有 RUN 状态的关键词为 PENDING
-pub(crate) fn rollback_running_keywords(task: &mut Task) {
-    for city in &mut task.cities {
-        for kw in &mut city.keywords {
-            if kw.status == keyword_status::RUN {
-                kw.status = keyword_status::PENDING.to_string();
-            }
-        }
-    }
-}
-
-pub(crate) struct RunningTask {
-    pub cancel: CancellationToken,
-    pub started_at: i64,
-    pub round_id: i64,
-}
-
-// ─── 事件负载（推送给前端）─────────────────────────────────────
-
-/// 零拷贝快照：序列化时直接引用 tasks，避免深度 clone
+/// 零拷贝快照：序列化时直接引用 tasks
 #[derive(Serialize)]
-struct TaskSnapshotRef<'a> {
-    tasks: &'a [Task],
+pub(crate) struct TaskSnapshotRef<'a> {
+    pub tasks: &'a [Task],
 }
 
-// ─── 引擎核心 ─────────────────────────────────────────────────
+// ─── 消息类型 ──────────────────────────────────────────
 
-/// FIX #13: 提取已分配设备集合计算为公共辅助函数，避免各处重复代码
-pub(crate) fn compute_assigned_set(tasks: &[Task]) -> HashSet<&str> {
-    tasks
-        .iter()
-        .filter(|t| t.status == task_status::EXECUTING)
-        .filter_map(|t| t.assigned_device.as_deref())
-        .collect()
+pub(crate) enum EngineMsg {
+    // ── 任务生命周期 ──
+    StartTask {
+        task_id: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    PauseTask {
+        task_id: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    ResumeTask {
+        task_id: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    StopTask {
+        task_id: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    RetryTask {
+        task_id: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+
+    // ── 查询 ──
+    GetTasks {
+        reply: oneshot::Sender<Vec<Task>>,
+    },
+    GetReadySerials {
+        reply: oneshot::Sender<Vec<String>>,
+    },
+
+    // ── 状态管理 ──
+    ReorderCities {
+        task_id: String,
+        new_order: Vec<String>,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    ReloadTasks,
+
+    // ── MQTT 处理 ──
+    HandleTaskReload {
+        action: String,
+        task_id: Option<String>,
+    },
+    HandleDeviceKick {
+        hw_serials: Vec<String>,
+        reply: oneshot::Sender<u32>,
+    },
+    HandlePhonesUnbind {
+        phones: Vec<String>,
+        reply: oneshot::Sender<u32>,
+    },
+    ReleaseOfflineDevices {
+        online_serials: Vec<String>,
+        reply: oneshot::Sender<u32>,
+    },
+
+    // ── Worker 回报 ──
+    TickRequest {
+        task_id: String,
+        device_online: bool,
+        reply: oneshot::Sender<TickOutcome>,
+    },
+    WorkerExited {
+        task_id: String,
+        success: bool,
+    },
 }
 
-/// 从预加载的设备列表中挑选就绪设备（不执行 DB 查询，避免在写锁内阻塞）
-pub(crate) fn pick_ready_serial(devices: &[DeviceRow], tasks: &[Task]) -> Result<String, String> {
-    let assigned = compute_assigned_set(tasks);
-
-    devices
-        .iter()
-        .find(|d| {
-            d.state == crate::constants::device_state::DEVICE
-                && !d.is_flagged
-                && !assigned.contains(d.serial.as_str())
-        })
-        .map(|d| d.serial.clone())
-        .ok_or_else(|| "当前没有就绪安全的设备，请检查设备状态".to_string())
+/// tick 处理结果，告知 worker 下一步
+#[derive(Debug)]
+pub(crate) enum TickOutcome {
+    Continue,
+    TaskDone,
+    TaskError,
 }
+
+// ─── TaskEngine（thin sender wrapper）─────────────────
+
+const ENGINE_CHANNEL_SIZE: usize = 256;
 
 pub struct TaskEngine {
-    pub(crate) storage: Arc<Database>,
-    pub(crate) http: Arc<dyn http::ApiClient>,
-    pub(crate) tasks: RwLock<Vec<Task>>,
-    pub(crate) running: RwLock<HashMap<String, RunningTask>>,
-    /// 防重入：正在 reload 的 task_id 集合
-    pub(crate) reloading: Mutex<HashSet<String>>,
-    pub(crate) app_handle: tauri::AppHandle,
-    /// emit_update 节流时间戳
-    pub(crate) last_emit: Mutex<std::time::Instant>,
+    tx: mpsc::Sender<EngineMsg>,
 }
 
 impl TaskEngine {
+    /// 初始化引擎：加载任务 → 启动事件循环 → 返回 handle
     pub async fn new(
         storage: Arc<Database>,
         http: Arc<dyn http::ApiClient>,
         app_handle: tauri::AppHandle,
     ) -> Arc<Self> {
         let tasks = task_provider::load_tasks(&storage).await;
-        Arc::new(Self {
-            storage,
-            http,
-            tasks: RwLock::new(tasks),
-            running: RwLock::new(HashMap::new()),
-            reloading: Mutex::new(HashSet::new()),
-            app_handle,
-            last_emit: Mutex::new(std::time::Instant::now() - Duration::from_secs(1)),
-        })
+        let (tx, rx) = mpsc::channel(ENGINE_CHANNEL_SIZE);
+
+        // 启动事件循环
+        event_loop::spawn(rx, tx.clone(), tasks, storage, http, app_handle);
+
+        Arc::new(Self { tx })
     }
 
-    /// 获取任务列表快照
+    // ── 辅助：发送消息并等待回复 ──
+
+    async fn send_and_recv<T>(
+        &self,
+        msg_fn: impl FnOnce(oneshot::Sender<T>) -> EngineMsg,
+    ) -> Result<T, String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(msg_fn(reply_tx))
+            .await
+            .map_err(|_| "引擎已关闭".to_string())?;
+        reply_rx.await.map_err(|_| "引擎响应丢失".to_string())
+    }
+
+    async fn send_fire_and_forget(&self, msg: EngineMsg) {
+        let _ = self.tx.send(msg).await;
+    }
+
+    // ── 公共 API（与旧接口完全兼容）──
+
     pub async fn get_tasks(&self) -> Vec<Task> {
-        self.tasks.read().await.clone()
+        self.send_and_recv(|reply| EngineMsg::GetTasks { reply })
+            .await
+            .unwrap_or_default()
     }
 
-    /// 重新从 DB 加载任务列表（保留仍在运行中的任务的运行时状态）
-    pub async fn reload_tasks(&self) {
-        let running_snapshot: std::collections::HashMap<String, (String, Option<String>)> = {
-            let running = self.running.read().await;
-            let tasks = self.tasks.read().await;
-            tasks
-                .iter()
-                .filter(|t| running.contains_key(&t.id))
-                .map(|t| (t.id.clone(), (t.status.clone(), t.assigned_device.clone())))
-                .collect()
-        };
-
-        let mut tasks = task_provider::load_tasks(&self.storage).await;
-
-        for task in &mut tasks {
-            if let Some((status, device)) = running_snapshot.get(&task.id) {
-                task.status = status.clone();
-                task.assigned_device = device.clone();
-            }
-        }
-
-        *self.tasks.write().await = tasks;
+    pub async fn start_task(self: &Arc<Self>, task_id: &str) -> Result<(), String> {
+        self.send_and_recv(|reply| EngineMsg::StartTask {
+            task_id: task_id.to_string(),
+            reply,
+        })
+        .await?
     }
 
-    /// 推送任务状态到前端（节流控制）
-    /// FIX #15: 直接在读锁内序列化引用，避免深度 clone 整个 Vec<Task>
-    pub async fn emit_update(&self) {
-        let throttle_ms = crate::constants::debug::EMIT_THROTTLE_MS;
-        {
-            let mut last = self.last_emit.lock().await;
-            if last.elapsed() < Duration::from_millis(throttle_ms) {
-                return;
-            }
-            *last = std::time::Instant::now();
-        }
-        let tasks = self.tasks.read().await;
-        let snapshot = TaskSnapshotRef { tasks: &*tasks };
-        let _ = self.app_handle.emit(crate::constants::tauri_event::TASK_UPDATE, &snapshot);
+    pub async fn pause_task(self: &Arc<Self>, task_id: &str) -> Result<(), String> {
+        self.send_and_recv(|reply| EngineMsg::PauseTask {
+            task_id: task_id.to_string(),
+            reply,
+        })
+        .await?
     }
 
-    /// 强制推送任务状态（跳过节流，用于关键操作如同步完成后）
-    pub async fn force_emit_update(&self) {
-        {
-            let mut last = self.last_emit.lock().await;
-            *last = std::time::Instant::now();
-        }
-        let tasks = self.tasks.read().await;
-        let snapshot = TaskSnapshotRef { tasks: &*tasks };
-        let _ = self.app_handle.emit(crate::constants::tauri_event::TASK_UPDATE, &snapshot);
+    pub async fn resume_task(self: &Arc<Self>, task_id: &str) -> Result<(), String> {
+        self.send_and_recv(|reply| EngineMsg::ResumeTask {
+            task_id: task_id.to_string(),
+            reply,
+        })
+        .await?
     }
 
-    /// 重排城市顺序（仅 pending 城市）
+    pub async fn stop_task(self: &Arc<Self>, task_id: &str) -> Result<(), String> {
+        self.send_and_recv(|reply| EngineMsg::StopTask {
+            task_id: task_id.to_string(),
+            reply,
+        })
+        .await?
+    }
+
+    pub async fn retry_task(self: &Arc<Self>, task_id: &str) -> Result<(), String> {
+        self.send_and_recv(|reply| EngineMsg::RetryTask {
+            task_id: task_id.to_string(),
+            reply,
+        })
+        .await?
+    }
+
+    pub async fn get_ready_serials(&self) -> Vec<String> {
+        self.send_and_recv(|reply| EngineMsg::GetReadySerials { reply })
+            .await
+            .unwrap_or_default()
+    }
+
     pub async fn reorder_cities(
         &self,
         task_id: &str,
         new_order: Vec<String>,
     ) -> Result<(), String> {
-        {
-            let mut tasks = self.tasks.write().await;
-            let task = tasks.iter_mut().find(|t| t.id == task_id).ok_or("任务不存在")?;
+        self.send_and_recv(|reply| EngineMsg::ReorderCities {
+            task_id: task_id.to_string(),
+            new_order,
+            reply,
+        })
+        .await?
+    }
 
-            let (fixed, mut pending): (Vec<_>, Vec<_>) = task
-                .cities
-                .drain(..)
-                .partition(|c| c.status != crate::constants::city_status::PENDING);
+    pub async fn reload_tasks(&self) {
+        self.send_fire_and_forget(EngineMsg::ReloadTasks).await;
+    }
 
-            pending.sort_by_key(|c| {
-                new_order.iter().position(|name| name == &c.name).unwrap_or(usize::MAX)
-            });
+    pub async fn handle_task_reload(self: &Arc<Self>, action: &str, task_id: Option<&str>) {
+        self.send_fire_and_forget(EngineMsg::HandleTaskReload {
+            action: action.to_string(),
+            task_id: task_id.map(|s| s.to_string()),
+        })
+        .await;
+    }
 
-            task.cities = fixed.into_iter().chain(pending).collect();
-        }
+    pub async fn handle_device_kick(self: &Arc<Self>, hw_serials: Vec<String>) -> u32 {
+        self.send_and_recv(|reply| EngineMsg::HandleDeviceKick { hw_serials, reply })
+            .await
+            .unwrap_or(0)
+    }
 
-        self.storage.save_city_order(task_id, &new_order).await;
-        self.emit_update().await;
-        Ok(())
+    pub async fn handle_phones_unbind(self: &Arc<Self>, phones: Vec<String>) -> u32 {
+        self.send_and_recv(|reply| EngineMsg::HandlePhonesUnbind { phones, reply })
+            .await
+            .unwrap_or(0)
+    }
+
+    pub async fn release_offline_devices(&self, online_serials: &[String]) -> u32 {
+        self.send_and_recv(|reply| EngineMsg::ReleaseOfflineDevices {
+            online_serials: online_serials.to_vec(),
+            reply,
+        })
+        .await
+        .unwrap_or(0)
+    }
+
+    /// 推送任务状态到前端（节流控制）— event_loop 内部自动执行
+    #[allow(dead_code)]
+    pub async fn emit_update(&self) {
+        // 在 Message Channel 模型中，emit 由 event_loop 内部控制
+        // 外部调用仅作为 hint（event_loop 自动 emit）
+    }
+
+    /// 强制推送 — event_loop 内部自动执行
+    #[allow(dead_code)]
+    pub async fn force_emit_update(&self) {
+        // 同上，event_loop 在每个消息处理后自动 emit
     }
 }

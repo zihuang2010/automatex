@@ -135,28 +135,6 @@ fn device_state_str(state: &adb_client::server::DeviceState) -> &'static str {
     }
 }
 
-fn refresh_battery(serial: &str, db: &storage::Database, rt: &tokio::runtime::Handle) -> bool {
-    let raw = connection::run_adb_timed(
-        connection::adb_command().args(["-s", serial, "shell", "dumpsys battery"]),
-        constants::timing::ADB_COMMAND_TIMEOUT_SECS,
-    )
-    .ok()
-    .filter(|o| o.status.success())
-    .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-    .unwrap_or_default();
-
-    let battery_level = parse_battery_field(&raw, "level").unwrap_or(-1);
-    let battery_temp_raw = parse_battery_field(&raw, "temperature").unwrap_or(-1);
-
-    if battery_level >= 0 && battery_temp_raw >= 0 {
-        let battery_temperature = battery_temp_raw as f64 / 10.0;
-        db_block_on(rt, db.update_device_props(serial, battery_level, battery_temperature));
-        true
-    } else {
-        false
-    }
-}
-
 // ─── 启动后台设备监控 ──────────────────────────────────────────
 
 pub fn spawn_device_monitor(
@@ -241,20 +219,25 @@ pub fn spawn_device_monitor(
                     if acquired.is_ok() {
                         let db_inner = Arc::clone(&db_cb);
                         let handle_inner = handle_cb.clone();
-                        let rt_inner = rt_cb.clone();
-                        std::thread::spawn(move || {
-                            let result =
+                        // P0 优化：使用 spawn_blocking 复用 Tokio 阻塞线程池
+                        rt_cb.spawn(async move {
+                            let result = tokio::task::spawn_blocking(move || {
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                     fetch_device_row(&serial, state)
-                                }));
+                                }))
+                            })
+                            .await;
                             match result {
-                                Ok(row) => {
-                                    db_block_on(&rt_inner, db_inner.upsert_device(&row));
+                                Ok(Ok(row)) => {
+                                    db_inner.upsert_device(&row).await;
                                     let _ = handle_inner
                                         .emit(constants::tauri_event::DEVICES_CHANGED, ());
                                 },
-                                Err(_) => {
-                                    eprintln!("[monitor] fetch_device_row panic: {}", serial);
+                                Ok(Err(_)) => {
+                                    eprintln!("[monitor] fetch_device_row panic");
+                                },
+                                Err(e) => {
+                                    eprintln!("[monitor] spawn_blocking join 失败: {}", e);
                                 },
                             }
                             PROP_FETCH_THREADS.fetch_sub(1, Ordering::SeqCst);
@@ -287,64 +270,79 @@ pub fn spawn_device_monitor(
         ));
     });
 
-    // ── 线程 2: 电池/温度定时刷新 ──
+    // ── 线程 2: 电池/温度定时刷新（R4 优化：改用 Tokio 异步任务）──
     let db_battery = Arc::clone(&db);
     let handle_battery = handle.clone();
     let rt_battery = rt;
-    std::thread::spawn(move || loop {
-        std::thread::sleep(std::time::Duration::from_secs(
-            constants::timing::BATTERY_REFRESH_INTERVAL_SECS,
-        ));
+    rt_battery.spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(
+                constants::timing::BATTERY_REFRESH_INTERVAL_SECS,
+            ))
+            .await;
 
-        let devices = db_block_on(&rt_battery, db_battery.load_all_devices());
-        let online_devices: Vec<&DeviceRow> = devices
-            .iter()
-            .filter(|dev| dev.state == constants::device_state::DEVICE)
-            .collect();
+            let devices = db_battery.load_all_devices().await;
+            let online_serials: Vec<String> = devices
+                .iter()
+                .filter(|dev| dev.state == constants::device_state::DEVICE)
+                .map(|d| d.serial.clone())
+                .collect();
 
-        if online_devices.is_empty() {
-            continue;
-        }
+            if online_serials.is_empty() {
+                continue;
+            }
 
-        let max_threads = constants::limits::MAX_BATTERY_REFRESH_THREADS.min(online_devices.len());
-        let changed = std::sync::atomic::AtomicBool::new(false);
+            // 并行刷新电池（spawn_blocking 复用 Tokio 阻塞线程池）
+            let mut changed = false;
+            let mut handles = Vec::new();
+            for serial in online_serials.iter().take(constants::limits::MAX_BATTERY_REFRESH_THREADS) {
+                let serial = serial.clone();
+                handles.push(tokio::task::spawn_blocking(move || {
+                    let raw = connection::run_adb_timed(
+                        connection::adb_command().args(["-s", &serial, "shell", "dumpsys battery"]),
+                        constants::timing::ADB_COMMAND_TIMEOUT_SECS,
+                    )
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                    .unwrap_or_default();
 
-        for chunk in online_devices.chunks(max_threads) {
-            std::thread::scope(|s| {
-                for dev in chunk {
-                    let serial = &dev.serial;
-                    let db_ref = &db_battery;
-                    let rt_ref = &rt_battery;
-                    let changed_ref = &changed;
-                    s.spawn(move || {
-                        if refresh_battery(serial, db_ref, rt_ref) {
-                            changed_ref.store(true, Ordering::Relaxed);
-                        }
-                    });
+                    let battery_level = parse_battery_field(&raw, "level").unwrap_or(-1);
+                    let battery_temp_raw = parse_battery_field(&raw, "temperature").unwrap_or(-1);
+                    if battery_level >= 0 && battery_temp_raw >= 0 {
+                        Some((serial, battery_level, battery_temp_raw as f64 / 10.0))
+                    } else {
+                        None
+                    }
+                }));
+            }
+            for h in handles {
+                if let Ok(Some((serial, level, temp))) = h.await {
+                    db_battery.update_device_props(&serial, level, temp).await;
+                    changed = true;
                 }
-            });
-        }
+            }
 
-        if changed.load(Ordering::Relaxed) {
-            let _ = handle_battery.emit(constants::tauri_event::DEVICES_CHANGED, ());
-        }
+            if changed {
+                let _ = handle_battery.emit(constants::tauri_event::DEVICES_CHANGED, ());
+            }
 
-        // WiFi 设备并行重连
-        let wifi_devices: Vec<String> = devices
-            .iter()
-            .filter(|d| {
-                d.device_type == constants::device_type::WIFI
-                    && d.state == constants::device_state::OFFLINE
-                    && d.serial.contains(':')
-            })
-            .map(|d| d.serial.clone())
-            .collect();
-        if !wifi_devices.is_empty() {
-            std::thread::scope(|s| {
-                for addr in &wifi_devices {
-                    s.spawn(move || {
+            // WiFi 设备并行重连（spawn_blocking）
+            let wifi_devices: Vec<String> = devices
+                .iter()
+                .filter(|d| {
+                    d.device_type == constants::device_type::WIFI
+                        && d.state == constants::device_state::OFFLINE
+                        && d.serial.contains(':')
+                })
+                .map(|d| d.serial.clone())
+                .collect();
+            if !wifi_devices.is_empty() {
+                let mut wifi_handles = Vec::new();
+                for addr in wifi_devices {
+                    wifi_handles.push(tokio::task::spawn_blocking(move || {
                         let output = connection::run_adb_timed(
-                            connection::adb_command().args(["connect", addr]),
+                            connection::adb_command().args(["connect", &addr]),
                             constants::timing::WIFI_CONNECT_TIMEOUT_SECS,
                         );
                         match output {
@@ -356,9 +354,12 @@ pub fn spawn_device_monitor(
                             },
                             _ => {},
                         }
-                    });
+                    }));
                 }
-            });
+                for h in wifi_handles {
+                    let _ = h.await;
+                }
+            }
         }
     });
 }

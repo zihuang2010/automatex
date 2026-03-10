@@ -73,6 +73,9 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     let rt = tokio::runtime::Handle::current();
 
+                    // 二进制完整性校验（启动时执行一次）
+                    connection::adb::verify_sidecar_integrity();
+
                     check_daily_reset(&db_init).await;
 
                     task_provider::sync_task_cache(&db_init).await;
@@ -357,6 +360,7 @@ pub fn run() {
             engine_get_ready_serials,
             engine_release_offline,
             engine_reorder_cities,
+            subscribe_task_progress,
             flag_device,
             unflag_device,
             sync_tasks_by_phones,

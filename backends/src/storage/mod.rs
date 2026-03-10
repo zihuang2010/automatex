@@ -211,7 +211,7 @@ impl Database {
         let pool = cfg
             .builder(Runtime::Tokio1)
             .map_err(|e| format!("创建连接池 builder 失败: {}", e))?
-            .max_size(4)
+            .max_size(8) // R7 优化：从 4 提升到 8，减少高并发 SQLITE_BUSY
             .post_create(Hook::async_fn(|conn, _| {
                 Box::pin(async move {
                     conn.interact(|conn| {

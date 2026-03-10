@@ -236,46 +236,51 @@ function renderDeviceCards(devs: DeviceRow[]) {
     sectionState.set(label, { collapsed: el.classList.contains('collapsed'), hadDevices });
   });
 
+  // 前端优化：innerHTML 去重 + requestAnimationFrame 分帧渲染
   if (tree.innerHTML === html) return;
-  tree.innerHTML = html;
 
-  tree.querySelectorAll('.dev-section').forEach(el => {
-    const label = el.querySelector('.dev-section-header span:last-child')?.textContent?.trim();
-    if (!label) return;
-    const prev = sectionState.get(label);
-    if (!prev) return;
-    if (prev.collapsed && prev.hadDevices) {
-      el.classList.add('collapsed');
-    } else if (!prev.collapsed) {
-      el.classList.remove('collapsed');
-    }
-  });
+  // 使用 rAF 避免在 JS 主线程繁忙时强制同步重排
+  requestAnimationFrame(() => {
+    tree.innerHTML = html;
 
-  tree.querySelectorAll('.dev-card').forEach(el => {
-    const s = (el as HTMLElement).dataset.s!;
-    const state = (el as HTMLElement).dataset.state;
-
-    const flagged = (el as HTMLElement).dataset.flagged === '1';
-
-    if (state === 'running' || state === 'offline' || (state === 'ready' && flagged)) {
-      el.addEventListener('click', e => {
-        e.stopPropagation();
-        selectDevice(s);
-      });
-    }
-
-    el.addEventListener('dblclick', e => {
-      e.stopPropagation();
-      _onShowDeviceInfo?.(s);
+    tree.querySelectorAll('.dev-section').forEach(el => {
+      const label = el.querySelector('.dev-section-header span:last-child')?.textContent?.trim();
+      if (!label) return;
+      const prev = sectionState.get(label);
+      if (!prev) return;
+      if (prev.collapsed && prev.hadDevices) {
+        el.classList.add('collapsed');
+      } else if (!prev.collapsed) {
+        el.classList.remove('collapsed');
+      }
     });
-  });
 
-  // 投屏按钮事件
-  tree.querySelectorAll('.dev-mirror-btn').forEach(btn => {
-    btn.addEventListener('click', e => {
-      e.stopPropagation();
-      const serial = (btn as HTMLElement).dataset.mirror;
-      if (serial) _onStartMirror?.(serial);
+    tree.querySelectorAll('.dev-card').forEach(el => {
+      const s = (el as HTMLElement).dataset.s!;
+      const state = (el as HTMLElement).dataset.state;
+
+      const flagged = (el as HTMLElement).dataset.flagged === '1';
+
+      if (state === 'running' || state === 'offline' || (state === 'ready' && flagged)) {
+        el.addEventListener('click', e => {
+          e.stopPropagation();
+          selectDevice(s);
+        });
+      }
+
+      el.addEventListener('dblclick', e => {
+        e.stopPropagation();
+        _onShowDeviceInfo?.(s);
+      });
+    });
+
+    // 投屏按钮事件
+    tree.querySelectorAll('.dev-mirror-btn').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const serial = (btn as HTMLElement).dataset.mirror;
+        if (serial) _onStartMirror?.(serial);
+      });
     });
   });
 }

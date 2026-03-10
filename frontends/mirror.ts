@@ -12,12 +12,6 @@ import { $, showToast } from './utils';
 
 // ─── 类型 ─────────────────────────────────────────────
 
-interface FramePayload {
-  data: number[]; // Vec<u8> 直传
-  is_config: boolean;
-  ts: number;
-}
-
 interface MirrorStartedPayload {
   serial: string;
   width: number;
@@ -102,14 +96,21 @@ export async function startMirror(serial: string) {
       },
     });
 
-    // 帧 Channel
+    // 帧 Channel — 使用 Vec<u8> 原始二进制传输（零 JSON 序列化）
+    // 格式: [is_config: 1B][ts: 8B big-endian][data: NB]
     let lastTs = 0;
     let configData: Uint8Array | null = null; // 缓存 SPS/PPS
     let isKeyFrameNeeded = true;
 
-    const onFrame = new Channel<FramePayload>();
-    onFrame.onmessage = (frame: FramePayload) => {
-      const { data, is_config, ts } = frame;
+    const onFrame = new Channel<ArrayBuffer>();
+    onFrame.onmessage = (buffer: ArrayBuffer) => {
+      // 解析 9 字节二进制头
+      if (buffer.byteLength < 9) return;
+      const view = new DataView(buffer);
+      const is_config = view.getUint8(0) === 1;
+      const ts = Number(view.getBigUint64(1));
+      // 从偏移 9 开始的零拷贝视图
+      const data = new Uint8Array(buffer, 9);
 
       // 丢帧
       if (!is_config && ts < lastTs) return;
@@ -117,14 +118,12 @@ export async function startMirror(serial: string) {
 
       if (data.length === 0) return;
 
-      const chunk = new Uint8Array(data);
-
       if (is_config) {
         // SPS/PPS 配置帧：用于初始化或重新配置解码器
-        configData = chunk;
+        configData = new Uint8Array(data);
 
         // 从 SPS 解析 codec 字符串并配置解码器
-        const codecStr = parseCodecFromSPS(chunk);
+        const codecStr = parseCodecFromSPS(configData);
         try {
           decoder.configure({
             codec: codecStr,
@@ -141,7 +140,7 @@ export async function startMirror(serial: string) {
       if (decoder.state !== 'configured') return;
 
       // Q-3: 判断是否为关键帧（NAL type 5 = IDR）
-      const nalType = chunk[NAL_HEADER_OFFSET] & 0x1f;
+      const nalType = data[NAL_HEADER_OFFSET] & 0x1f;
       const isKey = nalType === NAL_TYPE_IDR;
 
       // 等待第一个关键帧
@@ -155,9 +154,9 @@ export async function startMirror(serial: string) {
       }
 
       // 关键帧需要附带 SPS/PPS
-      let frameData: Uint8Array = chunk;
+      let frameData: Uint8Array = data;
       if (isKey && configData) {
-        frameData = concatUint8Arrays(configData, chunk);
+        frameData = concatUint8Arrays(configData, data);
       }
 
       decoder.decode(

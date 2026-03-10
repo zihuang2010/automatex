@@ -36,8 +36,6 @@ const INJECT_TEXT_MAX_LENGTH: usize = 300;
 const KEYCODE_V: u32 = 50;
 const META_CTRL_ON: u32 = 0x1000;
 
-
-
 // ─── 异步发送辅助 ─────────────────────────────────────────────
 
 async fn send(stream: &mut TcpStream, buf: &[u8]) -> Result<(), String> {
