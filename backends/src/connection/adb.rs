@@ -145,12 +145,7 @@ pub async fn run_adb_async(
     let mut stdout = child.stdout.take();
     let mut stderr = child.stderr.take();
 
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(timeout_secs),
-        child.wait(),
-    )
-    .await
-    {
+    match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), child.wait()).await {
         Ok(Ok(status)) => {
             // 读取已管道化的 stdout/stderr
             let mut stdout_buf = Vec::new();
@@ -168,13 +163,13 @@ pub async fn run_adb_async(
                 }
                 Err(format!("adb 失败: {}", String::from_utf8_lossy(&stderr_buf).trim()))
             }
-        }
+        },
         Ok(Err(e)) => Err(format!("等待 adb 失败: {}", e)),
         Err(_) => {
             // 超时：显式 kill + 等待回收
             let _ = child.kill().await;
             Err(format!("ADB 命令超时 ({}s)", timeout_secs))
-        }
+        },
     }
 }
 

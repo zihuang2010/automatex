@@ -21,7 +21,6 @@ const FRAME_READ_TIMEOUT_SECS: u64 = 120;
 
 // ─── 事件载荷 ─────────────────────────────────────────────
 
-
 #[derive(Clone, Serialize)]
 pub struct MirrorStartedPayload {
     pub serial: String,

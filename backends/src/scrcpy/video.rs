@@ -12,7 +12,6 @@ const VIDEO_HEADER_LEN: usize = 13;
 const FRAME_HEADER_LEN: usize = 12;
 const MAX_FRAME_SIZE: usize = 8 * 1024 * 1024; // 8MB
 
-
 /// P1 优化：帧缓冲池 — 预分配 Vec，复用内存避免每帧 alloc
 ///
 /// 30fps × 100KB/帧 = 3MB/s 堆分配压力。FramePool 将其降至接近零。
@@ -25,7 +24,6 @@ impl FramePool {
     pub fn new() -> Self {
         Self { buf: Vec::with_capacity(512 * 1024) }
     }
-
 
     /// P2 优化：读取帧并直接编码为传输格式（仅一次拷贝）
     ///
