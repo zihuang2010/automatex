@@ -12,13 +12,6 @@ const VIDEO_HEADER_LEN: usize = 13;
 const FRAME_HEADER_LEN: usize = 12;
 const MAX_FRAME_SIZE: usize = 8 * 1024 * 1024; // 8MB
 
-/// 视频帧
-pub struct VideoFrame {
-    /// 是否为配置帧（SPS/PPS）
-    pub is_config: bool,
-    /// H.264 NAL unit 数据
-    pub data: Vec<u8>,
-}
 
 /// P1 优化：帧缓冲池 — 预分配 Vec，复用内存避免每帧 alloc
 ///
@@ -33,12 +26,16 @@ impl FramePool {
         Self { buf: Vec::with_capacity(512 * 1024) }
     }
 
-    /// 读取一帧视频数据（复用内部缓冲）
+
+    /// P2 优化：读取帧并直接编码为传输格式（仅一次拷贝）
     ///
-    /// 每帧格式: [PTS: 8B] [size: 4B] [data: size B]
-    /// PTS 的 bit 63 为 config 标志位
-    pub async fn read_frame(&mut self, stream: &mut TcpStream) -> Result<VideoFrame, String> {
-        // 读 12 字节 header
+    /// 输出格式: [is_config: 1B][ts: 8B big-endian][data: NB]
+    /// 相比 read_frame + encode_frame_binary 的两次拷贝，此方法仅拷贝一次。
+    pub async fn read_frame_encoded(
+        &mut self,
+        stream: &mut TcpStream,
+        ts: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
         let mut header = [0u8; FRAME_HEADER_LEN];
         stream
             .read_exact(&mut header)
@@ -50,23 +47,24 @@ impl FramePool {
         let size = BigEndian::read_u32(&header[8..12]) as usize;
 
         if size == 0 {
-            return Ok(VideoFrame { is_config, data: Vec::new() });
+            return Ok(None);
         }
-
-        // 安全限制：单帧不应超过 8MB
         if size > MAX_FRAME_SIZE {
             return Err(format!("帧数据过大: {} bytes", size));
         }
 
-        // 复用 buf：resize 仅在需要扩容时分配
-        self.buf.resize(size, 0);
+        // 直接在 buf 中组装完整输出：[header 9B] + [data NB]
+        let total = 9 + size;
+        self.buf.resize(total, 0);
+        self.buf[0] = if is_config { 1 } else { 0 };
+        self.buf[1..9].copy_from_slice(&ts.to_be_bytes());
         stream
-            .read_exact(&mut self.buf[..size])
+            .read_exact(&mut self.buf[9..total])
             .await
             .map_err(|e| format!("读取帧数据失败: {}", e))?;
 
-        // 拷贝数据到独立 Vec（buf 保留容量供下次复用）
-        Ok(VideoFrame { is_config, data: self.buf[..size].to_vec() })
+        // 仅一次拷贝（buf 保留容量供下次复用）
+        Ok(Some(self.buf[..total].to_vec()))
     }
 }
 

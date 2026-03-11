@@ -53,15 +53,6 @@ function initTheme() {
         }
         localStorage.setItem('theme', dbTheme);
       }
-
-      // 提前更新账号同步标签（在开屏期间完成，避免进入主页时显示 "0 个账号" 的闪烁）
-      try {
-        const phones: string[] = JSON.parse(settings.synced_phones || '[]');
-        const label = document.getElementById('account-sync-label');
-        if (label) label.textContent = `已同步 ${phones.length} 个账号`;
-      } catch {
-        /* ignore */
-      }
     })
     .catch(() => {});
 }
@@ -402,9 +393,6 @@ function initAccountPanel() {
       }
     });
   }
-
-  // 初始加载账号列表
-  refreshAccountList();
 }
 
 /* ===== Init ===== */
@@ -442,7 +430,14 @@ window.addEventListener('DOMContentLoaded', () => {
     }
     // Windows 不需要圆角
     document.documentElement.style.borderRadius = '0';
+    document.documentElement.style.clipPath = 'none';
     document.body.style.borderRadius = '0';
+    // 清除 #app-root 的 Tailwind 圆角 class
+    const appRoot = document.getElementById('app-root');
+    if (appRoot) {
+      appRoot.classList.remove('rounded-[10px]');
+      appRoot.style.borderRadius = '0';
+    }
 
     $('#btn-win-minimize')?.addEventListener('click', () => appWindow.minimize());
     $('#btn-win-maximize')?.addEventListener('click', () => appWindow.toggleMaximize());
@@ -478,6 +473,8 @@ window.addEventListener('DOMContentLoaded', () => {
         renderTaskView();
       }
       loadChainForDevice('');
+      // 启动时从数据库加载已同步的账号（修复重启后显示 0 个）
+      refreshAccountList();
     })
     .catch(e => {
       console.error('[AutomateX] 引擎初始化失败:', e);
@@ -534,6 +531,11 @@ window.addEventListener('DOMContentLoaded', () => {
       const onlineSerials = devs.filter(d => d.state === DeviceState.DEVICE).map(d => d.serial);
       invoke('engine_release_offline', { onlineSerials }).catch(() => {});
     }, 300);
+  });
+
+  // ── 监听账号同步变更事件（唯一更新路径）──
+  listen<{ phones: string[] }>('account://sync-changed', event => {
+    renderAccountList(event.payload.phones);
   });
 
   // 监听风控触发事件

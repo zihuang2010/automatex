@@ -371,6 +371,22 @@ pub fn run() {
             scrcpy_inject_text,
             scrcpy_press_back,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                // P0 修复：应用退出时优雅关闭所有投屏会话和引擎
+                let state = app_handle.state::<AppState>();
+                let scrcpy = Arc::clone(&state.scrcpy);
+                let engine = Arc::clone(&state.engine);
+                tauri::async_runtime::block_on(async move {
+                    scrcpy.shutdown().await;
+                    // 引擎 shutdown：drop sender 触发 event_loop 退出 + 取消所有 worker
+                    if let Some(eng) = engine.get() {
+                        eng.shutdown().await;
+                    }
+                    eprintln!("[exit] 资源清理完成");
+                });
+            }
+        });
 }

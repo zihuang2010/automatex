@@ -8,7 +8,7 @@ use super::server::ScrcpyServer;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::ipc::Channel;
+use tauri::ipc::{Channel, Response};
 use tauri::Emitter;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -21,17 +21,6 @@ const FRAME_READ_TIMEOUT_SECS: u64 = 120;
 
 // ─── 事件载荷 ─────────────────────────────────────────────
 
-/// 将帧数据编码为二进制（9 字节头 + 原始 H.264 数据）
-///
-/// 格式: [is_config: 1B][ts: 8B big-endian][data: NB]
-/// 通过 Channel<Vec<u8>> 直传 ArrayBuffer，零 JSON 序列化
-fn encode_frame_binary(data: &[u8], is_config: bool, ts: u64) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(9 + data.len());
-    buf.push(if is_config { 1 } else { 0 });
-    buf.extend_from_slice(&ts.to_be_bytes());
-    buf.extend_from_slice(data);
-    buf
-}
 
 #[derive(Clone, Serialize)]
 pub struct MirrorStartedPayload {
@@ -95,13 +84,26 @@ impl SessionManager {
         Self { sessions: Arc::new(RwLock::new(HashMap::new())) }
     }
 
+    /// P0 修复：优雅关闭所有投屏会话（应用退出时调用）
+    pub async fn shutdown(&self) {
+        let sessions: HashMap<String, ScrcpySession> =
+            std::mem::take(&mut *self.sessions.write().await);
+        for (serial, session) in sessions {
+            session.cancel.cancel();
+            // 等待 pump 完成清理（pump 内部会调 server.stop()）
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(5), session.pump_handle).await;
+            eprintln!("[scrcpy] shutdown: stopped {}", serial);
+        }
+    }
+
     /// 启动投屏
     pub async fn start_mirror(
         &self,
         serial: &str,
         jar_path: &str,
         app_handle: tauri::AppHandle,
-        on_frame: Channel<Vec<u8>>,
+        on_frame: Channel<Response>,
     ) -> Result<MirrorStartedPayload, String> {
         let mut sessions = self.sessions.write().await;
         if sessions.contains_key(serial) {
@@ -231,7 +233,7 @@ impl SessionManager {
         mut video_stream: tokio::net::TcpStream,
         mut server: ScrcpyServer,
         app_handle: tauri::AppHandle,
-        channel: Channel<Vec<u8>>,
+        channel: Channel<Response>,
         cancel: CancellationToken,
         sessions: Arc<RwLock<HashMap<String, ScrcpySession>>>,
     ) {
@@ -249,25 +251,19 @@ impl SessionManager {
                 // SG-3: 帧读取加超时 — 120s 无帧视为 server 挂死
                 result = tokio::time::timeout(
                     std::time::Duration::from_secs(FRAME_READ_TIMEOUT_SECS),
-                    pool.read_frame(&mut video_stream),
+                    pool.read_frame_encoded(&mut video_stream, start.elapsed().as_millis() as u64),
                 ) => {
                     match result {
-                        Ok(Ok(frame)) => {
-                            if frame.data.is_empty() {
-                                continue;
-                            }
-
-                            let ts = start.elapsed().as_millis() as u64;
-                            let payload = encode_frame_binary(
-                                &frame.data,
-                                frame.is_config,
-                                ts,
-                            );
-
-                            if channel.send(payload).is_err() {
+                        Ok(Ok(Some(payload))) => {
+                            // P2 优化：payload 已含 9B 头 + 帧数据（仅一次拷贝）
+                            if channel.send(Response::new(payload)).is_err() {
                                 eprintln!("[scrcpy] channel 已关闭: {}", serial);
                                 break;
                             }
+                        }
+                        Ok(Ok(None)) => {
+                            // 空帧，跳过
+                            continue;
                         }
                         Ok(Err(e)) => {
                             eprintln!("[scrcpy] 帧读取失败: {} - {}", serial, e);

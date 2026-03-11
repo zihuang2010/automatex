@@ -87,6 +87,10 @@ pub(crate) enum EngineMsg {
         task_id: String,
         success: bool,
     },
+    /// P1 修复：优雅关闭，取消所有 worker
+    Shutdown {
+        reply: oneshot::Sender<()>,
+    },
 }
 
 /// tick 处理结果，告知 worker 下一步
@@ -232,5 +236,12 @@ impl TaskEngine {
     #[allow(dead_code)]
     pub async fn force_emit_update(&self) {
         // 同上，event_loop 在每个消息处理后自动 emit
+    }
+
+    /// P1 修复：优雅关闭引擎，取消所有 worker 并等待 event_loop 退出
+    pub async fn shutdown(&self) {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let _ = self.tx.send(EngineMsg::Shutdown { reply: reply_tx }).await;
+        let _ = reply_rx.await;
     }
 }

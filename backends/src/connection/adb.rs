@@ -105,6 +105,8 @@ pub fn run_adb_timed(
             Ok(None) => {
                 if start.elapsed() > timeout {
                     let _ = child.kill();
+                    // P0 修复：回收僵尸进程，防止进程句柄泄漏
+                    let _ = child.wait();
                     return Err(format!("ADB 命令超时 ({}s)", timeout_secs));
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
@@ -136,21 +138,43 @@ pub async fn run_adb_async(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
-    let child = cmd.spawn().map_err(|e| format!("spawn adb 失败: {}", e))?;
+    let mut child = cmd.spawn().map_err(|e| format!("spawn adb 失败: {}", e))?;
 
-    // 内核事件驱动等待（epoll/kqueue），非轮询
-    let output = tokio::time::timeout(
+    // P1 修复：使用 wait() 而非 wait_with_output()（后者消费 self，超时后无法 kill）
+    // 先取出 stdout/stderr handle，再 wait
+    let mut stdout = child.stdout.take();
+    let mut stderr = child.stderr.take();
+
+    match tokio::time::timeout(
         std::time::Duration::from_secs(timeout_secs),
-        child.wait_with_output(),
+        child.wait(),
     )
     .await
-    .map_err(|_| format!("ADB 命令超时 ({}s)", timeout_secs))?
-    .map_err(|e| format!("等待 adb 失败: {}", e))?;
-
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        Err(format!("adb 失败: {}", String::from_utf8_lossy(&output.stderr).trim()))
+    {
+        Ok(Ok(status)) => {
+            // 读取已管道化的 stdout/stderr
+            let mut stdout_buf = Vec::new();
+            if let Some(ref mut out) = stdout {
+                use tokio::io::AsyncReadExt;
+                let _ = out.read_to_end(&mut stdout_buf).await;
+            }
+            if status.success() {
+                Ok(String::from_utf8_lossy(&stdout_buf).trim().to_string())
+            } else {
+                let mut stderr_buf = Vec::new();
+                if let Some(ref mut err) = stderr {
+                    use tokio::io::AsyncReadExt;
+                    let _ = err.read_to_end(&mut stderr_buf).await;
+                }
+                Err(format!("adb 失败: {}", String::from_utf8_lossy(&stderr_buf).trim()))
+            }
+        }
+        Ok(Err(e)) => Err(format!("等待 adb 失败: {}", e)),
+        Err(_) => {
+            // 超时：显式 kill + 等待回收
+            let _ = child.kill().await;
+            Err(format!("ADB 命令超时 ({}s)", timeout_secs))
+        }
     }
 }
 

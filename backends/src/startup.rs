@@ -131,6 +131,10 @@ pub(crate) async fn startup_sync_tasks(
                 eprintln!("[startup] 所有手机号已失效，通知前端跳转绑定页面");
                 db.set_setting(setting_key::SYNCED_PHONES, "[]").await;
                 let _ = app_handle.emit(
+                    tauri_event::ACCOUNT_SYNC_CHANGED,
+                    serde_json::json!({ "phones": Vec::<String>::new() }),
+                );
+                let _ = app_handle.emit(
                     tauri_event::REQUIRE_PHONE_BIND,
                     serde_json::json!({
                         "reason": "all_expired",
@@ -183,6 +187,10 @@ pub(crate) async fn startup_sync_tasks(
                             &serde_json::to_string(&valid_phones).unwrap_or_default(),
                         )
                         .await;
+                        let _ = app_handle.emit(
+                            tauri_event::ACCOUNT_SYNC_CHANGED,
+                            serde_json::json!({ "phones": valid_phones }),
+                        );
                         engine.reload_tasks().await;
                         eprintln!(
                             "[startup] 同步完成: {} 个手机号, {} 个任务",

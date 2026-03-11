@@ -1,6 +1,6 @@
 import { TaskStatus } from './constants';
+import { activeTask, globalQueue } from './state';
 import { Task } from './types';
-import { globalQueue, activeTask } from './state';
 import { $, esc } from './utils';
 
 /** 上一次渲染的任务快照，用于快速跳过无变化刷新 (#5) */
@@ -18,7 +18,7 @@ export function loadChainForDevice(_serial: string) {
 
   const newHtml = globalQueue
     .map((q: Task) => {
-      const isActive = q === activeTask;
+      const isActive = activeTask ? q.id === activeTask.id : false;
       const kwTotal = q.cities.reduce((s: number, c: { total: number }) => s + c.total, 0);
       const cityCount = q.cities.length;
       const safeId = esc(q.id); // #8: XSS 转义

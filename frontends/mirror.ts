@@ -1,9 +1,9 @@
 /**
  * mirror.ts — 设备投屏模块
  *
- * 使用 WebCodecs VideoDecoder 解码 H.264 帧，Canvas2D 即时渲染。
- * 相比 jMuxer/MSE 方案，消除了 500-800ms 的 MSE 缓冲延迟。
- * 帧数据通过 Tauri Channel 以 Vec<u8> 直传（不再 base64）。
+ * 使用 WebCodecs VideoDecoder 解码 H.264 帧，WebGL2 纹理合成即时渲染。
+ * 相比 Canvas2D drawImage：GPU 直接处理纹理上传，CPU 零像素拷贝。
+ * 帧数据通过 Tauri Channel 以 ArrayBuffer 直传（零 JSON 序列化）。
  */
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { type UnlistenFn, listen } from '@tauri-apps/api/event';
@@ -40,8 +40,98 @@ let activeMirror: {
   width: number;
   height: number;
   canvas: HTMLCanvasElement;
-  ctx: CanvasRenderingContext2D;
+  gl: WebGL2RenderingContext;
+  texture: WebGLTexture;
 } | null = null;
+
+// ─── WebGL 着色器源码 ──────────────────────────────────
+
+const VERTEX_SHADER_SRC = `#version 300 es
+in vec2 a_position;
+in vec2 a_texCoord;
+out vec2 v_texCoord;
+void main() {
+  gl_Position = vec4(a_position, 0.0, 1.0);
+  // 翻转 Y 轴：VideoFrame 纹理坐标从上到下，WebGL 从下到上
+  v_texCoord = vec2(a_texCoord.x, 1.0 - a_texCoord.y);
+}`;
+
+const FRAGMENT_SHADER_SRC = `#version 300 es
+precision mediump float;
+in vec2 v_texCoord;
+uniform sampler2D u_texture;
+out vec4 fragColor;
+void main() {
+  fragColor = texture(u_texture, v_texCoord);
+}`;
+
+/**
+ * 初始化 WebGL2 渲染管线：编译着色器 + 创建全屏四边形 VBO + 纹理
+ */
+function initWebGL(canvas: HTMLCanvasElement): {
+  gl: WebGL2RenderingContext;
+  texture: WebGLTexture;
+} {
+  const gl = canvas.getContext('webgl2', {
+    alpha: false,
+    desynchronized: true, // 降低合成延迟
+    antialias: false,
+    preserveDrawingBuffer: false,
+  });
+  if (!gl) throw new Error('WebGL2 不可用');
+
+  // 编译着色器
+  const vs = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER_SRC);
+  const fs = compileShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SHADER_SRC);
+  const program = gl.createProgram()!;
+  gl.attachShader(program, vs);
+  gl.attachShader(program, fs);
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    throw new Error(`着色器链接失败: ${gl.getProgramInfoLog(program)}`);
+  }
+  gl.useProgram(program);
+
+  // 全屏四边形（2 个三角形，覆盖整个 clip space）
+  // position: (-1,-1) → (1,1)，texCoord: (0,0) → (1,1)
+  const vertices = new Float32Array([
+    // position    texCoord
+    -1, -1, 0, 0, 1, -1, 1, 0, -1, 1, 0, 1, 1, 1, 1, 1,
+  ]);
+
+  const vbo = gl.createBuffer()!;
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+  const aPos = gl.getAttribLocation(program, 'a_position');
+  const aTex = gl.getAttribLocation(program, 'a_texCoord');
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
+  gl.enableVertexAttribArray(aTex);
+  gl.vertexAttribPointer(aTex, 2, gl.FLOAT, false, 16, 8);
+
+  // 创建纹理
+  const texture = gl.createTexture()!;
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+  return { gl, texture };
+}
+
+function compileShader(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
+  const shader = gl.createShader(type)!;
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    const info = gl.getShaderInfoLog(shader);
+    gl.deleteShader(shader);
+    throw new Error(`着色器编译失败: ${info}`);
+  }
+  return shader;
+}
 
 // ─── 公开 API ─────────────────────────────────────────
 
@@ -75,16 +165,22 @@ export async function startMirror(serial: string) {
   if (titleEl) titleEl.textContent = serial;
 
   try {
-    const ctx = canvas.getContext('2d')!;
+    // WebGL2 初始化：着色器 + VBO + 纹理
+    const { gl, texture } = initWebGL(canvas);
 
-    // WebCodecs 解码器：每帧解码后立即绘制到 Canvas（零缓冲）
+    // WebCodecs 解码器：每帧解码后通过 WebGL 纹理上传渲染（GPU 直传，CPU 零拷贝）
     const decoder = new VideoDecoder({
       output: (frame: VideoFrame) => {
         if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
           canvas.width = frame.displayWidth;
           canvas.height = frame.displayHeight;
+          gl.viewport(0, 0, canvas.width, canvas.height);
         }
-        ctx.drawImage(frame, 0, 0);
+
+        // GPU 纹理上传：VideoFrame → GPU 纹理（零 CPU 像素拷贝）
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, frame);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
         frame.close();
 
         // 首帧到达时隐藏 loading 占位
@@ -96,21 +192,23 @@ export async function startMirror(serial: string) {
       },
     });
 
-    // 帧 Channel — 使用 Vec<u8> 原始二进制传输（零 JSON 序列化）
+    // 帧 Channel — Vec<u8> 通过 Response 二进制直传为 ArrayBuffer（零 JSON 序列化）
     // 格式: [is_config: 1B][ts: 8B big-endian][data: NB]
     let lastTs = 0;
     let configData: Uint8Array | null = null; // 缓存 SPS/PPS
+    let concatBuf: Uint8Array | null = null; // P2 优化：关键帧拼接复用缓冲
     let isKeyFrameNeeded = true;
 
     const onFrame = new Channel<ArrayBuffer>();
-    onFrame.onmessage = (buffer: ArrayBuffer) => {
-      // 解析 9 字节二进制头
-      if (buffer.byteLength < 9) return;
-      const view = new DataView(buffer);
+    onFrame.onmessage = (raw: ArrayBuffer) => {
+      if (raw.byteLength < 9) return;
+      // ArrayBuffer → Uint8Array 零拷贝视图（无内存分配）
+      const bytes = new Uint8Array(raw);
+      const view = new DataView(raw);
       const is_config = view.getUint8(0) === 1;
       const ts = Number(view.getBigUint64(1));
-      // 从偏移 9 开始的零拷贝视图
-      const data = new Uint8Array(buffer, 9);
+      // 从偏移 9 开始的子视图（零拷贝）
+      const data = bytes.subarray(9);
 
       // 丢帧
       if (!is_config && ts < lastTs) return;
@@ -156,7 +254,14 @@ export async function startMirror(serial: string) {
       // 关键帧需要附带 SPS/PPS
       let frameData: Uint8Array = data;
       if (isKey && configData) {
-        frameData = concatUint8Arrays(configData, data);
+        // P2 优化：复用 concatBuf 减少 GC 压力
+        const needed = configData.length + data.length;
+        if (!concatBuf || concatBuf.length < needed) {
+          concatBuf = new Uint8Array(needed + 1024); // 预留余量
+        }
+        concatBuf.set(configData, 0);
+        concatBuf.set(data, configData.length);
+        frameData = concatBuf.subarray(0, needed);
       }
 
       decoder.decode(
@@ -174,9 +279,10 @@ export async function startMirror(serial: string) {
       onFrame,
     });
 
-    // 设置 canvas 初始尺寸
+    // 设置 canvas 初始尺寸 + 同步 WebGL viewport
     canvas.width = result.width;
     canvas.height = result.height;
+    gl.viewport(0, 0, result.width, result.height);
 
     // 监听断开
     const unlistenStopped = await listen<string>('scrcpy-stopped', event => {
@@ -193,7 +299,8 @@ export async function startMirror(serial: string) {
       width: result.width,
       height: result.height,
       canvas,
-      ctx,
+      gl,
+      texture,
     };
 
     if (statusEl) statusEl.textContent = `${result.width}×${result.height}`;
@@ -207,8 +314,11 @@ export async function startMirror(serial: string) {
     const mirrorInput = $('#mirror-text-input') as HTMLInputElement;
     if (mirrorInput) mirrorInput.focus();
   } catch (e) {
-    if (statusEl) statusEl.textContent = `连接失败: ${e}`;
     console.error('[mirror] 启动失败:', e);
+    // 连接失败时 activeMirror 未设置，stopMirror/cleanupMirrorState 无法关闭 modal
+    // 直接关闭 modal 并提示
+    closeMirrorModal();
+    showToast(`投屏连接失败: ${e}`, 'error');
   }
 }
 
@@ -242,7 +352,11 @@ function cleanupMirrorState() {
     /* ignore */
   }
 
-  // 抽屉滑出动画
+  closeMirrorModal();
+}
+
+/** 纯 DOM 操作：关闭投屏 modal（不依赖 activeMirror） */
+function closeMirrorModal() {
   const modal = $('#mirror-modal') as HTMLElement;
   const backdrop = $('#mirror-backdrop') as HTMLElement;
   const drawer = $('#mirror-drawer') as HTMLElement;
@@ -571,11 +685,4 @@ function parseCodecFromSPS(configData: Uint8Array): string {
 
 function hex(n: number): string {
   return n.toString(16).padStart(2, '0');
-}
-
-function concatUint8Arrays(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const result = new Uint8Array(a.length + b.length);
-  result.set(a, 0);
-  result.set(b, a.length);
-  return result;
 }

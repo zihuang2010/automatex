@@ -184,6 +184,17 @@ async fn engine_loop(mut s: EngineState, mut rx: mpsc::Receiver<EngineMsg>) {
                 }
                 emit_update(&mut s).await;
             },
+
+            // ── P1 修复：优雅关闭 ──
+            EngineMsg::Shutdown { reply } => {
+                // 取消所有正在运行的 worker
+                for (task_id, info) in s.running.drain() {
+                    info.cancel.cancel();
+                    eprintln!("[engine] shutdown: cancelled worker {}", task_id);
+                }
+                let _ = reply.send(());
+                break; // 退出 event loop
+            },
         }
 
         // 每条消息处理后自动 emit（带节流）

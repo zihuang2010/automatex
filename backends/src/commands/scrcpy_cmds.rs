@@ -24,7 +24,7 @@ fn validate_serial(serial: &str) -> Result<(), String> {
 #[tauri::command]
 pub async fn scrcpy_start_mirror(
     serial: String,
-    on_frame: tauri::ipc::Channel<Vec<u8>>,
+    on_frame: tauri::ipc::Channel<tauri::ipc::Response>,
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<crate::scrcpy::session::MirrorStartedPayload, String> {

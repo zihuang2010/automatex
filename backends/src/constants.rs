@@ -52,6 +52,8 @@ pub mod tauri_event {
     pub const REQUIRE_PHONE_BIND: &str = "require-phone-bind";
     /// 启动同步状态通知
     pub const STARTUP_SYNC_STATUS: &str = "startup-sync-status";
+    /// 已同步手机号变更通知（payload: { phones: string[] }）
+    pub const ACCOUNT_SYNC_CHANGED: &str = "account://sync-changed";
 }
 
 /// MQTT 状态推送到前端的字符串值

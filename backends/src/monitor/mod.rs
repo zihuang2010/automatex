@@ -10,6 +10,14 @@ use crate::storage::{self, DeviceRow};
 /// 全局线程计数器（限制并发属性获取线程数）
 pub(crate) static PROP_FETCH_THREADS: AtomicUsize = AtomicUsize::new(0);
 
+/// P1 修复：RAII guard，确保计数器在 panic/正常退出时都能回收
+struct PropFetchGuard;
+impl Drop for PropFetchGuard {
+    fn drop(&mut self) {
+        PROP_FETCH_THREADS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 // ─── 辅助函数 ──────────────────────────────────────────────────
 
 const BATCH_PROPS_CMD: &str = "echo \"__MODEL__=$(getprop ro.product.model)\" && \
@@ -221,6 +229,8 @@ pub fn spawn_device_monitor(
                         let handle_inner = handle_cb.clone();
                         // P0 优化：使用 spawn_blocking 复用 Tokio 阻塞线程池
                         rt_cb.spawn(async move {
+                            // P1 修复：RAII guard 确保 panic 时也回收计数器
+                            let _guard = PropFetchGuard;
                             let result = tokio::task::spawn_blocking(move || {
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                     fetch_device_row(&serial, state)
@@ -240,7 +250,7 @@ pub fn spawn_device_monitor(
                                     eprintln!("[monitor] spawn_blocking join 失败: {}", e);
                                 },
                             }
-                            PROP_FETCH_THREADS.fetch_sub(1, Ordering::SeqCst);
+                            // guard 在此 drop，自动 fetch_sub
                         });
                     } else {
                         db_block_on(&rt_cb, db_cb.update_device_state(&serial, state));

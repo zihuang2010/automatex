@@ -1,10 +1,12 @@
 use crate::{constants, http, utils, AppState};
+use tauri::Emitter;
 
 #[tauri::command]
 pub async fn sync_tasks_by_phones(
     phones: Vec<String>,
     force: bool,
     state: tauri::State<'_, AppState>,
+    app_handle: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
     let http = state.http()?;
     let engine = state.engine()?;
@@ -66,6 +68,12 @@ pub async fn sync_tasks_by_phones(
             &serde_json::to_string(&bound_phones).unwrap_or_default(),
         )
         .await;
+
+    // 推送账号变更事件到前端
+    let _ = app_handle.emit(
+        constants::tauri_event::ACCOUNT_SYNC_CHANGED,
+        serde_json::json!({ "phones": bound_phones }),
+    );
 
     engine.reload_tasks().await;
     engine.force_emit_update().await;
