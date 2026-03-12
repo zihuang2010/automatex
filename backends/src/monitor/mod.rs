@@ -20,12 +20,13 @@ impl Drop for PropFetchGuard {
 
 // ─── 辅助函数 ──────────────────────────────────────────────────
 
-const BATCH_PROPS_CMD: &str = "echo \"__MODEL__=$(getprop ro.product.model)\" && \
-    echo \"__BRAND__=$(getprop ro.product.brand)\" && \
-    echo \"__ANDROID__=$(getprop ro.build.version.release)\" && \
-    echo \"__SDK__=$(getprop ro.build.version.sdk)\" && \
-    echo \"__SERIAL__=$(getprop ro.serialno)\" && \
-    echo \"__BOOTSERIAL__=$(getprop ro.boot.serialno)\" && \
+/// Windows 兼容：不使用双引号，避免 CreateProcess 二次转义导致 adb shell 收到畸形命令
+const BATCH_PROPS_CMD: &str = "echo __MODEL__=$(getprop ro.product.model) && \
+    echo __BRAND__=$(getprop ro.product.brand) && \
+    echo __ANDROID__=$(getprop ro.build.version.release) && \
+    echo __SDK__=$(getprop ro.build.version.sdk) && \
+    echo __SERIAL__=$(getprop ro.serialno) && \
+    echo __BOOTSERIAL__=$(getprop ro.boot.serialno) && \
     wm size && \
     dumpsys battery";
 
@@ -56,14 +57,32 @@ fn fetch_device_row(serial: &str, state: &str) -> DeviceRow {
         None
     };
 
-    let raw = connection::run_adb_timed(
+    let raw = match connection::run_adb_timed(
         connection::adb_command().args(["-s", serial, "shell", BATCH_PROPS_CMD]),
         constants::timing::ADB_COMMAND_TIMEOUT_SECS,
-    )
-    .ok()
-    .filter(|o| o.status.success())
-    .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-    .unwrap_or_default();
+    ) {
+        Ok(output) => {
+            if output.status.success() {
+                String::from_utf8_lossy(&output.stdout).to_string()
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                eprintln!(
+                    "[monitor] adb shell 命令失败 (serial={}): exit={}, stderr={}",
+                    serial,
+                    output.status,
+                    stderr.trim()
+                );
+                String::new()
+            }
+        }
+        Err(e) => {
+            eprintln!(
+                "[monitor] ⚠ adb 进程启动失败 (serial={}): {} — 请检查 adb 二进制是否完整 (Windows 需要 AdbWinApi.dll)",
+                serial, e
+            );
+            String::new()
+        }
+    };
 
     let model = get_tagged_field(&raw, "__MODEL__=");
     let brand = get_tagged_field(&raw, "__BRAND__=");
@@ -157,7 +176,7 @@ pub fn spawn_device_monitor(
 
     // ── 线程 1: track_devices ──
     std::thread::spawn(move || loop {
-        let addr = std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(127, 0, 0, 1), 5037);
+        let addr = std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(127, 0, 0, 1), connection::adb::adb_port());
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut server = adb_client::server::ADBServer::new(addr);
             let db_cb = Arc::clone(&db_track);
@@ -182,7 +201,7 @@ pub fn spawn_device_monitor(
                     {
                         let fresh_addr = std::net::SocketAddrV4::new(
                             std::net::Ipv4Addr::new(127, 0, 0, 1),
-                            5037,
+                            connection::adb::adb_port(),
                         );
                         let mut fresh_server = adb_client::server::ADBServer::new(fresh_addr);
                         match fresh_server.devices() {

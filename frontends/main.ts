@@ -432,6 +432,11 @@ window.addEventListener('DOMContentLoaded', () => {
     document.documentElement.style.borderRadius = '0';
     document.documentElement.style.clipPath = 'none';
     document.body.style.borderRadius = '0';
+    // 清除 splash 页圆角（内联 style="border-radius: 10px"）
+    const splashEl = document.getElementById('splash');
+    if (splashEl) {
+      splashEl.style.borderRadius = '0';
+    }
     // 清除 #app-root 的 Tailwind 圆角 class
     const appRoot = document.getElementById('app-root');
     if (appRoot) {

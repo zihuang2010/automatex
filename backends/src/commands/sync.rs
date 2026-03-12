@@ -61,6 +61,24 @@ pub async fn sync_tasks_by_phones(
     }
     state.db.batch_upsert_task_defs(upsert_items).await;
 
+    // 清理本地残留的过期任务定义（服务端已不返回的 task_id）
+    let server_ids: std::collections::HashSet<String> =
+        resp.phone_tasks.values().flatten().map(|d| d.id.clone()).collect();
+    let local_defs = state.db.load_all_task_defs().await;
+    let stale_ids: Vec<String> = local_defs
+        .iter()
+        .filter(|(id, _, _, _)| !server_ids.contains(id))
+        .map(|(id, _, _, _)| id.clone())
+        .collect();
+    if !stale_ids.is_empty() {
+        eprintln!(
+            "[sync] 清理 {} 个本地过期任务: {:?}",
+            stale_ids.len(),
+            stale_ids
+        );
+        state.db.batch_cleanup_tasks(&stale_ids).await;
+    }
+
     state
         .db
         .set_setting(

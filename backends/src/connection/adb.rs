@@ -4,6 +4,7 @@
 //! DeviceManager 方法通过本模块与 ADB 交互。
 
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU16, Ordering};
 
 /// 获取内嵌 adb 的路径（Tauri sidecar，与可执行文件同目录）
 pub fn adb_path() -> &'static str {
@@ -21,9 +22,93 @@ pub fn adb_path() -> &'static str {
     })
 }
 
+/// 全局 ADB server 端口（默认 5037，启动时可自动调整）
+static ADB_PORT: AtomicU16 = AtomicU16::new(5037);
+
+/// 获取当前 ADB server 端口
+pub fn adb_port() -> u16 {
+    ADB_PORT.load(Ordering::Relaxed)
+}
+
+/// 启动时探测可用的 ADB server 端口
+///
+/// 尝试 5037-5047，找到正在运行 ADB server 或可用的端口。
+/// 如果 5037 已被非 ADB 进程占用，自动切换到下一个可用端口。
+pub fn resolve_adb_port() {
+    let default_port: u16 = 5037;
+    let max_port: u16 = 5047;
+
+    for port in default_port..=max_port {
+        // 尝试连接该端口，看是否已有 ADB server
+        match std::net::TcpStream::connect_timeout(
+            &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+            std::time::Duration::from_millis(300),
+        ) {
+            Ok(mut stream) => {
+                // 端口有服务在监听，尝试 ADB 握手验证是否是 ADB server
+                use std::io::Write;
+                // ADB 协议: 发送 "host:version" 查询
+                let msg = b"000Chost:version";
+                if stream.write_all(msg).is_ok() {
+                    use std::io::Read;
+                    let mut buf = [0u8; 4];
+                    stream.set_read_timeout(Some(std::time::Duration::from_millis(500))).ok();
+                    if let Ok(n) = stream.read(&mut buf) {
+                        if n == 4 && &buf == b"OKAY" {
+                            // 确认是 ADB server
+                            ADB_PORT.store(port, Ordering::Relaxed);
+                            if port != default_port {
+                                eprintln!("[adb] 使用已有 ADB server: 端口 {} (默认 {} 不可用)", port, default_port);
+                            } else {
+                                eprintln!("[adb] ADB server 已在端口 {} 运行", port);
+                            }
+                            return;
+                        }
+                    }
+                }
+                // 端口被非 ADB 进程占用，跳过
+                eprintln!("[adb] 端口 {} 被非 ADB 进程占用，尝试下一个...", port);
+                continue;
+            },
+            Err(_) => {
+                // 端口空闲，尝试在此端口启动 ADB server
+                let result = run_adb_timed(
+                    adb_command_raw().args(["-P", &port.to_string(), "start-server"]),
+                    10,
+                );
+                match result {
+                    Ok(output) if output.status.success() => {
+                        ADB_PORT.store(port, Ordering::Relaxed);
+                        if port != default_port {
+                            eprintln!("[adb] 在端口 {} 启动 ADB server (默认 {} 不可用)", port, default_port);
+                        } else {
+                            eprintln!("[adb] ADB server 已在端口 {} 启动", port);
+                        }
+                        return;
+                    },
+                    Ok(output) => {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        eprintln!("[adb] 端口 {} 启动失败: {}", port, stderr.trim());
+                    },
+                    Err(e) => {
+                        eprintln!("[adb] 端口 {} 启动失败: {}", port, e);
+                    },
+                }
+            },
+        }
+    }
+
+    // 所有端口均不可用，保持默认值并打印警告
+    eprintln!(
+        "[adb] ⚠ 端口 {}-{} 均不可用，使用默认端口 {}（可能无法正常工作）",
+        default_port, max_port, default_port
+    );
+}
+
 /// 二进制完整性校验：验证 sidecar 文件存在且大小合理
 ///
 /// 检测点：文件存在、大小 > 100KB（防截断）、可读。
+/// Windows 额外检查 AdbWinApi.dll 和 AdbWinUsbApi.dll。
 /// 在启动时调用一次即可，结果缓存在日志中。
 pub fn verify_sidecar_integrity() {
     let exe_dir =
@@ -57,12 +142,46 @@ pub fn verify_sidecar_integrity() {
             },
         }
     }
+
+    // Windows: 检查 ADB 运行时 DLL 依赖
+    #[cfg(windows)]
+    {
+        let dlls = ["AdbWinApi.dll", "AdbWinUsbApi.dll"];
+        for dll in &dlls {
+            let path = exe_dir.join(dll);
+            if path.exists() {
+                eprintln!("[integrity] ✓ {}", dll);
+            } else {
+                eprintln!(
+                    "[integrity] ⚠ {} 未找到: {:?} — adb.exe 可能无法正常运行！",
+                    dll, path
+                );
+            }
+        }
+    }
 }
 
-/// 创建不弹出控制台窗口的 ADB Command（Windows 上设置 CREATE_NO_WINDOW）
+/// 内部：创建不带 -P 参数的原始 ADB Command（仅用于 start-server 等引导命令）
+#[allow(unused_mut)]
+fn adb_command_raw() -> std::process::Command {
+    let mut cmd = std::process::Command::new(adb_path());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    cmd
+}
+
+/// 创建不弹出控制台窗口的 ADB Command（自动带 -P 端口参数）
 #[allow(unused_mut)]
 pub fn adb_command() -> std::process::Command {
     let mut cmd = std::process::Command::new(adb_path());
+    let port = adb_port();
+    // 非默认端口时显式传递 -P 参数
+    if port != 5037 {
+        cmd.args(["-P", &port.to_string()]);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

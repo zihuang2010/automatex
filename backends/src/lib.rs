@@ -76,6 +76,9 @@ pub fn run() {
                     // 二进制完整性校验（启动时执行一次）
                     connection::adb::verify_sidecar_integrity();
 
+                    // ADB 端口探测：如果 5037 被占用，自动尝试 5038-5047
+                    connection::adb::resolve_adb_port();
+
                     check_daily_reset(&db_init).await;
 
                     task_provider::sync_task_cache(&db_init).await;
