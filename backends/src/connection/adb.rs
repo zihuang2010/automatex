@@ -3,8 +3,8 @@
 //! 负责 adb 路径发现、命令构建、超时执行等底层操作。
 //! DeviceManager 方法通过本模块与 ADB 交互。
 
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::OnceLock;
 
 /// 获取内嵌 adb 的路径（Tauri sidecar，与可执行文件同目录）
 pub fn adb_path() -> &'static str {
@@ -58,7 +58,10 @@ pub fn resolve_adb_port() {
                             // 确认是 ADB server
                             ADB_PORT.store(port, Ordering::Relaxed);
                             if port != default_port {
-                                eprintln!("[adb] 使用已有 ADB server: 端口 {} (默认 {} 不可用)", port, default_port);
+                                eprintln!(
+                                    "[adb] 使用已有 ADB server: 端口 {} (默认 {} 不可用)",
+                                    port, default_port
+                                );
                             } else {
                                 eprintln!("[adb] ADB server 已在端口 {} 运行", port);
                             }
@@ -80,7 +83,10 @@ pub fn resolve_adb_port() {
                     Ok(output) if output.status.success() => {
                         ADB_PORT.store(port, Ordering::Relaxed);
                         if port != default_port {
-                            eprintln!("[adb] 在端口 {} 启动 ADB server (默认 {} 不可用)", port, default_port);
+                            eprintln!(
+                                "[adb] 在端口 {} 启动 ADB server (默认 {} 不可用)",
+                                port, default_port
+                            );
                         } else {
                             eprintln!("[adb] ADB server 已在端口 {} 启动", port);
                         }
@@ -152,10 +158,7 @@ pub fn verify_sidecar_integrity() {
             if path.exists() {
                 eprintln!("[integrity] ✓ {}", dll);
             } else {
-                eprintln!(
-                    "[integrity] ⚠ {} 未找到: {:?} — adb.exe 可能无法正常运行！",
-                    dll, path
-                );
+                eprintln!("[integrity] ⚠ {} 未找到: {:?} — adb.exe 可能无法正常运行！", dll, path);
             }
         }
     }

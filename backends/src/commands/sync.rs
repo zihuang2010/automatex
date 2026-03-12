@@ -71,11 +71,7 @@ pub async fn sync_tasks_by_phones(
         .map(|(id, _, _, _)| id.clone())
         .collect();
     if !stale_ids.is_empty() {
-        eprintln!(
-            "[sync] 清理 {} 个本地过期任务: {:?}",
-            stale_ids.len(),
-            stale_ids
-        );
+        eprintln!("[sync] 清理 {} 个本地过期任务: {:?}", stale_ids.len(), stale_ids);
         state.db.batch_cleanup_tasks(&stale_ids).await;
     }
 

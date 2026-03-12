@@ -74,14 +74,14 @@ fn fetch_device_row(serial: &str, state: &str) -> DeviceRow {
                 );
                 String::new()
             }
-        }
+        },
         Err(e) => {
             eprintln!(
                 "[monitor] ⚠ adb 进程启动失败 (serial={}): {} — 请检查 adb 二进制是否完整 (Windows 需要 AdbWinApi.dll)",
                 serial, e
             );
             String::new()
-        }
+        },
     };
 
     let model = get_tagged_field(&raw, "__MODEL__=");
@@ -176,7 +176,10 @@ pub fn spawn_device_monitor(
 
     // ── 线程 1: track_devices ──
     std::thread::spawn(move || loop {
-        let addr = std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(127, 0, 0, 1), connection::adb::adb_port());
+        let addr = std::net::SocketAddrV4::new(
+            std::net::Ipv4Addr::new(127, 0, 0, 1),
+            connection::adb::adb_port(),
+        );
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut server = adb_client::server::ADBServer::new(addr);
             let db_cb = Arc::clone(&db_track);
