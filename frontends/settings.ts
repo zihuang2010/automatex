@@ -6,6 +6,29 @@ import { $, showToast } from './utils';
 
 const THEME_OPT_ACTIVE = 'bg-white text-s800 shadow-sm';
 const THEME_OPT_INACTIVE = 'text-s400 hover:text-s600';
+const DEFAULT_MQTT_HOST = '39.98.170.208';
+const DEFAULT_MQTT_PORT = '30002';
+
+function normalizeMqttFormValues() {
+  const hostInput = $('#set-mqtt-host') as HTMLInputElement;
+  const portInput = $('#set-mqtt-port') as HTMLInputElement;
+  const clientIdInput = $('#set-mqtt-client-id') as HTMLInputElement;
+  const usernameInput = $('#set-mqtt-username') as HTMLInputElement;
+  const passwordInput = $('#set-mqtt-password') as HTMLInputElement;
+
+  const normalized = {
+    host: hostInput.value.trim() || DEFAULT_MQTT_HOST,
+    port: portInput.value.trim() || DEFAULT_MQTT_PORT,
+    client_id: clientIdInput.value.trim(),
+    username: usernameInput.value.trim(),
+    password: passwordInput.value,
+  };
+
+  hostInput.value = normalized.host;
+  portInput.value = normalized.port;
+
+  return normalized;
+}
 
 function syncThemeSwitcher() {
   const isDark = document.documentElement.classList.contains('dark');
@@ -82,8 +105,8 @@ export function initSettings() {
   $('#btn-settings')?.addEventListener('click', async () => {
     try {
       const settings = await invoke<Record<string, string>>('get_settings');
-      ($('#set-mqtt-host') as HTMLInputElement).value = settings.mqtt_host || '';
-      ($('#set-mqtt-port') as HTMLInputElement).value = settings.mqtt_port || '30002';
+      ($('#set-mqtt-host') as HTMLInputElement).value = settings.mqtt_host || DEFAULT_MQTT_HOST;
+      ($('#set-mqtt-port') as HTMLInputElement).value = settings.mqtt_port || DEFAULT_MQTT_PORT;
       ($('#set-mqtt-client-id') as HTMLInputElement).value = settings.mqtt_client_id || '';
       ($('#set-mqtt-username') as HTMLInputElement).value = settings.mqtt_username || '';
       ($('#set-mqtt-password') as HTMLInputElement).value = settings.mqtt_password || '';
@@ -91,8 +114,8 @@ export function initSettings() {
 
       // 记录当前 MQTT 配置快照
       savedMqttSnapshot = {
-        host: settings.mqtt_host || '',
-        port: settings.mqtt_port || '30002',
+        host: settings.mqtt_host || DEFAULT_MQTT_HOST,
+        port: settings.mqtt_port || DEFAULT_MQTT_PORT,
         client_id: settings.mqtt_client_id || '',
         username: settings.mqtt_username || '',
         password: settings.mqtt_password || '',
@@ -118,8 +141,9 @@ export function initSettings() {
   });
 
   $('#settings-save')?.addEventListener('click', async () => {
-    const host = ($('#set-mqtt-host') as HTMLInputElement).value.trim();
-    const portStr = ($('#set-mqtt-port') as HTMLInputElement).value.trim();
+    const newMqtt = normalizeMqttFormValues();
+    const host = newMqtt.host;
+    const portStr = newMqtt.port;
     const port = parseInt(portStr, 10);
 
     // #13: 基础输入校验
@@ -127,14 +151,6 @@ export function initSettings() {
       showToast('MQTT 端口号必须在 1-65535 之间', 'error');
       return;
     }
-
-    const newMqtt = {
-      host: host,
-      port: portStr || '30002',
-      client_id: ($('#set-mqtt-client-id') as HTMLInputElement).value,
-      username: ($('#set-mqtt-username') as HTMLInputElement).value,
-      password: ($('#set-mqtt-password') as HTMLInputElement).value,
-    };
 
     const settings = {
       mqtt_host: newMqtt.host,
@@ -185,12 +201,13 @@ export function initSettings() {
     updateMqttStatusUI('connecting');
 
     // 先保存当前表单值
+    const newMqtt = normalizeMqttFormValues();
     const settings = {
-      mqtt_host: ($('#set-mqtt-host') as HTMLInputElement).value.trim(),
-      mqtt_port: ($('#set-mqtt-port') as HTMLInputElement).value.trim() || '30002',
-      mqtt_client_id: ($('#set-mqtt-client-id') as HTMLInputElement).value,
-      mqtt_username: ($('#set-mqtt-username') as HTMLInputElement).value,
-      mqtt_password: ($('#set-mqtt-password') as HTMLInputElement).value,
+      mqtt_host: newMqtt.host,
+      mqtt_port: newMqtt.port,
+      mqtt_client_id: newMqtt.client_id,
+      mqtt_username: newMqtt.username,
+      mqtt_password: newMqtt.password,
       api_base_url: ($('#set-api-base-url') as HTMLInputElement).value.trim(),
     };
     try {

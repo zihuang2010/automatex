@@ -1,14 +1,20 @@
 /**
- * mirror.ts — 设备投屏模块
+ * mirror.ts — 设备投屏模块（悬浮窗版 v5）
  *
- * 使用 WebCodecs VideoDecoder 解码 H.264 帧，WebGL2 纹理合成即时渲染。
- * 相比 Canvas2D drawImage：GPU 直接处理纹理上传，CPU 零像素拷贝。
- * 帧数据通过 Tauri Channel 以 ArrayBuffer 直传（零 JSON 序列化）。
+ * 每个投屏是一个独立的悬浮窗口（position:absolute），
+ * 可自由拖拽、缩放、层级切换。不影响主界面任何交互。
+ *
+ * 架构：
+ *   mirrors: Map<serial, MirrorInstance>  — 独立窗口实例
+ *   focusedSerial                         — 键盘输入路由目标
+ *   zIndexCounter                         — 置顶层级计数器
+ *   拖拽引擎挂在每个窗口的 header 上
  */
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { type UnlistenFn, listen } from '@tauri-apps/api/event';
 
-import { $, showToast } from './utils';
+import { getCachedDeviceResolution } from './devices';
+import { $, esc, showToast } from './utils';
 
 // ─── 类型 ─────────────────────────────────────────────
 
@@ -18,33 +24,40 @@ interface MirrorStartedPayload {
   height: number;
 }
 
-const TOUCH_ACTION = {
-  DOWN: 0,
-  UP: 1,
-  MOVE: 2,
-} as const;
-
-// Q-3: H.264 NAL 类型常量
-const NAL_TYPE_IDR = 5;
-const NAL_TYPE_SPS = 7;
-const NAL_HEADER_OFFSET = 4;
-// SG-2: 解码队列积压阈值
-const MAX_DECODE_QUEUE_SIZE = 3;
-
-// ─── 状态 ─────────────────────────────────────────────
-
-let activeMirror: {
+interface MirrorInstance {
   serial: string;
   decoder: VideoDecoder;
   unlistenStopped: UnlistenFn;
   width: number;
   height: number;
+  aspectRatio: number;
+  screenWidth: number;
   canvas: HTMLCanvasElement;
+  viewport: HTMLElement;
   gl: WebGL2RenderingContext;
   texture: WebGLTexture;
-} | null = null;
+  win: HTMLElement; // .mirror-window DOM
+}
 
-// ─── WebGL 着色器源码 ──────────────────────────────────
+const TOUCH_ACTION = { DOWN: 0, UP: 1, MOVE: 2 } as const;
+
+const NAL_TYPE_IDR = 5;
+const NAL_TYPE_SPS = 7;
+const NAL_HEADER_OFFSET = 4;
+const MAX_DECODE_QUEUE_SIZE = 3;
+const MAX_MIRRORS = 4;
+const DEFAULT_DEVICE_WIDTH = 1080;
+const DEFAULT_DEVICE_HEIGHT = 2400;
+const MIN_SCREEN_WIDTH = 240;
+const MAX_SCREEN_WIDTH = 440;
+
+// ─── 状态 ─────────────────────────────────────────────
+
+const mirrors = new Map<string, MirrorInstance>();
+let focusedSerial: string | null = null;
+let zIndexCounter = 1000;
+
+// ─── WebGL ─────────────────────────────────────────────
 
 const VERTEX_SHADER_SRC = `#version 300 es
 in vec2 a_position;
@@ -52,7 +65,6 @@ in vec2 a_texCoord;
 out vec2 v_texCoord;
 void main() {
   gl_Position = vec4(a_position, 0.0, 1.0);
-  // 翻转 Y 轴：VideoFrame 纹理坐标从上到下，WebGL 从下到上
   v_texCoord = vec2(a_texCoord.x, 1.0 - a_texCoord.y);
 }`;
 
@@ -65,22 +77,15 @@ void main() {
   fragColor = texture(u_texture, v_texCoord);
 }`;
 
-/**
- * 初始化 WebGL2 渲染管线：编译着色器 + 创建全屏四边形 VBO + 纹理
- */
-function initWebGL(canvas: HTMLCanvasElement): {
-  gl: WebGL2RenderingContext;
-  texture: WebGLTexture;
-} {
+function initWebGL(canvas: HTMLCanvasElement) {
   const gl = canvas.getContext('webgl2', {
     alpha: false,
-    desynchronized: true, // 降低合成延迟
+    desynchronized: true,
     antialias: false,
     preserveDrawingBuffer: false,
   });
   if (!gl) throw new Error('WebGL2 不可用');
 
-  // 编译着色器
   const vs = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER_SRC);
   const fs = compileShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SHADER_SRC);
   const program = gl.createProgram()!;
@@ -92,13 +97,7 @@ function initWebGL(canvas: HTMLCanvasElement): {
   }
   gl.useProgram(program);
 
-  // 全屏四边形（2 个三角形，覆盖整个 clip space）
-  // position: (-1,-1) → (1,1)，texCoord: (0,0) → (1,1)
-  const vertices = new Float32Array([
-    // position    texCoord
-    -1, -1, 0, 0, 1, -1, 1, 0, -1, 1, 0, 1, 1, 1, 1, 1,
-  ]);
-
+  const vertices = new Float32Array([-1, -1, 0, 0, 1, -1, 1, 0, -1, 1, 0, 1, 1, 1, 1, 1]);
   const vbo = gl.createBuffer()!;
   gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
   gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
@@ -110,7 +109,6 @@ function initWebGL(canvas: HTMLCanvasElement): {
   gl.enableVertexAttribArray(aTex);
   gl.vertexAttribPointer(aTex, 2, gl.FLOAT, false, 16, 8);
 
-  // 创建纹理
   const texture = gl.createTexture()!;
   gl.bindTexture(gl.TEXTURE_2D, texture);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -121,7 +119,7 @@ function initWebGL(canvas: HTMLCanvasElement): {
   return { gl, texture };
 }
 
-function compileShader(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
+function compileShader(gl: WebGL2RenderingContext, type: number, source: string) {
   const shader = gl.createShader(type)!;
   gl.shaderSource(shader, source);
   gl.compileShader(shader);
@@ -133,298 +131,288 @@ function compileShader(gl: WebGL2RenderingContext, type: number, source: string)
   return shader;
 }
 
-// ─── 公开 API ─────────────────────────────────────────
+// ─── 悬浮窗 DOM ─────────────────────────────────────
 
-/**
- * 启动投屏
- */
-export async function startMirror(serial: string) {
-  if (activeMirror) {
-    if (activeMirror.serial === serial) return;
-    await stopMirror();
-  }
-
-  const modal = $('#mirror-modal') as HTMLElement;
-  const canvas = $('#scrcpy-canvas') as HTMLCanvasElement;
-  const statusEl = $('#mirror-status') as HTMLElement;
-  const titleEl = $('#mirror-title') as HTMLElement;
-  const backdrop = $('#mirror-backdrop') as HTMLElement;
-  const drawer = $('#mirror-drawer') as HTMLElement;
-  const loading = $('#mirror-loading') as HTMLElement;
-
-  if (!modal || !canvas) return;
-
-  // 抽屉滑入动画
-  modal.style.display = 'block';
-  if (loading) loading.style.display = 'flex';
-  requestAnimationFrame(() => {
-    if (backdrop) backdrop.classList.add('opacity-100');
-    if (drawer) drawer.classList.remove('translate-x-full');
-  });
-  if (statusEl) statusEl.textContent = '正在连接…';
-  if (titleEl) titleEl.textContent = serial;
-
-  try {
-    // WebGL2 初始化：着色器 + VBO + 纹理
-    const { gl, texture } = initWebGL(canvas);
-
-    // WebCodecs 解码器：每帧解码后通过 WebGL 纹理上传渲染（GPU 直传，CPU 零拷贝）
-    const decoder = new VideoDecoder({
-      output: (frame: VideoFrame) => {
-        if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
-          canvas.width = frame.displayWidth;
-          canvas.height = frame.displayHeight;
-          gl.viewport(0, 0, canvas.width, canvas.height);
-        }
-
-        // GPU 纹理上传：VideoFrame → GPU 纹理（零 CPU 像素拷贝）
-        gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, frame);
-        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-        frame.close();
-
-        // 首帧到达时隐藏 loading 占位
-        const ld = $('#mirror-loading') as HTMLElement;
-        if (ld && ld.style.display !== 'none') ld.style.display = 'none';
-      },
-      error: (e: DOMException) => {
-        console.error('[mirror] 解码错误:', e);
-      },
-    });
-
-    // 帧 Channel — Vec<u8> 通过 Response 二进制直传为 ArrayBuffer（零 JSON 序列化）
-    // 格式: [is_config: 1B][ts: 8B big-endian][data: NB]
-    let lastTs = 0;
-    let configData: Uint8Array | null = null; // 缓存 SPS/PPS
-    let concatBuf: Uint8Array | null = null; // P2 优化：关键帧拼接复用缓冲
-    let isKeyFrameNeeded = true;
-
-    const onFrame = new Channel<ArrayBuffer>();
-    onFrame.onmessage = (raw: ArrayBuffer) => {
-      if (raw.byteLength < 9) return;
-      // ArrayBuffer → Uint8Array 零拷贝视图（无内存分配）
-      const bytes = new Uint8Array(raw);
-      const view = new DataView(raw);
-      const is_config = view.getUint8(0) === 1;
-      const ts = Number(view.getBigUint64(1));
-      // 从偏移 9 开始的子视图（零拷贝）
-      const data = bytes.subarray(9);
-
-      // 丢帧
-      if (!is_config && ts < lastTs) return;
-      lastTs = ts;
-
-      if (data.length === 0) return;
-
-      if (is_config) {
-        // SPS/PPS 配置帧：用于初始化或重新配置解码器
-        configData = new Uint8Array(data);
-
-        // 从 SPS 解析 codec 字符串并配置解码器
-        const codecStr = parseCodecFromSPS(configData);
-        try {
-          decoder.configure({
-            codec: codecStr,
-            optimizeForLatency: true,
-          });
-          isKeyFrameNeeded = true;
-          console.log('[mirror] 解码器已配置:', codecStr);
-        } catch (e) {
-          console.error('[mirror] 解码器配置失败:', e);
-        }
-        return;
-      }
-
-      if (decoder.state !== 'configured') return;
-
-      // Q-3: 判断是否为关键帧（NAL type 5 = IDR）
-      const nalType = data[NAL_HEADER_OFFSET] & 0x1f;
-      const isKey = nalType === NAL_TYPE_IDR;
-
-      // 等待第一个关键帧
-      if (isKeyFrameNeeded && !isKey) return;
-      isKeyFrameNeeded = false;
-
-      // SG-2: 解码队列积压时丢弃 delta 帧，等下个 keyframe
-      if (!isKey && decoder.decodeQueueSize > MAX_DECODE_QUEUE_SIZE) {
-        isKeyFrameNeeded = true;
-        return;
-      }
-
-      // 关键帧需要附带 SPS/PPS
-      let frameData: Uint8Array = data;
-      if (isKey && configData) {
-        // P2 优化：复用 concatBuf 减少 GC 压力
-        const needed = configData.length + data.length;
-        if (!concatBuf || concatBuf.length < needed) {
-          concatBuf = new Uint8Array(needed + 1024); // 预留余量
-        }
-        concatBuf.set(configData, 0);
-        concatBuf.set(data, configData.length);
-        frameData = concatBuf.subarray(0, needed);
-      }
-
-      decoder.decode(
-        new EncodedVideoChunk({
-          type: isKey ? 'key' : 'delta',
-          timestamp: ts * 1000, // 微秒
-          data: frameData,
-        }),
-      );
-    };
-
-    // 调用后端，传入 Channel
-    const result: MirrorStartedPayload = await invoke('scrcpy_start_mirror', {
-      serial,
-      onFrame,
-    });
-
-    // 设置 canvas 初始尺寸 + 同步 WebGL viewport
-    canvas.width = result.width;
-    canvas.height = result.height;
-    gl.viewport(0, 0, result.width, result.height);
-
-    // 监听断开
-    const unlistenStopped = await listen<string>('scrcpy-stopped', event => {
-      if (activeMirror?.serial === event.payload) {
-        cleanupMirrorState();
-        showToast('投屏已断开', 'info');
-      }
-    });
-
-    activeMirror = {
-      serial,
-      decoder,
-      unlistenStopped,
-      width: result.width,
-      height: result.height,
-      canvas,
-      gl,
-      texture,
-    };
-
-    if (statusEl) statusEl.textContent = `${result.width}×${result.height}`;
-
-    const container = $('#mirror-video-wrap') as HTMLElement;
-    if (container) {
-      container.style.aspectRatio = `${result.width} / ${result.height}`;
-    }
-
-    // 聚焦隐藏 input 以接收键盘/IME 输入
-    const mirrorInput = $('#mirror-text-input') as HTMLInputElement;
-    if (mirrorInput) mirrorInput.focus();
-  } catch (e) {
-    console.error('[mirror] 启动失败:', e);
-    // 连接失败时 activeMirror 未设置，stopMirror/cleanupMirrorState 无法关闭 modal
-    // 直接关闭 modal 并提示
-    closeMirrorModal();
-    showToast(`投屏连接失败: ${e}`, 'error');
-  }
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
 }
 
-/**
- * 停止投屏
- */
-export async function stopMirror() {
-  if (!activeMirror) return;
-
-  const { serial } = activeMirror;
-  cleanupMirrorState();
-
-  try {
-    await invoke('scrcpy_stop_mirror', { serial });
-  } catch (e) {
-    console.warn('[mirror] 停止失败:', e);
-  }
+function getMaxScreenWidth() {
+  return clamp(Math.floor(window.innerWidth * 0.34), MIN_SCREEN_WIDTH + 24, MAX_SCREEN_WIDTH);
 }
 
-function cleanupMirrorState() {
-  if (!activeMirror) return;
-
-  const { decoder, unlistenStopped } = activeMirror;
-  activeMirror = null;
-
-  unlistenStopped();
-
-  try {
-    decoder.close();
-  } catch {
-    /* ignore */
-  }
-
-  closeMirrorModal();
+function getRecommendedScreenWidth(width: number, height: number) {
+  const targetScreenHeight = clamp(window.innerHeight - 180, 620, 760);
+  const recommended = Math.round(targetScreenHeight * (width / height));
+  return clamp(recommended, MIN_SCREEN_WIDTH, getMaxScreenWidth());
 }
 
-/** 纯 DOM 操作：关闭投屏 modal（不依赖 activeMirror） */
-function closeMirrorModal() {
-  const modal = $('#mirror-modal') as HTMLElement;
-  const backdrop = $('#mirror-backdrop') as HTMLElement;
-  const drawer = $('#mirror-drawer') as HTMLElement;
-
-  if (backdrop) backdrop.classList.remove('opacity-100');
-  if (drawer) drawer.classList.add('translate-x-full');
-
-  // 等待 transition 结束后隐藏
-  setTimeout(() => {
-    if (modal) modal.style.display = 'none';
-  }, 320);
+function setMirrorWindowVars(
+  win: HTMLElement,
+  width: number,
+  height: number,
+  screenWidth: number,
+  aspectRatio = height / width,
+) {
+  const screenHeight = Math.round(screenWidth * aspectRatio);
+  win.style.setProperty('--mirror-device-width', String(width));
+  win.style.setProperty('--mirror-device-height', String(height));
+  win.style.setProperty('--mirror-screen-width', `${screenWidth}px`);
+  win.style.setProperty('--mirror-screen-height', `${screenHeight}px`);
 }
 
-/**
- * 初始化投屏模块：绑定 modal 事件
- */
-export function initMirror() {
-  $('#mirror-close')?.addEventListener('click', () => stopMirror());
+function getInitialMirrorMetrics(serial: string) {
+  const cached = getCachedDeviceResolution(serial);
+  const width = cached?.width ?? DEFAULT_DEVICE_WIDTH;
+  const height = cached?.height ?? DEFAULT_DEVICE_HEIGHT;
+  return {
+    width,
+    height,
+    screenWidth: getRecommendedScreenWidth(width, height),
+  };
+}
 
-  // 遮罩点击关闭
-  $('#mirror-backdrop')?.addEventListener('click', () => stopMirror());
+function buildMirrorMarkup(serial: string) {
+  const shortSerial = serial.length > 16 ? serial.substring(0, 16) + '…' : serial;
 
-  $('#mirror-back')?.addEventListener('click', () => {
-    if (activeMirror) {
-      invoke('scrcpy_press_back', { serial: activeMirror.serial }).catch(console.warn);
-    }
+  return `
+    <div class="mirror-showcase-unit">
+      <div class="mirror-info-panel mirror-win-header">
+        <div class="flex min-w-0 flex-col">
+          <span class="text-[8px] font-bold leading-none tracking-[0.28em] text-slate-400 uppercase mb-1">Device ID</span>
+          <span class="mirror-info-text" title="${esc(serial)}">${esc(shortSerial)}</span>
+        </div>
+        <div class="mirror-win-res">-- <span class="opacity-30">×</span> --</div>
+        <button class="mirror-win-close" title="关闭投屏" aria-label="关闭投屏">
+          <svg fill="none" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+
+      <div class="mirror-phone-shell">
+        <div class="mirror-side-button mirror-power-btn"></div>
+        <div class="mirror-side-button mirror-volume-up"></div>
+        <div class="mirror-side-button mirror-volume-down"></div>
+        <div class="mirror-phone-screen">
+          <div class="mirror-dynamic-island"></div>
+          <div class="mirror-screen-reflection"></div>
+          <div class="mirror-device-viewport">
+            <div class="mirror-stream-placeholder">
+              <div class="mirror-stream-placeholder-core">
+                <div class="mirror-stream-placeholder-badge">LIVE PREVIEW</div>
+                <div class="mirror-stream-placeholder-title">建立投屏链路中</div>
+                <div class="mirror-stream-placeholder-subtitle">正在等待设备首帧回传，连接完成后将平滑切入实时画面</div>
+                <div class="mirror-stream-placeholder-grid">
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                </div>
+              </div>
+            </div>
+            <canvas class="mirror-win-canvas"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <button class="mirror-resize-handle" title="拖拽缩放" aria-label="拖拽缩放投屏窗口"></button>
+    </div>
+  `;
+}
+
+function createMirrorWindow(
+  serial: string,
+  index: number,
+  initialMetrics = getInitialMirrorMetrics(serial),
+): { win: HTMLElement; canvas: HTMLCanvasElement; viewport: HTMLElement } {
+  const win = document.createElement('div');
+  win.className = 'mirror-window';
+  win.dataset.serial = serial;
+
+  // 梯级偏移定位（避免多窗口完全重叠）
+  const baseX = 60;
+  const baseY = 30;
+  win.style.left = `${baseX + index * 50}px`;
+  win.style.top = `${baseY + index * 50}px`;
+  win.style.zIndex = String(++zIndexCounter);
+  setMirrorWindowVars(win, initialMetrics.width, initialMetrics.height, initialMetrics.screenWidth);
+  win.innerHTML = buildMirrorMarkup(serial);
+
+  const canvas = win.querySelector('.mirror-win-canvas') as HTMLCanvasElement;
+  const viewport = win.querySelector('.mirror-device-viewport') as HTMLElement;
+
+  // 关闭按钮
+  win.querySelector('.mirror-win-close')?.addEventListener('click', e => {
+    e.stopPropagation();
+    stopMirrorBySerial(serial);
   });
 
-  $('#mirror-home')?.addEventListener('click', () => {
-    if (activeMirror) {
-      invoke('scrcpy_inject_key', {
-        serial: activeMirror.serial,
-        keycode: 3,
-        metaState: 0,
-      }).catch(console.warn);
+  // 点击窗口 → 焦点 + 置顶
+  win.addEventListener('mousedown', () => {
+    bringToFront(serial);
+  });
+
+  // 拖拽引擎（仅从 header 触发）
+  bindDragEngine(win);
+
+  return { win, canvas, viewport };
+}
+
+// ─── 拖拽引擎 ─────────────────────────────────────────
+
+function bindDragEngine(win: HTMLElement) {
+  const header = win.querySelector('.mirror-win-header') as HTMLElement;
+  if (!header) return;
+
+  let isDragging = false;
+  let offsetX = 0;
+  let offsetY = 0;
+
+  header.addEventListener('mousedown', (e: MouseEvent) => {
+    // 忽略按钮点击
+    if ((e.target as HTMLElement).closest('button')) return;
+    isDragging = true;
+    offsetX = e.clientX - win.offsetLeft;
+    offsetY = e.clientY - win.offsetTop;
+    e.preventDefault();
+  });
+
+  // 事件绑到 document 以确保拖拽到窗口外也能正常追踪
+  document.addEventListener('mousemove', (e: MouseEvent) => {
+    if (!isDragging) return;
+    const nextX = e.clientX - offsetX;
+    const nextY = e.clientY - offsetY;
+    const { left: newX, top: newY } = clampMirrorWindowPosition(win, nextX, nextY);
+    win.style.left = `${newX}px`;
+    win.style.top = `${newY}px`;
+  });
+
+  document.addEventListener('mouseup', () => {
+    isDragging = false;
+  });
+}
+
+function clampMirrorWindowPosition(win: HTMLElement, left: number, top: number) {
+  const visibleGripWidth = 96;
+  const visibleGripHeight = 88;
+  const minLeft = Math.min(24, window.innerWidth - visibleGripWidth);
+  const maxLeft = Math.max(minLeft, window.innerWidth - visibleGripWidth);
+  const safeLeft = clamp(left, minLeft - win.offsetWidth, maxLeft);
+  const safeTop = clamp(top, 12, Math.max(12, window.innerHeight - visibleGripHeight));
+
+  return { left: safeLeft, top: safeTop };
+}
+
+function keepMirrorWindowReachable(win: HTMLElement) {
+  const currentLeft = Number.parseFloat(win.style.left || '0');
+  const currentTop = Number.parseFloat(win.style.top || '0');
+  const { left, top } = clampMirrorWindowPosition(win, currentLeft, currentTop);
+  win.style.left = `${left}px`;
+  win.style.top = `${top}px`;
+}
+
+function applyMirrorMetrics(instance: MirrorInstance, width: number, height: number) {
+  instance.width = width;
+  instance.height = height;
+  instance.aspectRatio = height / width;
+
+  const nextScreenWidth = clamp(
+    instance.screenWidth || getRecommendedScreenWidth(width, height),
+    MIN_SCREEN_WIDTH,
+    getMaxScreenWidth(),
+  );
+
+  instance.screenWidth = nextScreenWidth;
+  setMirrorWindowVars(instance.win, width, height, nextScreenWidth, instance.aspectRatio);
+
+  const statusEl = instance.win.querySelector('.mirror-win-status');
+  if (statusEl) statusEl.textContent = '在线';
+
+  const resEl = instance.win.querySelector('.mirror-win-res');
+  if (resEl) resEl.textContent = `${width}×${height}`;
+
+  keepMirrorWindowReachable(instance.win);
+}
+
+function bindResizeHandle(instance: MirrorInstance) {
+  const handle = instance.win.querySelector('.mirror-resize-handle') as HTMLElement | null;
+  if (!handle) return;
+
+  let isResizing = false;
+  let startX = 0;
+  let startWidth = 0;
+
+  handle.addEventListener('mousedown', (e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    bringToFront(instance.serial);
+    isResizing = true;
+    startX = e.clientX;
+    startWidth = instance.screenWidth;
+    document.body.classList.add('mirror-resizing');
+  });
+
+  document.addEventListener('mousemove', (e: MouseEvent) => {
+    if (!isResizing) return;
+    const deltaX = e.clientX - startX;
+    const nextWidth = clamp(startWidth + deltaX, MIN_SCREEN_WIDTH, getMaxScreenWidth());
+    instance.screenWidth = nextWidth;
+    applyMirrorMetrics(instance, instance.width, instance.height);
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!isResizing) return;
+    isResizing = false;
+    document.body.classList.remove('mirror-resizing');
+  });
+}
+
+// ─── 焦点 & 层级管理 ──────────────────────────────────
+
+function bringToFront(serial: string) {
+  if (focusedSerial === serial) return;
+  focusedSerial = serial;
+
+  mirrors.forEach((inst, s) => {
+    if (s === serial) {
+      inst.win.classList.add('focused');
+      inst.win.style.zIndex = String(++zIndexCounter);
+    } else {
+      inst.win.classList.remove('focused');
     }
   });
 
-  // ── 触控事件 ──
-  const canvas = $('#scrcpy-canvas') as HTMLCanvasElement;
-  if (!canvas) return;
+  const textInput = $('#mirror-text-input') as HTMLInputElement;
+  if (textInput) textInput.focus();
+}
 
+// ─── 触控事件绑定 ─────────────────────────────────────
+
+function bindTouchEvents(canvas: HTMLCanvasElement, serial: string) {
   let isDown = false;
 
-  const getDeviceCoords = (e: MouseEvent): { x: number; y: number } | null => {
-    if (!activeMirror) return null;
+  const getCoords = (e: MouseEvent): { x: number; y: number } | null => {
+    const inst = mirrors.get(serial);
+    if (!inst) return null;
     const rect = canvas.getBoundingClientRect();
-    const scaleX = activeMirror.width / rect.width;
-    const scaleY = activeMirror.height / rect.height;
     return {
-      x: Math.round((e.clientX - rect.left) * scaleX),
-      y: Math.round((e.clientY - rect.top) * scaleY),
+      x: Math.round((e.clientX - rect.left) * (inst.width / rect.width)),
+      y: Math.round((e.clientY - rect.top) * (inst.height / rect.height)),
     };
   };
 
   canvas.addEventListener('mousedown', e => {
     e.preventDefault();
-    if (textInput) textInput.focus(); // 点击画面时聚焦隐藏 input
+    bringToFront(serial);
+    const textInput = $('#mirror-text-input') as HTMLInputElement;
+    if (textInput) textInput.focus();
     isDown = true;
-    const coords = getDeviceCoords(e);
-    if (coords && activeMirror) {
-      invoke('scrcpy_inject_touch', {
-        serial: activeMirror.serial,
-        action: TOUCH_ACTION.DOWN,
-        x: coords.x,
-        y: coords.y,
-      }).catch(console.warn);
-    }
+    const c = getCoords(e);
+    if (c)
+      invoke('scrcpy_inject_touch', { serial, action: TOUCH_ACTION.DOWN, x: c.x, y: c.y }).catch(
+        console.warn,
+      );
   });
 
   let pendingMove: { x: number; y: number } | null = null;
@@ -432,16 +420,15 @@ export function initMirror() {
 
   canvas.addEventListener('mousemove', e => {
     if (!isDown) return;
-    const coords = getDeviceCoords(e);
-    if (!coords || !activeMirror) return;
-
-    pendingMove = coords;
+    const c = getCoords(e);
+    if (!c || !mirrors.has(serial)) return;
+    pendingMove = c;
     if (!rafId) {
       rafId = requestAnimationFrame(() => {
         rafId = 0;
-        if (pendingMove && activeMirror) {
+        if (pendingMove && mirrors.has(serial)) {
           invoke('scrcpy_inject_touch', {
-            serial: activeMirror.serial,
+            serial,
             action: TOUCH_ACTION.MOVE,
             x: pendingMove.x,
             y: pendingMove.y,
@@ -459,37 +446,260 @@ export function initMirror() {
       rafId = 0;
       pendingMove = null;
     }
-    const coords = getDeviceCoords(e);
-    if (coords && activeMirror) {
-      invoke('scrcpy_inject_touch', {
-        serial: activeMirror.serial,
-        action: TOUCH_ACTION.UP,
-        x: coords.x,
-        y: coords.y,
-      }).catch(console.warn);
-    }
+    const c = getCoords(e);
+    if (c && mirrors.has(serial))
+      invoke('scrcpy_inject_touch', { serial, action: TOUCH_ACTION.UP, x: c.x, y: c.y }).catch(
+        console.warn,
+      );
   });
 
   canvas.addEventListener('mouseleave', () => {
-    if (isDown && activeMirror) {
+    if (isDown && mirrors.has(serial)) {
       isDown = false;
       if (rafId) {
         cancelAnimationFrame(rafId);
         rafId = 0;
         pendingMove = null;
       }
-      invoke('scrcpy_inject_touch', {
-        serial: activeMirror.serial,
-        action: TOUCH_ACTION.UP,
-        x: 0,
-        y: 0,
-      }).catch(console.warn);
+      invoke('scrcpy_inject_touch', { serial, action: TOUCH_ACTION.UP, x: 0, y: 0 }).catch(
+        console.warn,
+      );
     }
   });
+}
 
-  // ── 键盘事件（方案 C：特殊键 keycode + 文本 inject_text + IME） ──
+// ─── 公开 API ─────────────────────────────────────────
 
-  // PC key → Android KEYCODE 映射
+export async function startMirror(serial: string) {
+  // 已在投屏 → 仅切焦点 + 置顶
+  if (mirrors.has(serial)) {
+    bringToFront(serial);
+    return;
+  }
+
+  if (mirrors.size >= MAX_MIRRORS) {
+    showToast(`最多支持 ${MAX_MIRRORS} 台设备同时投屏`, 'error');
+    return;
+  }
+
+  const container = $('#mirror-windows-container') as HTMLElement;
+  if (!container) return;
+
+  const windowIndex = mirrors.size;
+  const initialMetrics = getInitialMirrorMetrics(serial);
+  const { win, canvas, viewport } = createMirrorWindow(serial, windowIndex, initialMetrics);
+  container.appendChild(win);
+
+  try {
+    const { gl, texture } = initWebGL(canvas);
+    let hasRenderedFirstFrame = false;
+
+    const decoder = new VideoDecoder({
+      output: (frame: VideoFrame) => {
+        if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+          canvas.width = frame.displayWidth;
+          canvas.height = frame.displayHeight;
+          gl.viewport(0, 0, canvas.width, canvas.height);
+        }
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, frame);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        frame.close();
+        if (!hasRenderedFirstFrame) {
+          hasRenderedFirstFrame = true;
+          requestAnimationFrame(() => {
+            win.classList.add('mirror-stream-ready');
+          });
+        }
+      },
+      error: (e: DOMException) => {
+        console.error(`[mirror:${serial}] 解码错误:`, e);
+      },
+    });
+
+    let lastTs = 0;
+    let configData: Uint8Array | null = null;
+    let concatBuf: Uint8Array | null = null;
+    let isKeyFrameNeeded = true;
+
+    const onFrame = new Channel<ArrayBuffer>();
+    onFrame.onmessage = (raw: ArrayBuffer) => {
+      if (raw.byteLength < 9) return;
+      const bytes = new Uint8Array(raw);
+      const view = new DataView(raw);
+      const is_config = view.getUint8(0) === 1;
+      const ts = Number(view.getBigUint64(1));
+      const data = bytes.subarray(9);
+
+      if (!is_config && ts < lastTs) return;
+      lastTs = ts;
+      if (data.length === 0) return;
+
+      if (is_config) {
+        configData = new Uint8Array(data);
+        const codecStr = parseCodecFromSPS(configData);
+        try {
+          decoder.configure({ codec: codecStr, optimizeForLatency: true });
+          isKeyFrameNeeded = true;
+        } catch (e) {
+          console.error(`[mirror:${serial}] 解码器配置失败:`, e);
+        }
+        return;
+      }
+
+      if (decoder.state !== 'configured') return;
+
+      const nalType = data[NAL_HEADER_OFFSET] & 0x1f;
+      const isKey = nalType === NAL_TYPE_IDR;
+      if (isKeyFrameNeeded && !isKey) return;
+      isKeyFrameNeeded = false;
+
+      if (!isKey && decoder.decodeQueueSize > MAX_DECODE_QUEUE_SIZE) {
+        isKeyFrameNeeded = true;
+        return;
+      }
+
+      let frameData: Uint8Array = data;
+      if (isKey && configData) {
+        const needed = configData.length + data.length;
+        if (!concatBuf || concatBuf.length < needed) {
+          concatBuf = new Uint8Array(needed + 1024);
+        }
+        concatBuf.set(configData, 0);
+        concatBuf.set(data, configData.length);
+        frameData = concatBuf.subarray(0, needed);
+      }
+
+      decoder.decode(
+        new EncodedVideoChunk({
+          type: isKey ? 'key' : 'delta',
+          timestamp: ts * 1000,
+          data: frameData,
+        }),
+      );
+    };
+
+    const result: MirrorStartedPayload = await invoke('scrcpy_start_mirror', { serial, onFrame });
+
+    const unlistenStopped = await listen<string>('scrcpy-stopped', event => {
+      if (event.payload === serial && mirrors.has(serial)) {
+        cleanupInstance(serial);
+        showToast(`${serial} 投屏已断开`, 'info');
+      }
+    });
+
+    const instance: MirrorInstance = {
+      serial,
+      decoder,
+      unlistenStopped,
+      width: result.width,
+      height: result.height,
+      aspectRatio: result.height / result.width,
+      screenWidth: initialMetrics.screenWidth,
+      canvas,
+      viewport,
+      gl,
+      texture,
+      win,
+    };
+
+    applyMirrorMetrics(instance, result.width, result.height);
+    canvas.width = result.width;
+    canvas.height = result.height;
+    gl.viewport(0, 0, result.width, result.height);
+
+    mirrors.set(serial, instance);
+    bindResizeHandle(instance);
+    bindTouchEvents(canvas, serial);
+    bringToFront(serial);
+  } catch (e) {
+    const errMsg = String(e);
+    console.error('[mirror] 启动失败:', errMsg);
+    win.remove();
+
+    // 如果后端报"已在投屏中"→ 强制释放后端并自动重试一次
+    if (errMsg.includes('已在投屏')) {
+      console.warn(`[mirror] 检测到残留会话，强制释放 ${serial}...`);
+      try {
+        await invoke('scrcpy_stop_mirror', { serial });
+      } catch {
+        /* ignore */
+      }
+      // 短暂等待后端完全释放
+      await new Promise(r => setTimeout(r, 300));
+      showToast('正在重新连接…', 'info');
+      // 递归重试（仅一次，因为此时后端已释放）
+      return startMirror(serial);
+    }
+
+    showToast(`投屏连接失败: ${e}`, 'error');
+  }
+}
+
+export async function stopMirrorBySerial(serial: string) {
+  const inst = mirrors.get(serial);
+  if (!inst) {
+    // 前端已清理但后端可能还在 → 强制通知后端释放
+    try {
+      await invoke('scrcpy_stop_mirror', { serial });
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+
+  // 关键：先通知后端释放，再清理前端
+  try {
+    await invoke('scrcpy_stop_mirror', { serial });
+  } catch (e) {
+    console.warn('[mirror] 后端停止失败:', e);
+  }
+
+  // 后端已释放，安全清理前端
+  cleanupInstance(serial);
+}
+
+export async function stopMirror() {
+  if (focusedSerial) await stopMirrorBySerial(focusedSerial);
+}
+
+export async function stopAllMirrors() {
+  const serials = [...mirrors.keys()];
+  // 先全部通知后端停止
+  await Promise.allSettled(
+    serials.map(s => invoke('scrcpy_stop_mirror', { serial: s }).catch(() => {})),
+  );
+  // 再统一清理前端
+  for (const s of serials) cleanupInstance(s);
+}
+
+// ─── 内部清理 ─────────────────────────────────────────
+
+function cleanupInstance(serial: string) {
+  const inst = mirrors.get(serial);
+  if (!inst) return;
+  mirrors.delete(serial);
+  inst.unlistenStopped();
+  try {
+    inst.decoder.close();
+  } catch {
+    /* ignore */
+  }
+  inst.win.remove();
+
+  if (focusedSerial === serial) {
+    const next = mirrors.keys().next().value as string | undefined;
+    if (next) {
+      bringToFront(next);
+    } else {
+      focusedSerial = null;
+    }
+  }
+}
+
+// ─── 初始化（键盘事件路由） ─────────────────────────────
+
+export function initMirror() {
   const KEY_MAP: Record<string, number> = {
     Enter: 66,
     Backspace: 67,
@@ -516,12 +726,10 @@ export function initMirror() {
     F10: 140,
     F11: 141,
     F12: 142,
-    // 音量/电源
     AudioVolumeUp: 24,
     AudioVolumeDown: 25,
   };
 
-  // 修饰键 key → Android META flag
   const META_ALT_ON = 0x02;
   const META_SHIFT_ON = 0x01;
   const META_CTRL_ON = 0x1000;
@@ -534,140 +742,88 @@ export function initMirror() {
     return meta;
   }
 
-  // 判断是否为纯修饰键
   const MODIFIER_KEYS = new Set(['Control', 'Shift', 'Alt', 'Meta', 'CapsLock']);
 
-  // 单字符 key → Android KEYCODE（仅用于 Ctrl+字母 组合）
   function charToKeycode(key: string): number {
     const c = key.toUpperCase();
-    if (c >= 'A' && c <= 'Z') return c.charCodeAt(0) - 65 + 29; // KEYCODE_A=29
-    if (c >= '0' && c <= '9') return c.charCodeAt(0) - 48 + 7; // KEYCODE_0=7
+    if (c >= 'A' && c <= 'Z') return c.charCodeAt(0) - 65 + 29;
+    if (c >= '0' && c <= '9') return c.charCodeAt(0) - 48 + 7;
     return 0;
   }
 
-  // 隐藏文本输入框（用于 IME 和普通文本输入）
   const textInput = $('#mirror-text-input') as HTMLInputElement;
+  if (!textInput) return;
 
-  // ── 隐藏 input 始终聚焦，承接所有文本输入（英文 + 中文 IME） ──
-  if (textInput) {
-    // 使 input 可聚焦但不可见
-    textInput.style.position = 'fixed';
-    textInput.style.opacity = '0';
-    textInput.style.pointerEvents = 'none';
-    textInput.style.width = '1px';
-    textInput.style.height = '1px';
-    textInput.style.left = '0';
-    textInput.style.top = '0';
-    textInput.style.border = 'none';
-    textInput.style.padding = '0';
-    textInput.style.outline = 'none';
-    // 允许 focus（programmatic）
-    textInput.removeAttribute('tabindex');
+  let isComposing = false;
 
-    let isComposing = false;
+  textInput.addEventListener('keydown', e => {
+    if (!focusedSerial) return;
+    if (MODIFIER_KEYS.has(e.key)) return;
 
-    // ── 特殊键：在 input 上拦截（Backspace/Enter/方向键等） ──
-    textInput.addEventListener('keydown', e => {
-      if (!activeMirror) return;
-      if (MODIFIER_KEYS.has(e.key)) return;
+    if (KEY_MAP[e.key] && !isComposing) {
+      e.preventDefault();
+      invoke('scrcpy_inject_key', {
+        serial: focusedSerial,
+        keycode: KEY_MAP[e.key],
+        metaState: getMetaState(e),
+      }).catch(err => console.error('[mirror] inject_key 失败:', err));
+      return;
+    }
 
-      // 特殊键 → inject_key（始终处理，包括 IME 状态下的 Backspace）
-      if (KEY_MAP[e.key] && !isComposing) {
-        e.preventDefault();
-        const meta = getMetaState(e);
-        invoke('scrcpy_inject_key', {
-          serial: activeMirror.serial,
-          keycode: KEY_MAP[e.key],
-          metaState: meta,
-        }).catch(err => console.error('[mirror] inject_key 失败:', err));
-        return;
-      }
+    if ((e.ctrlKey || e.metaKey) && e.key.length === 1) {
+      if (e.key === 'v' || e.key === 'V') return;
+      e.preventDefault();
+      const keycode = charToKeycode(e.key);
+      if (keycode === 0) return;
+      invoke('scrcpy_inject_key', {
+        serial: focusedSerial,
+        keycode,
+        metaState: getMetaState(e),
+      }).catch(err => console.error('[mirror] inject_key 失败:', err));
+    }
+  });
 
-      // Ctrl/Meta + 普通键组合（如 Ctrl+C / Cmd+A）
-      // 禁止 Ctrl+V / Cmd+V（粘贴会导致阻塞卡死）
-      if ((e.ctrlKey || e.metaKey) && e.key.length === 1) {
-        if (e.key === 'v' || e.key === 'V') return; // 禁止粘贴
-        e.preventDefault();
-        const keycode = charToKeycode(e.key);
-        if (keycode === 0) return;
-        const meta = getMetaState(e);
-        invoke('scrcpy_inject_key', {
-          serial: activeMirror.serial,
-          keycode,
-          metaState: meta,
-        }).catch(err => console.error('[mirror] inject_key 失败:', err));
-        return;
-      }
+  textInput.addEventListener('compositionstart', () => {
+    isComposing = true;
+  });
 
-      // 普通字符：不 preventDefault，让 input 自然接收
-      // → 通过下面的 input/compositionend 事件发送
-    });
+  textInput.addEventListener('compositionend', () => {
+    isComposing = false;
+    const text = textInput.value;
+    if (text && focusedSerial) {
+      invoke('scrcpy_inject_text', { serial: focusedSerial, text }).catch(console.error);
+    }
+    textInput.value = '';
+  });
 
-    // ── IME 组合状态跟踪 ──
-    textInput.addEventListener('compositionstart', () => {
-      isComposing = true;
-    });
+  textInput.addEventListener('input', () => {
+    if (isComposing) return;
+    const text = textInput.value;
+    if (text && focusedSerial) {
+      invoke('scrcpy_inject_text', { serial: focusedSerial, text }).catch(console.error);
+    }
+    textInput.value = '';
+  });
 
-    textInput.addEventListener('compositionend', () => {
-      isComposing = false;
-      const text = textInput.value;
-      if (text && activeMirror) {
-        invoke('scrcpy_inject_text', {
-          serial: activeMirror.serial,
-          text,
-        }).catch(err => console.error('[mirror] inject_text 失败:', err));
-      }
-      textInput.value = '';
-    });
-
-    // ── 非 IME 文本输入（英文字符、粘贴等） ──
-    textInput.addEventListener('input', () => {
-      if (isComposing) return;
-      const text = textInput.value;
-      if (text && activeMirror) {
-        invoke('scrcpy_inject_text', {
-          serial: activeMirror.serial,
-          text,
-        }).catch(err => console.error('[mirror] inject_text 失败:', err));
-      }
-      textInput.value = '';
-    });
-
-    // 防止 input 失焦（仅在 modal 可见时 re-focus）
-    textInput.addEventListener('blur', () => {
-      setTimeout(() => {
-        const modal = $('#mirror-modal') as HTMLElement;
-        if (activeMirror && textInput && modal?.style.display !== 'none') {
-          textInput.focus();
-        }
-      }, 50);
-    });
-  }
+  textInput.addEventListener('blur', () => {
+    setTimeout(() => {
+      if (focusedSerial && mirrors.size > 0) textInput.focus();
+    }, 50);
+  });
 }
 
 // ─── 工具函数 ─────────────────────────────────────────
 
-/**
- * 从 SPS NAL unit 解析 H.264 codec 字符串
- * 格式: avc1.PPCCLL (profile_idc, constraint_flags, level_idc)
- */
 function parseCodecFromSPS(configData: Uint8Array): string {
-  // 查找 SPS NAL (type 7) —— 在 Annex B 格式中
   for (let i = 0; i < configData.length - 4; i++) {
-    // 找到 start code (00 00 00 01 或 00 00 01)
     let nalStart = -1;
     if (configData[i] === 0 && configData[i + 1] === 0) {
-      if (configData[i + 2] === 0 && configData[i + 3] === 1) {
-        nalStart = i + 4;
-      } else if (configData[i + 2] === 1) {
-        nalStart = i + 3;
-      }
+      if (configData[i + 2] === 0 && configData[i + 3] === 1) nalStart = i + 4;
+      else if (configData[i + 2] === 1) nalStart = i + 3;
     }
-
     if (nalStart >= 0 && nalStart < configData.length) {
       const nalType = configData[nalStart] & 0x1f;
       if (nalType === NAL_TYPE_SPS && nalStart + 3 < configData.length) {
-        // SPS 找到：profile_idc, constraint_flags, level_idc
         const profile = configData[nalStart + 1];
         const constraints = configData[nalStart + 2];
         const level = configData[nalStart + 3];
@@ -677,8 +833,6 @@ function parseCodecFromSPS(configData: Uint8Array): string {
       }
     }
   }
-
-  // 回退：H.264 Baseline Profile Level 3.1
   console.warn('[mirror] 未找到 SPS，使用默认 codec');
   return 'avc1.42001f';
 }

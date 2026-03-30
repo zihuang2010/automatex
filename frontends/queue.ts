@@ -1,10 +1,13 @@
+import Sortable from 'sortablejs';
+
 import { TaskStatus } from './constants';
-import { activeTask, globalQueue } from './state';
+import { activeTask, globalQueue, reorderGlobalQueue } from './state';
 import { Task } from './types';
 import { $, esc } from './utils';
 
 /** 上一次渲染的任务快照，用于快速跳过无变化刷新 (#5) */
 let _lastQueueHtml = '';
+let _queueSortable: Sortable | null = null;
 
 /* ===== Task Queue (Right Column) ===== */
 
@@ -48,11 +51,14 @@ export function loadChainForDevice(_serial: string) {
         const kwDone = q.cities.reduce((s: number, c: { done: number }) => s + c.done, 0);
         const pct = kwTotal > 0 ? Math.round((kwDone / kwTotal) * 100) : 0;
         return `
-      <div class="bg-blue-50/40 border border-blue-100 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer transition-all hover:shadow-md ${ring}" onclick="window.__switchTask('${safeId}')">
+      <div class="task-queue-item bg-blue-50/40 border border-blue-100 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer transition-all hover:shadow-md ${ring}" data-task-id="${safeId}" onclick="window.__switchTask('${safeId}')">
         <div class="w-1 self-stretch bg-[#2563EB]"></div>
         <div class="flex-1 p-3 flex flex-col">
           <div class="flex justify-between items-start mb-2">
-            <h4 class="font-semibold text-xs text-s700 leading-tight truncate pr-2">${esc(q.name)}</h4>
+            <div class="flex min-w-0 items-start gap-2 pr-2">
+              <span class="task-queue-drag-handle material-symbols-outlined text-s300 hover:text-s500 cursor-grab text-[16px] leading-none mt-0.5">drag_indicator</span>
+              <h4 class="font-semibold text-xs text-s700 leading-tight truncate">${esc(q.name)}</h4>
+            </div>
             <div class="flex items-center gap-1.5 bg-s100 px-2 py-0.5 rounded-full shrink-0">
               <span class="w-1.5 h-1.5 bg-[#2563EB] rounded-full animate-pulse"></span>
               <span class="text-[11px] font-bold text-[#2563EB]">执行中</span>
@@ -72,11 +78,14 @@ export function loadChainForDevice(_serial: string) {
         const kwDone = q.cities.reduce((s: number, c: { done: number }) => s + c.done, 0);
         const pct = kwTotal > 0 ? Math.round((kwDone / kwTotal) * 100) : 0;
         return `
-      <div class="bg-amber-50/40 border border-amber-100 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer transition-all hover:shadow-md ${ring}" onclick="window.__switchTask('${safeId}')">
+      <div class="task-queue-item bg-amber-50/40 border border-amber-100 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer transition-all hover:shadow-md ${ring}" data-task-id="${safeId}" onclick="window.__switchTask('${safeId}')">
         <div class="w-1 self-stretch bg-amber-400"></div>
         <div class="flex-1 p-3 flex flex-col">
           <div class="flex justify-between items-start mb-2">
-            <h4 class="font-semibold text-xs text-s700 leading-tight truncate pr-2">${esc(q.name)}</h4>
+            <div class="flex min-w-0 items-start gap-2 pr-2">
+              <span class="task-queue-drag-handle material-symbols-outlined text-s300 hover:text-s500 cursor-grab text-[16px] leading-none mt-0.5">drag_indicator</span>
+              <h4 class="font-semibold text-xs text-s700 leading-tight truncate">${esc(q.name)}</h4>
+            </div>
             <div class="bg-s100 px-2 py-0.5 rounded-full shrink-0">
               <span class="text-[11px] font-bold text-amber-600">已暂停</span>
             </div>
@@ -93,11 +102,14 @@ export function loadChainForDevice(_serial: string) {
       </div>`;
       } else if (q.status === TaskStatus.WAITING) {
         return `
-      <div class="bg-s50/60 border border-s200 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer transition-all hover:shadow-md ${ring}" onclick="window.__switchTask('${safeId}')">
+      <div class="task-queue-item bg-s50/60 border border-s200 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer transition-all hover:shadow-md ${ring}" data-task-id="${safeId}" onclick="window.__switchTask('${safeId}')">
         <div class="w-1 self-stretch bg-[#64748B]"></div>
         <div class="flex-1 p-3">
           <div class="flex justify-between items-start mb-2">
-            <h4 class="font-semibold text-xs text-s700 leading-tight truncate pr-2">${esc(q.name)}</h4>
+            <div class="flex min-w-0 items-start gap-2 pr-2">
+              <span class="task-queue-drag-handle material-symbols-outlined text-s300 hover:text-s500 cursor-grab text-[16px] leading-none mt-0.5">drag_indicator</span>
+              <h4 class="font-semibold text-xs text-s700 leading-tight truncate">${esc(q.name)}</h4>
+            </div>
             <div class="bg-s100 px-2 py-0.5 rounded-full shrink-0">
               <span class="text-[11px] font-bold text-[#64748B]">等待中</span>
             </div>
@@ -107,11 +119,14 @@ export function loadChainForDevice(_serial: string) {
       </div>`;
       } else if (q.status === TaskStatus.SUCCESS) {
         return `
-      <div class="bg-green-50/40 border border-green-100 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer opacity-80 transition-all hover:opacity-100 ${ring}" onclick="window.__switchTask('${safeId}')">
+      <div class="task-queue-item bg-green-50/40 border border-green-100 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer opacity-80 transition-all hover:opacity-100 ${ring}" data-task-id="${safeId}" onclick="window.__switchTask('${safeId}')">
         <div class="w-1 self-stretch bg-[#10B981]"></div>
         <div class="flex-1 p-3">
           <div class="flex justify-between items-start mb-2">
-            <h4 class="font-semibold text-xs text-s700 leading-tight truncate pr-2">${esc(q.name)}</h4>
+            <div class="flex min-w-0 items-start gap-2 pr-2">
+              <span class="task-queue-drag-handle material-symbols-outlined text-s300 hover:text-s500 cursor-grab text-[16px] leading-none mt-0.5">drag_indicator</span>
+              <h4 class="font-semibold text-xs text-s700 leading-tight truncate">${esc(q.name)}</h4>
+            </div>
             <div class="bg-s100 px-2 py-0.5 rounded-full shrink-0">
               <span class="text-[11px] font-bold text-[#10B981]">已完成</span>
             </div>
@@ -123,11 +138,14 @@ export function loadChainForDevice(_serial: string) {
         const kwDone = q.cities.reduce((s: number, c: { done: number }) => s + c.done, 0);
         const pct = kwTotal > 0 ? Math.round((kwDone / kwTotal) * 100) : 0;
         return `
-      <div class="bg-red-50/40 border border-red-100 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer transition-all hover:shadow-md ${ring}" onclick="window.__switchTask('${safeId}')">
+      <div class="task-queue-item bg-red-50/40 border border-red-100 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer transition-all hover:shadow-md ${ring}" data-task-id="${safeId}" onclick="window.__switchTask('${safeId}')">
         <div class="w-1 self-stretch bg-red-500"></div>
         <div class="flex-1 p-3 flex flex-col">
           <div class="flex justify-between items-start mb-2">
-            <h4 class="font-semibold text-xs text-s700 leading-tight truncate pr-2">${esc(q.name)}</h4>
+            <div class="flex min-w-0 items-start gap-2 pr-2">
+              <span class="task-queue-drag-handle material-symbols-outlined text-s300 hover:text-s500 cursor-grab text-[16px] leading-none mt-0.5">drag_indicator</span>
+              <h4 class="font-semibold text-xs text-s700 leading-tight truncate">${esc(q.name)}</h4>
+            </div>
             <div class="bg-s100 px-2 py-0.5 rounded-full shrink-0">
               <span class="text-[11px] font-bold text-red-500">异常暂停</span>
             </div>
@@ -153,4 +171,26 @@ export function loadChainForDevice(_serial: string) {
     cards.innerHTML = newHtml;
     _lastQueueHtml = newHtml;
   }
+
+  bindTaskQueueDragEvents(cards);
+}
+
+function bindTaskQueueDragEvents(container: HTMLElement) {
+  if (!container) return;
+  _queueSortable?.destroy();
+  _queueSortable = Sortable.create(container, {
+    animation: 180,
+    handle: '.task-queue-drag-handle',
+    draggable: '.task-queue-item',
+    ghostClass: 'task-queue-ghost',
+    chosenClass: 'task-queue-chosen',
+    dragClass: 'task-queue-dragging',
+    onEnd: () => {
+      const newOrder = [...container.querySelectorAll('.task-queue-item')]
+        .map(el => (el as HTMLElement).dataset.taskId)
+        .filter((id): id is string => Boolean(id));
+      reorderGlobalQueue(newOrder);
+      loadChainForDevice('');
+    },
+  });
 }

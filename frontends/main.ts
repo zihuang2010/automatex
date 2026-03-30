@@ -16,7 +16,7 @@ import {
   submitAddDevice,
   unflagSelectedDevice,
 } from './dialogs';
-import { initMirror, startMirror } from './mirror';
+import { initMirror, startMirror, stopAllMirrors } from './mirror';
 import { loadChainForDevice } from './queue';
 import { initSettings, updateMqttStatusUI } from './settings';
 import { activeTask, globalQueue, selectedDevice, setActiveCityIdx, setActiveTask } from './state';
@@ -27,8 +27,19 @@ import {
   renderTaskView,
   setTaskViewCallbacks,
 } from './task-view';
-import { needsTransition, showTransition } from './transition';
+import {
+  getSyncedPhones,
+  isPhoneBindFlowVisible,
+  needsTransition,
+  showPhoneBindFlow,
+  showTransition,
+} from './transition';
 import { $, showToast } from './utils';
+
+// 窗口关闭时优雅停止所有投屏
+window.addEventListener('beforeunload', () => {
+  stopAllMirrors();
+});
 
 /* ===== Theme Toggle ===== */
 
@@ -162,6 +173,47 @@ async function refreshAccountList(): Promise<string[]> {
   }
 }
 
+async function openPhoneBindPage(mode: 'startup' | 'rebind' | 'empty-tasks' = 'rebind') {
+  if (isPhoneBindFlowVisible()) return;
+
+  const phones = await getSyncedPhones();
+  const hasBoundPhones = phones.length > 0;
+
+  const config =
+    mode === 'startup'
+      ? {
+          title: '任务同步过渡',
+          subtitle: '正在进入多端任务检索流程',
+          submitLabel: '开始同步',
+          forceSync: false,
+          prefillPhones: phones,
+        }
+      : mode === 'empty-tasks'
+        ? {
+            title: '重新绑定手机号',
+            subtitle: '当前绑定手机号暂无可用任务，请修改后重新同步',
+            helperText: '如果原手机号的任务已被删除或迁移，请在这里更新新的任务手机号。',
+            submitLabel: '重新绑定并同步',
+            forceSync: true,
+            prefillPhones: phones,
+            emptyTasksMessage: '当前绑定手机号仍然没有任务，请修改手机号后重新同步。',
+          }
+        : {
+            title: hasBoundPhones ? '修改同步手机号' : '绑定同步手机号',
+            subtitle: hasBoundPhones
+              ? '当前绑定已失效或被挤下线，请重新绑定后继续使用'
+              : '请先绑定手机号后开始使用',
+            helperText: '支持直接修改现有手机号并重新同步，系统会自动清理失效任务。',
+            submitLabel: hasBoundPhones ? '重新绑定并同步' : '绑定并同步',
+            forceSync: hasBoundPhones,
+            prefillPhones: phones,
+            emptyTasksMessage: '当前绑定手机号暂无任务，请修改手机号后重新同步。',
+          };
+
+  await showPhoneBindFlow(config);
+  await Promise.all([refreshAccountList(), fullRefresh()]);
+}
+
 function initAccountPanel() {
   const btn = document.getElementById('btn-account-sync');
   const panel = document.getElementById('account-panel');
@@ -276,12 +328,27 @@ function initAccountPanel() {
         if (p && p !== phoneToRemove) remaining.push(p);
       });
 
+      if (remaining.length === 0) {
+        await invoke('sync_tasks_by_phones', { phones: [], force: true });
+        showToast(`已移除账号 ${masked}`, 'info');
+        await Promise.all([refreshAccountList(), fullRefresh()]);
+        openPhoneBindPage('startup').catch(console.error);
+        return;
+      }
+
       // 用剩余号码重新同步（后端会自动清理被移除的号码，空列表也能正确处理）
-      await invoke('sync_tasks_by_phones', { phones: remaining, force: true });
+      const syncResult = await invoke<{ tasks?: number }>('sync_tasks_by_phones', {
+        phones: remaining,
+        force: true,
+      });
 
       showToast(`已移除账号 ${masked}`, 'info');
       // P4 优化：并行刷新账号列表和任务视图
       await Promise.all([refreshAccountList(), fullRefresh()]);
+
+      if ((syncResult.tasks ?? 0) === 0) {
+        openPhoneBindPage('empty-tasks').catch(console.error);
+      }
     } catch (err) {
       showToast(`移除失败: ${err}`, 'error');
       target.removeAttribute('disabled');
@@ -294,21 +361,7 @@ function initAccountPanel() {
     panel.classList.remove('open');
     panel.classList.add('hidden');
     chevron?.classList.remove('rotated');
-    const modal = document.getElementById('add-account-modal') as HTMLElement;
-    if (!modal) return;
-
-    // 回显已同步的手机号
-    const textarea = document.getElementById('add-account-phones') as HTMLTextAreaElement;
-    if (textarea) {
-      try {
-        const settings = await invoke<Record<string, string>>('get_settings');
-        const phones: string[] = JSON.parse(settings.synced_phones || '[]');
-        textarea.value = phones.join('\n');
-      } catch {
-        textarea.value = '';
-      }
-    }
-    modal.style.display = 'flex';
+    await openPhoneBindPage('rebind');
   });
 
   // ── 添加账号弹窗交互 ──
@@ -479,7 +532,11 @@ window.addEventListener('DOMContentLoaded', () => {
       }
       loadChainForDevice('');
       // 启动时从数据库加载已同步的账号（修复重启后显示 0 个）
-      refreshAccountList();
+      refreshAccountList().then(phones => {
+        if (tasks.length === 0 && phones.length > 0) {
+          openPhoneBindPage('empty-tasks').catch(console.error);
+        }
+      });
     })
     .catch(e => {
       console.error('[AutomateX] 引擎初始化失败:', e);
@@ -541,6 +598,27 @@ window.addEventListener('DOMContentLoaded', () => {
   // ── 监听账号同步变更事件（唯一更新路径）──
   listen<{ phones: string[] }>('account://sync-changed', event => {
     renderAccountList(event.payload.phones);
+  });
+
+  listen<{ tasks: Array<{ id: string }> }>('task://update', async event => {
+    if (event.payload.tasks.length > 0 || isPhoneBindFlowVisible()) return;
+    const phones = await getSyncedPhones();
+    if (phones.length > 0) {
+      openPhoneBindPage('empty-tasks').catch(console.error);
+    }
+  });
+
+  listen<{ reason?: string; message?: string }>('require-phone-bind', event => {
+    const reason = event.payload?.reason;
+    if (reason === 'no_phones') {
+      openPhoneBindPage('startup').catch(console.error);
+      return;
+    }
+    if (reason === 'all_expired') {
+      openPhoneBindPage('rebind').catch(console.error);
+      return;
+    }
+    openPhoneBindPage('rebind').catch(console.error);
   });
 
   // 监听风控触发事件

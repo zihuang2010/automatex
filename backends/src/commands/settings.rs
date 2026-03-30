@@ -7,7 +7,7 @@ pub async fn get_settings(state: tauri::State<'_, AppState>) -> Result<serde_jso
 
     use constants::{mqtt_default, setting_key};
     Ok(serde_json::json!({
-        setting_key::MQTT_HOST: setting_or(&s, setting_key::MQTT_HOST, ""),
+        setting_key::MQTT_HOST: setting_or(&s, setting_key::MQTT_HOST, mqtt_default::host()),
         setting_key::MQTT_PORT: setting_or(&s, setting_key::MQTT_PORT, mqtt_default::port()),
         setting_key::MQTT_CLIENT_ID: s.get(setting_key::MQTT_CLIENT_ID).cloned()
             .unwrap_or_else(|| crate::utils::generate_machine_client_id()),

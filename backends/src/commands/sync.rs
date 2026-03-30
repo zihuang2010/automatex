@@ -8,7 +8,6 @@ pub async fn sync_tasks_by_phones(
     state: tauri::State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
-    let http = state.http()?;
     let engine = state.engine()?;
 
     let s = state.db.get_all_settings().await;
@@ -16,6 +15,37 @@ pub async fn sync_tasks_by_phones(
         .get(constants::setting_key::MQTT_CLIENT_ID)
         .cloned()
         .unwrap_or_else(|| utils::generate_machine_client_id());
+
+    let old_phones: Vec<String> = serde_json::from_str(
+        &state
+            .db
+            .get_setting(constants::setting_key::SYNCED_PHONES)
+            .await
+            .unwrap_or_default(),
+    )
+    .unwrap_or_default();
+
+    if phones.is_empty() {
+        if !old_phones.is_empty() {
+            eprintln!("[sync] 收到空手机号同步请求，执行本地清理: {:?}", old_phones);
+            engine.handle_phones_unbind(old_phones).await;
+        }
+
+        state.db.set_setting(constants::setting_key::SYNCED_PHONES, "[]").await;
+        let _ =
+            app_handle.emit(constants::tauri_event::ACCOUNT_SYNC_CHANGED, serde_json::json!({ "phones": [] }));
+
+        engine.reload_tasks().await;
+        engine.force_emit_update().await;
+
+        return Ok(serde_json::json!({
+            "status": constants::response::OK,
+            "phones": 0,
+            "tasks": 0,
+        }));
+    }
+
+    let http = state.http()?;
 
     let bind_req =
         http::PhoneBindRequest { client_id: client_id.clone(), phones: phones.clone(), force };
@@ -32,14 +62,6 @@ pub async fn sync_tasks_by_phones(
     let bound_phones = if force { phones.clone() } else { bind_resp.bound };
 
     // 清理被移除的手机号
-    let old_phones: Vec<String> = serde_json::from_str(
-        &state
-            .db
-            .get_setting(constants::setting_key::SYNCED_PHONES)
-            .await
-            .unwrap_or_default(),
-    )
-    .unwrap_or_default();
     let removed_phones: Vec<String> =
         old_phones.into_iter().filter(|p| !bound_phones.contains(p)).collect();
     if !removed_phones.is_empty() {

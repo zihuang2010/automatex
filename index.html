@@ -343,8 +343,15 @@
                 <span class="material-symbols-outlined">sync_alt</span>
               </div>
               <div>
-                <h2 class="text-s800 font-mono text-xl font-bold tracking-tight">任务同步过渡</h2>
-                <p class="text-s400 text-sm tracking-wide">正在进入多端任务检索流程</p>
+                <h2
+                  id="transition-title"
+                  class="text-s800 font-mono text-xl font-bold tracking-tight"
+                >
+                  任务同步过渡
+                </h2>
+                <p id="transition-subtitle" class="text-s400 text-sm tracking-wide">
+                  正在进入多端任务检索流程
+                </p>
               </div>
             </div>
           </div>
@@ -392,7 +399,7 @@
                   >
                     lightbulb
                   </span>
-                  <span>
+                  <span id="transition-helper">
                     系统将根据填写的号码自动匹配当前任务队列，请确保设备均已登录并处于在线状态。
                   </span>
                 </p>
@@ -453,7 +460,7 @@
                 class="bg-blue hover:bg-blue-dark shadow-blue/20 flex items-center gap-2 rounded-lg px-8 py-2.5 font-bold text-white shadow-lg transition-all active:scale-[0.98]"
               >
                 <span class="material-symbols-outlined text-lg">sync</span>
-                <span class="font-mono">开始同步</span>
+                <span id="transition-submit-text" class="font-mono">开始同步</span>
               </button>
             </div>
           </div>
@@ -641,7 +648,7 @@
                     class="flex w-full items-center justify-center gap-1.5 rounded-lg bg-gradient-to-r from-blue-500 to-indigo-500 px-4 py-2 text-[12px] font-bold text-white shadow-sm transition-all hover:shadow-md active:scale-[0.98]"
                   >
                     <span class="material-symbols-outlined text-[16px]">add</span>
-                    添加账号
+                    添加/修改账号
                   </button>
                 </div>
               </div>
@@ -1493,307 +1500,20 @@
       </div>
     </div>
 
-    <!-- ===== 投屏抽屉 ===== -->
-    <div id="mirror-modal" class="pointer-events-none fixed inset-0 z-[2000]" style="display: none">
-      <div
-        id="mirror-backdrop"
-        class="pointer-events-auto absolute inset-0 opacity-0 transition-opacity duration-300"
-        style="background: rgba(0, 0, 0, 0.35); backdrop-filter: blur(3px)"
-      ></div>
-
-      <!-- 右侧抽屉面板 -->
-      <div
-        id="mirror-drawer"
-        class="pointer-events-auto absolute top-0 right-0 flex h-full translate-x-full items-center pr-6 pl-4 transition-transform duration-300 ease-out"
-      >
-        <div class="flex flex-col items-center gap-3">
-          <!-- 信息栏（毛玻璃 + 蓝色装饰线） -->
-          <div
-            class="flex w-full items-center justify-between rounded-xl px-3 py-2"
-            style="
-              background: rgba(15, 23, 42, 0.6);
-              backdrop-filter: blur(12px);
-              border: 1px solid rgba(59, 130, 246, 0.1);
-              border-top: 1px solid rgba(59, 130, 246, 0.25);
-            "
-          >
-            <div class="flex items-center gap-2">
-              <span
-                class="material-symbols-outlined fill-1 text-blue-400"
-                style="font-size: 16px; filter: drop-shadow(0 0 6px rgba(59, 130, 246, 0.4))"
-              >
-                cast
-              </span>
-              <span class="text-xs font-bold text-slate-200" id="mirror-title">设备投屏</span>
-              <span
-                class="rounded-full px-2 py-0.5 text-[10px] font-semibold text-blue-300"
-                id="mirror-status"
-                style="
-                  background: rgba(59, 130, 246, 0.12);
-                  border: 1px solid rgba(59, 130, 246, 0.2);
-                "
-              >
-                连接中…
-              </span>
-            </div>
-            <button
-              id="mirror-close"
-              title="关闭投屏"
-              class="flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border-none transition-all duration-200"
-              style="background: rgba(248, 113, 113, 0.08); color: rgba(248, 113, 113, 0.6)"
-              onmouseenter="
-                this.style.background = 'rgba(248, 113, 113, 0.2)';
-                this.style.color = 'rgba(248, 113, 113, 1)';
-                this.style.transform = 'scale(1.1)';
-              "
-              onmouseleave="
-                this.style.background = 'rgba(248, 113, 113, 0.08)';
-                this.style.color = 'rgba(248, 113, 113, 0.6)';
-                this.style.transform = 'scale(1)';
-              "
-            >
-              <span class="material-symbols-outlined" style="font-size: 15px">close</span>
-            </button>
-          </div>
-
-          <!-- 手机外壳（亮色描边 + 蓝色光晕，深色背景下清晰可见） -->
-          <div
-            class="relative flex flex-col rounded-[40px] p-[3px]"
-            style="
-              background: linear-gradient(
-                145deg,
-                rgba(100, 116, 139, 0.5),
-                rgba(51, 65, 85, 0.4) 40%,
-                rgba(30, 41, 59, 0.5)
-              );
-              box-shadow:
-                0 0 0 1px rgba(148, 163, 184, 0.2),
-                inset 0 1px 0 rgba(255, 255, 255, 0.08),
-                0 25px 60px -12px rgba(0, 0, 0, 0.7),
-                0 0 40px -10px rgba(59, 130, 246, 0.15),
-                0 0 80px -20px rgba(59, 130, 246, 0.06);
-            "
-          >
-            <div
-              class="flex flex-col rounded-[38px] px-1 py-1"
-              style="background: linear-gradient(180deg, rgba(15, 23, 42, 0.98), rgba(2, 6, 23, 1))"
-            >
-              <!-- 听筒 Dynamic Island（蓝色微光） -->
-              <div class="flex h-6 items-center justify-center gap-2 py-1.5">
-                <div
-                  class="flex items-center gap-1.5 rounded-full px-3 py-0.5"
-                  style="
-                    background: rgba(15, 23, 42, 0.8);
-                    box-shadow:
-                      inset 0 1px 3px rgba(0, 0, 0, 0.5),
-                      0 0 8px rgba(59, 130, 246, 0.04);
-                  "
-                >
-                  <div
-                    class="h-0.5 w-8 rounded-full"
-                    style="background: rgba(51, 65, 85, 0.6)"
-                  ></div>
-                  <div
-                    class="h-1.5 w-1.5 rounded-full"
-                    style="
-                      background: rgba(59, 130, 246, 0.3);
-                      border: 1px solid rgba(59, 130, 246, 0.15);
-                      box-shadow: 0 0 6px rgba(59, 130, 246, 0.3);
-                    "
-                  ></div>
-                </div>
-              </div>
-
-              <!-- 屏幕 -->
-              <div
-                id="mirror-video-wrap"
-                class="relative overflow-hidden rounded-2xl bg-black"
-                style="aspect-ratio: 9 / 19.5; height: 78vh; max-height: 740px; min-height: 420px"
-              >
-                <canvas
-                  id="scrcpy-canvas"
-                  class="h-full w-full cursor-crosshair object-contain"
-                ></canvas>
-                <!-- 隐藏文本输入框（IME 中文输入 + 粘贴） -->
-                <input
-                  id="mirror-text-input"
-                  type="text"
-                  class="pointer-events-none absolute top-0 left-0 h-0 w-0 opacity-0"
-                  autocomplete="off"
-                  autocorrect="off"
-                  autocapitalize="off"
-                  spellcheck="false"
-                />
-                <!-- 加载占位 -->
-                <div
-                  id="mirror-loading"
-                  class="absolute inset-0 flex flex-col items-center justify-center gap-4"
-                  style="
-                    background: radial-gradient(
-                      ellipse at center,
-                      rgba(15, 23, 42, 0.95),
-                      rgba(0, 0, 0, 0.98)
-                    );
-                  "
-                >
-                  <!-- 旋转光环 + 中心图标 -->
-                  <div class="relative flex h-20 w-20 items-center justify-center">
-                    <!-- 外圈旋转 -->
-                    <div class="absolute inset-0 rounded-full border-2 border-blue-500/20"></div>
-                    <div
-                      class="absolute inset-0 rounded-full border-2 border-transparent border-t-blue-400 border-r-blue-400/50"
-                      style="animation: mirror-spin 1.2s linear infinite"
-                    ></div>
-                    <!-- 脉冲扩散 -->
-                    <div
-                      class="absolute inset-[-4px] rounded-full border border-blue-400/10"
-                      style="animation: mirror-ripple 2s ease-out infinite"
-                    ></div>
-                    <div
-                      class="absolute inset-[-4px] rounded-full border border-blue-400/10"
-                      style="animation: mirror-ripple 2s ease-out infinite 1s"
-                    ></div>
-                    <!-- 中心图标 -->
-                    <span
-                      class="material-symbols-outlined text-blue-400"
-                      style="
-                        font-size: 28px;
-                        animation: mirror-icon-pulse 1.5s ease-in-out infinite;
-                        font-variation-settings: 'FILL' 1;
-                        filter: drop-shadow(0 0 8px rgba(59, 130, 246, 0.4));
-                      "
-                    >
-                      cast
-                    </span>
-                  </div>
-                  <!-- 状态文字 -->
-                  <div class="flex flex-col items-center gap-1.5">
-                    <span class="text-xs font-medium text-slate-400" id="mirror-loading-text">
-                      正在连接设备…
-                    </span>
-                    <!-- 三点跳动 -->
-                    <div class="flex gap-1">
-                      <div
-                        class="h-1 w-1 rounded-full bg-blue-400/60"
-                        style="animation: mirror-dot 1.2s ease-in-out infinite"
-                      ></div>
-                      <div
-                        class="h-1 w-1 rounded-full bg-blue-400/60"
-                        style="animation: mirror-dot 1.2s ease-in-out infinite 0.2s"
-                      ></div>
-                      <div
-                        class="h-1 w-1 rounded-full bg-blue-400/60"
-                        style="animation: mirror-dot 1.2s ease-in-out infinite 0.4s"
-                      ></div>
-                    </div>
-                  </div>
-                </div>
-                <style>
-                  @keyframes mirror-spin {
-                    to {
-                      transform: rotate(360deg);
-                    }
-                  }
-
-                  @keyframes mirror-ripple {
-                    0% {
-                      transform: scale(1);
-                      opacity: 0.4;
-                    }
-
-                    100% {
-                      transform: scale(1.6);
-                      opacity: 0;
-                    }
-                  }
-
-                  @keyframes mirror-icon-pulse {
-                    0%,
-                    100% {
-                      opacity: 0.7;
-                      transform: scale(1);
-                    }
-
-                    50% {
-                      opacity: 1;
-                      transform: scale(1.1);
-                    }
-                  }
-
-                  @keyframes mirror-dot {
-                    0%,
-                    100% {
-                      opacity: 0.3;
-                      transform: translateY(0);
-                    }
-
-                    50% {
-                      opacity: 1;
-                      transform: translateY(-3px);
-                    }
-                  }
-                </style>
-              </div>
-
-              <!-- Android 导航栏（深蓝色调 + 微光边框） -->
-              <div
-                class="flex h-10 items-center justify-center gap-12 rounded-b-[30px] py-2"
-                style="background: linear-gradient(180deg, transparent, rgba(15, 23, 42, 0.3))"
-              >
-                <button
-                  id="mirror-back"
-                  title="返回"
-                  class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border-none bg-transparent transition-all duration-200"
-                  style="color: rgba(148, 163, 184, 0.5)"
-                  onmouseenter="
-                    this.style.color = 'rgba(147, 197, 253, 0.9)';
-                    this.style.background = 'rgba(59, 130, 246, 0.1)';
-                  "
-                  onmouseleave="
-                    this.style.color = 'rgba(148, 163, 184, 0.5)';
-                    this.style.background = 'transparent';
-                  "
-                >
-                  <span class="material-symbols-outlined" style="font-size: 18px">arrow_back</span>
-                </button>
-                <button
-                  id="mirror-home"
-                  title="主页"
-                  class="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border-none bg-transparent transition-all duration-200"
-                  style="color: rgba(148, 163, 184, 0.5)"
-                  onmouseenter="
-                    this.style.color = 'rgba(147, 197, 253, 0.9)';
-                    this.style.background = 'rgba(59, 130, 246, 0.1)';
-                  "
-                  onmouseleave="
-                    this.style.color = 'rgba(148, 163, 184, 0.5)';
-                    this.style.background = 'transparent';
-                  "
-                >
-                  <span class="material-symbols-outlined" style="font-size: 22px">circle</span>
-                </button>
-                <button
-                  title="多任务"
-                  class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border-none bg-transparent transition-all duration-200"
-                  style="color: rgba(148, 163, 184, 0.5)"
-                  onmouseenter="
-                    this.style.color = 'rgba(147, 197, 253, 0.9)';
-                    this.style.background = 'rgba(59, 130, 246, 0.1)';
-                  "
-                  onmouseleave="
-                    this.style.color = 'rgba(148, 163, 184, 0.5)';
-                    this.style.background = 'transparent';
-                  "
-                >
-                  <span class="material-symbols-outlined" style="font-size: 16px">
-                    check_box_outline_blank
-                  </span>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
+    <!-- 全局投屏悬浮窗口容器（pointer-events:none 不阻挡主界面） -->
+    <div
+      id="mirror-windows-container"
+      style="position: fixed; inset: 0; pointer-events: none; z-index: 1000; overflow: visible"
+    >
+      <input
+        id="mirror-text-input"
+        type="text"
+        class="mirror-hidden-input"
+        autocomplete="off"
+        autocorrect="off"
+        autocapitalize="off"
+        spellcheck="false"
+      />
     </div>
 
     <script type="module" src="/frontends/main.ts"></script>

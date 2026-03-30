@@ -4,9 +4,19 @@
  * 任务同步过渡页：首次启动或无本地手机号时，
  * 在开屏动画结束后显示，让用户输入手机号并开始同步任务。
  */
-
 import { invoke } from '@tauri-apps/api/core';
+
 import { $ } from './utils';
+
+export interface PhoneBindFlowOptions {
+  title?: string;
+  subtitle?: string;
+  helperText?: string;
+  submitLabel?: string;
+  prefillPhones?: string[];
+  forceSync?: boolean;
+  emptyTasksMessage?: string;
+}
 
 /* ===== 手机号验证 ===== */
 
@@ -27,34 +37,68 @@ function parsePhones(raw: string): string[] {
 
 /** 检查是否需要显示过渡页（无已同步手机号） */
 export async function needsTransition(): Promise<boolean> {
+  const phones = await getSyncedPhones();
+  return phones.length === 0;
+}
+
+export async function getSyncedPhones(): Promise<string[]> {
   try {
     const settings = await invoke<Record<string, string>>('get_settings');
     const phonesStr = settings.synced_phones || '[]';
-    const phones: string[] = JSON.parse(phonesStr);
-    return phones.length === 0;
+    return JSON.parse(phonesStr);
   } catch (e) {
-    console.warn('[transition] 读取设置失败，默认显示过渡页:', e);
-    return true;
+    console.warn('[transition] 读取设置失败，返回空手机号列表:', e);
+    return [];
   }
 }
 
 /** 显示过渡页，返回 Promise 在用户完成操作后 resolve */
 export function showTransition(): Promise<void> {
+  return showPhoneBindFlow();
+}
+
+export function isPhoneBindFlowVisible(): boolean {
+  const el = $('#transition');
+  return Boolean(el && el.style.display !== 'none');
+}
+
+export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<void> {
   return new Promise(resolve => {
     const el = $('#transition')!;
     const app = $('#app')!;
+    const textarea = el.querySelector('#phone-numbers') as HTMLTextAreaElement;
+    const errorEl = el.querySelector('#transition-error') as HTMLElement;
+    const errorTextEl = errorEl.querySelector('span:last-child') as HTMLElement | null;
+    const counterEl = el.querySelector('#phone-counter') as HTMLElement;
+    const titleEl = el.querySelector('#transition-title') as HTMLElement | null;
+    const subtitleEl = el.querySelector('#transition-subtitle') as HTMLElement | null;
+    const helperEl = el.querySelector('#transition-helper') as HTMLElement | null;
+    const submitTextEl = el.querySelector('#transition-submit-text') as HTMLElement | null;
+    const resetBtn = el.querySelector('#btn-sync-reset') as HTMLButtonElement | null;
+    const submitBtn = el.querySelector('#btn-sync-start') as HTMLButtonElement | null;
+    const initialPhones = options.prefillPhones ?? [];
+    const forceSync = options.forceSync ?? false;
+    const emptyTasksMessage =
+      options.emptyTasksMessage || '当前绑定手机号暂无任务，请修改手机号后重新同步。';
+
+    if (titleEl) titleEl.textContent = options.title || '任务同步过渡';
+    if (subtitleEl) subtitleEl.textContent = options.subtitle || '正在进入多端任务检索流程';
+    if (helperEl)
+      helperEl.textContent =
+        options.helperText ||
+        '系统将根据填写的号码自动匹配当前任务队列，请确保设备均已登录并处于在线状态。';
+    if (submitTextEl) submitTextEl.textContent = options.submitLabel || '开始同步';
+    textarea.value = initialPhones.join('\n');
+    hideError();
 
     // 显示过渡页
     el.style.display = 'flex';
+    el.classList.remove('out');
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         el.classList.add('show');
       });
     });
-
-    const textarea = el.querySelector('#phone-numbers') as HTMLTextAreaElement;
-    const errorEl = el.querySelector('#transition-error') as HTMLElement;
-    const counterEl = el.querySelector('#phone-counter') as HTMLElement;
 
     // 更新手机号计数
     function updateCounter() {
@@ -77,7 +121,7 @@ export function showTransition(): Promise<void> {
     }
 
     function showError(msg: string) {
-      errorEl.textContent = msg;
+      if (errorTextEl) errorTextEl.textContent = msg;
       errorEl.style.display = 'flex';
     }
 
@@ -92,20 +136,31 @@ export function showTransition(): Promise<void> {
       app.classList.add('show');
       setTimeout(() => {
         el.style.display = 'none';
-        el.remove();
+        el.classList.remove('out');
       }, 500);
+      cleanup();
       resolve();
     }
 
-    // ── 事件绑定 ──
+    function cleanup() {
+      textarea.removeEventListener('input', onInput);
+      submitBtn?.removeEventListener('click', onSubmit);
+      resetBtn?.removeEventListener('click', onReset);
+    }
 
-    textarea.addEventListener('input', () => {
+    const onInput = () => {
       hideError();
       updateCounter();
-    });
+    };
 
-    // 开始同步
-    el.querySelector('#btn-sync-start')?.addEventListener('click', async () => {
+    const onReset = () => {
+      textarea.value = initialPhones.join('\n');
+      hideError();
+      updateCounter();
+      textarea.focus();
+    };
+
+    const onSubmit = async () => {
       const phones = parsePhones(textarea.value);
       if (phones.length === 0) {
         showError('请至少输入一个手机号');
@@ -132,13 +187,17 @@ export function showTransition(): Promise<void> {
           conflicts?: Array<{ phone: string; current_client: string }>;
         }>('sync_tasks_by_phones', {
           phones: valid,
-          force: false,
+          force: forceSync,
         });
 
         if (result.status === 'conflicts') {
           const conflictPhones = result.conflicts?.map(c => c.phone).join('、') || '';
           showError(`以下号码已在其他客户端绑定：${conflictPhones}。如需强制抢占，请重新提交。`);
-          // TODO: 可添加"强制抢占"按钮，调用 sync_tasks_by_phones(force=true)
+          return;
+        }
+
+        if ((result.tasks ?? 0) === 0) {
+          showError(emptyTasksMessage);
           return;
         }
 
@@ -147,14 +206,12 @@ export function showTransition(): Promise<void> {
       } catch (e) {
         showError(`同步失败: ${e}`);
       }
-    });
+    };
 
-    // 重置
-    el.querySelector('#btn-sync-reset')?.addEventListener('click', () => {
-      textarea.value = '';
-      hideError();
-      updateCounter();
-      textarea.focus();
-    });
+    textarea.addEventListener('input', onInput);
+    submitBtn?.addEventListener('click', onSubmit);
+    resetBtn?.addEventListener('click', onReset);
+    updateCounter();
+    textarea.focus();
   });
 }

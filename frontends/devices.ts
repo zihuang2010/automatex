@@ -10,6 +10,7 @@ let _onLoadTasksForDevice: ((serial: string) => void) | null = null;
 let _onShowDeviceInfo: ((serial: string) => void) | null = null;
 let _onStartMirror: ((serial: string) => void) | null = null;
 let _pendingRafId: number | null = null;
+let _deviceCache: DeviceRow[] = [];
 
 export function setDeviceCallbacks(
   onLoadTasks: (serial: string) => void,
@@ -28,6 +29,7 @@ export async function refreshDevices(): Promise<DeviceRow[]> {
 
   try {
     const devs: DeviceRow[] = await invoke('list_devices');
+    _deviceCache = devs;
     renderDeviceCards(devs);
 
     if (selectedDevice && !devs.some(d => d.serial === selectedDevice)) {
@@ -36,9 +38,29 @@ export async function refreshDevices(): Promise<DeviceRow[]> {
 
     return devs;
   } catch (e) {
+    _deviceCache = [];
     tree.innerHTML = `<div class="empty-hint text-red">错误: ${e}</div>`;
     return [];
   }
+}
+
+export function getCachedDeviceResolution(
+  serial: string,
+): { width: number; height: number } | null {
+  const device = _deviceCache.find(item => item.serial === serial);
+  const raw = device?.display_resolution?.trim();
+  if (!raw) return null;
+
+  const match = raw.match(/(\d+)\s*[x×]\s*(\d+)/i);
+  if (!match) return null;
+
+  const width = Number.parseInt(match[1], 10);
+  const height = Number.parseInt(match[2], 10);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return null;
+  }
+
+  return { width, height };
 }
 
 function renderDeviceCards(devs: DeviceRow[]) {
@@ -109,9 +131,6 @@ function renderDeviceCards(devs: DeviceRow[]) {
             <span class="material-symbols-outlined icon-sm">device_thermostat</span>${temp}°C
           </span>
         </div>
-        <button class="dev-mirror-btn" data-mirror="${esc(d.serial)}" title="投屏">
-          <span class="material-symbols-outlined">cast</span>
-        </button>
       </div>
     </div>`;
   };

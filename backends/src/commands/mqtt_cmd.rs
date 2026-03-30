@@ -4,7 +4,7 @@ use crate::{constants, AppState};
 
 pub(crate) fn build_mqtt_config_from(s: &std::collections::HashMap<String, String>) -> MqttConfig {
     use constants::{mqtt_default, setting_key};
-    let host = setting_or(s, setting_key::MQTT_HOST, mqtt_default::FALLBACK_HOST);
+    let host = setting_or(s, setting_key::MQTT_HOST, mqtt_default::host());
     let port: u16 = s
         .get(setting_key::MQTT_PORT)
         .and_then(|v| v.parse().ok())

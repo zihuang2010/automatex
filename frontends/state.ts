@@ -1,10 +1,54 @@
-import { Task } from './types';
 import { TaskStatus } from './constants';
+import { Task } from './types';
 
 export let selectedDevice: string | null = null;
 export let globalQueue: Task[] = [];
 export let activeTask: Task | null = null;
 export let activeCityIdx = 0;
+const TASK_ORDER_STORAGE_KEY = 'automatex.task_order';
+
+function readTaskOrder(): string[] {
+  try {
+    const raw = localStorage.getItem(TASK_ORDER_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeTaskOrder(order: string[]) {
+  try {
+    localStorage.setItem(TASK_ORDER_STORAGE_KEY, JSON.stringify(order));
+  } catch {
+    /* ignore localStorage failures */
+  }
+}
+
+function applyTaskOrder(tasks: Task[]): Task[] {
+  if (tasks.length <= 1) {
+    writeTaskOrder(tasks.map(task => task.id));
+    return [...tasks];
+  }
+
+  const savedOrder = readTaskOrder();
+  const taskIds = tasks.map(task => task.id);
+  const normalizedOrder = [
+    ...savedOrder.filter(id => taskIds.includes(id)),
+    ...taskIds.filter(id => !savedOrder.includes(id)),
+  ];
+
+  const orderMap = new Map(normalizedOrder.map((id, index) => [id, index]));
+  const orderedTasks = [...tasks].sort(
+    (a, b) =>
+      (orderMap.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+      (orderMap.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+  );
+
+  writeTaskOrder(orderedTasks.map(task => task.id));
+  return orderedTasks;
+}
 
 /* ===== State Mutation Functions ===== */
 
@@ -13,7 +57,7 @@ export function setSelectedDevice(serial: string | null) {
 }
 
 export function setGlobalQueue(tasks: Task[]) {
-  globalQueue = tasks;
+  globalQueue = applyTaskOrder(tasks);
 }
 
 export function setActiveTask(task: Task | null) {
@@ -22,6 +66,16 @@ export function setActiveTask(task: Task | null) {
 
 export function setActiveCityIdx(idx: number) {
   activeCityIdx = idx;
+}
+
+export function reorderGlobalQueue(newOrder: string[]) {
+  if (globalQueue.length === 0) return;
+  const orderedIds = [
+    ...newOrder.filter(id => globalQueue.some(task => task.id === id)),
+    ...globalQueue.map(task => task.id).filter(id => !newOrder.includes(id)),
+  ];
+  writeTaskOrder(orderedIds);
+  globalQueue = applyTaskOrder(globalQueue);
 }
 
 /* ===== Derived State (单一来源，避免重复实现) ===== */

@@ -1,0 +1,434 @@
+<!doctype html>
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+    <title>Premium Smartphone Showcase</title>
+    <!-- Tailwind CSS v3 CDN with plugins -->
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght@100..700,FILL@0..1&amp;display=swap"
+      rel="stylesheet"
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&amp;display=swap"
+      rel="stylesheet"
+    />
+    <style data-purpose="page-layout">
+      body {
+        margin: 0;
+        padding: 0;
+        /* Enhanced multi-colored mesh gradient background */
+        background-color: #f8fafc;
+        background-image:
+          radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.08) 0, transparent 50%),
+          radial-gradient(at 100% 0%, rgba(139, 92, 246, 0.08) 0, transparent 50%),
+          radial-gradient(at 100% 100%, rgba(244, 63, 94, 0.05) 0, transparent 50%),
+          radial-gradient(at 0% 100%, rgba(34, 197, 94, 0.05) 0, transparent 50%),
+          radial-gradient(at 50% 50%, rgba(255, 255, 255, 1) 0, transparent 100%);
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        font-family:
+          -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        padding-top: 80px; /* Increased top margin for vertical balance */
+      }
+
+      .showcase-unit {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        filter: drop-shadow(0 35px 60px rgba(0, 0, 0, 0.08));
+      }
+    </style>
+    <style data-purpose="phone-mockup-styles">
+      /* High-fidelity phone frame simulation with ultra-thin bezel and rim lighting */
+      .phone-container {
+        position: relative;
+        width: 400px;
+        height: 840px;
+        background: #0f172a;
+        border-radius: 54px;
+        padding: 7px;
+        box-shadow:
+          0 0 0 1px rgba(255, 255, 255, 0.1),
+          inset 0 0 1px 1px rgba(255, 255, 255, 0.15),
+          inset 0 10px 20px -10px rgba(255, 255, 255, 0.1); /* Soft rim light effect */
+        border: 1px solid #334155;
+        z-index: 10;
+      }
+
+      /* The actual screen content area */
+      .phone-screen {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        background: #ffffff;
+        border-radius: 46px;
+        overflow: hidden;
+        box-shadow: inset 0 0 4px rgba(0, 0, 0, 0.1);
+        display: flex;
+        flex-direction: column;
+      }
+
+      /* Dynamic Island */
+      .dynamic-island {
+        position: absolute;
+        top: 12px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 100px;
+        height: 28px;
+        background: #000;
+        border-radius: 20px;
+        z-index: 50;
+      }
+
+      /* Buttons on the side */
+      .side-button {
+        position: absolute;
+        background: #1e293b;
+        border-radius: 2px;
+      }
+      .power-btn {
+        right: -3px;
+        top: 180px;
+        width: 3px;
+        height: 70px;
+        border-left: 1px solid rgba(255, 255, 255, 0.1);
+      }
+      .volume-up {
+        left: -3px;
+        top: 140px;
+        width: 3px;
+        height: 45px;
+        border-right: 1px solid rgba(255, 255, 255, 0.1);
+      }
+      .volume-down {
+        left: -3px;
+        top: 200px;
+        width: 3px;
+        height: 45px;
+        border-right: 1px solid rgba(255, 255, 255, 0.1);
+      }
+
+      /* Refined glass reflection overlay */
+      .screen-reflection {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: linear-gradient(
+          135deg,
+          rgba(255, 255, 255, 0.15) 0%,
+          rgba(255, 255, 255, 0) 40%,
+          rgba(255, 255, 255, 0) 60%,
+          rgba(255, 255, 255, 0.05) 100%
+        );
+        pointer-events: none;
+        z-index: 40;
+      }
+
+      .status-bar {
+        height: 44px;
+        padding: 0 32px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 14px;
+        font-weight: 600;
+        color: #000;
+        z-index: 45;
+      }
+
+      .chat-list::-webkit-scrollbar {
+        display: none;
+      }
+    </style>
+    <style>
+      .info-panel {
+        width: 400px;
+        height: 60px;
+        background: rgba(255, 255, 255, 0.4);
+        backdrop-filter: blur(20px) saturate(180%);
+        -webkit-backdrop-filter: blur(20px) saturate(180%);
+        border: 1px solid rgba(255, 255, 255, 0.5);
+        border-radius: 24px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 20px;
+        margin-bottom: 24px;
+      }
+
+      .info-text-mono {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 11px;
+        letter-spacing: -0.01em;
+        color: #475569;
+      }
+
+      .close-btn {
+        width: 32px;
+        height: 32px;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.5);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #64748b;
+        transition: all 0.2s;
+        border: 1px solid rgba(0, 0, 0, 0.05);
+      }
+
+      .close-btn:hover {
+        background: rgba(255, 255, 255, 0.8);
+        color: #0f172a;
+        transform: scale(1.05);
+      }
+    </style>
+  </head>
+  <body>
+    <!-- BEGIN: Main Showcase Unit -->
+    <div class="showcase-unit">
+      <!-- BEGIN: Info Panel -->
+      <div class="info-panel">
+        <div class="flex flex-col">
+          <span
+            class="mb-1 text-[8px] leading-none font-bold tracking-widest text-slate-400 uppercase"
+          >
+            Device ID
+          </span>
+          <span class="info-text-mono font-medium text-slate-800">fbb84292</span>
+        </div>
+        <div
+          class="info-text-mono rounded-xl border border-white/40 bg-white/40 px-3 py-1.5 font-medium shadow-sm"
+        >
+          1080
+          <span class="opacity-30">×</span>
+          2400
+        </div>
+        <button class="close-btn">
+          <svg
+            fill="none"
+            height="16"
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2.5"
+            viewbox="0 0 24 24"
+            width="16"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <line x1="18" x2="6" y1="6" y2="18"></line>
+            <line x1="6" x2="18" y1="6" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+      <!-- END: Info Panel -->
+      <!-- BEGIN: Smartphone Mockup -->
+      <div class="phone-container" data-purpose="phone-mockup-frame">
+        <!-- Hardware details -->
+        <div class="side-button power-btn"></div>
+        <div class="side-button volume-up"></div>
+        <div class="side-button volume-down"></div>
+        <!-- Phone Screen -->
+        <div class="phone-screen" data-purpose="phone-display-area">
+          <!-- Sensor Area / Dynamic Island -->
+          <div class="dynamic-island"></div>
+          <!-- Subtle Glass Reflection -->
+          <div class="screen-reflection"></div>
+          <!-- Status Bar -->
+          <div class="status-bar">
+            <span>9:41</span>
+            <div class="flex items-center gap-1.5">
+              <span class="material-symbols-outlined text-sm">signal_cellular_4_bar</span>
+              <span class="material-symbols-outlined text-sm">wifi</span>
+              <span class="material-symbols-outlined text-lg">battery_full</span>
+            </div>
+          </div>
+          <!-- Header -->
+          <header class="flex items-center justify-between border-b border-slate-50 px-6 py-4">
+            <h1 class="text-2xl font-bold text-slate-900">Messages</h1>
+            <div class="flex gap-4">
+              <button
+                class="flex h-9 w-9 items-center justify-center rounded-full bg-slate-50 text-slate-600"
+              >
+                <span class="material-symbols-outlined text-xl">search</span>
+              </button>
+              <button class="h-9 w-9 overflow-hidden rounded-full border-2 border-white shadow-sm">
+                <img
+                  alt="Profile"
+                  class="h-full w-full object-cover"
+                  src="https://lh3.googleusercontent.com/aida-public/AB6AXuDUWV42WGzEHWd5KELaDNAWPT4YQdx-mx_dGPRm5Ff70R2wujBYKJc03qLKXkCesFmW2PoLzGPZlU7Rqs8ZRcCf2nzY5-3ZEi63Zy5xrPxcbNJrjPg_Mv0tiK7aa0PFc6eJ_VrJVqIjDwvKpt2VfLw0PuGTIYqouy_rYy3be3ciUy-uG0YRYcc8zK3VAw2Nc2Avl9_YxQ78M-S9FVf_FkFROvXQjFsG6kEyI6NYVy0DIjKGPtNMWOi8JcoSy2m_iVWOCXtJ8VlErFlP"
+                />
+              </button>
+            </div>
+          </header>
+          <!-- Chat List -->
+          <div class="chat-list flex-1 space-y-1 overflow-y-auto px-4 py-2">
+            <!-- Chat Item 1 -->
+            <div
+              class="flex cursor-pointer items-center gap-4 rounded-2xl p-3 transition-colors hover:bg-slate-50"
+            >
+              <div class="relative flex-shrink-0">
+                <img
+                  alt="User"
+                  class="h-12 w-12 rounded-full object-cover"
+                  src="https://lh3.googleusercontent.com/aida-public/AB6AXuAVUMnR0uqDaWaIg3osyF2jVm0hSJJywhpsUjrPZ6wj2Wkb_FfjmTLwwCPVXXvFUvWOUYwLU8EZeoWwz6WDidokSTimeHxDnItpnkjgH0pUaftjkZCKuEZpZ_xtvAavttCYNXDm3NJhNlQF2-Ps1uq0TwhLsxMrw4et9L01y6TEk9mWD-BuMYmuEPNZWJ8A_ThoAGF75-1zsAFyRW2L_ceaTz935hMgGDahOKUsrshohJ_7HKiXKX8veZjnXbrqK-iT-UA9Hx34NmEb"
+                />
+                <div
+                  class="absolute right-0 bottom-0 h-3 w-3 rounded-full border-2 border-white bg-green-500"
+                ></div>
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-baseline justify-between">
+                  <h3 class="truncate text-sm font-bold text-slate-900">Alex Rivera</h3>
+                  <span class="text-[10px] text-slate-400">10:24 AM</span>
+                </div>
+                <div class="mt-0.5 flex items-center justify-between">
+                  <p class="truncate pr-4 text-xs text-slate-500">
+                    See you at the office tomorrow!
+                  </p>
+                  <span
+                    class="min-w-[16px] rounded-full bg-blue-600 px-1.5 py-0.5 text-center text-[9px] font-bold text-white"
+                  >
+                    2
+                  </span>
+                </div>
+              </div>
+            </div>
+            <!-- Chat Item 2 -->
+            <div
+              class="flex cursor-pointer items-center gap-4 rounded-2xl p-3 transition-colors hover:bg-slate-50"
+            >
+              <div class="relative flex-shrink-0">
+                <img
+                  alt="User"
+                  class="h-12 w-12 rounded-full object-cover"
+                  src="https://lh3.googleusercontent.com/aida-public/AB6AXuBcfmIXd0vwEVvHefCY3fMogasz2OOxKxWGvkQYFJyaS39cnFnN1u6wk3xsWwwoaADcgupmQISzSCsnLNQmrkU7WGsodblGRL-BUEzHi67UAkOhrVrJG8ZGg7G4idJ4e9WrzMm2vp4R9AdRMf2co3MJgdrhZ49ACuvDGfOxoNJAz4LG2FoVKX6mwUZOEThPhbScQZ-eAkvjsRXaYVpDLUTVPTYXg4UzMdEUhj6jeFmZ_FFplxBK9TJQvCvRtihv9GNU9emZ_jXDVvYR"
+                />
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-baseline justify-between">
+                  <h3 class="truncate text-sm font-bold text-slate-900">Sarah Chen</h3>
+                  <span class="text-[10px] text-slate-400">9:15 AM</span>
+                </div>
+                <p class="mt-0.5 truncate text-xs text-slate-500">
+                  The design files are ready for review.
+                </p>
+              </div>
+            </div>
+            <!-- Chat Item 3 -->
+            <div
+              class="flex cursor-pointer items-center gap-4 rounded-2xl p-3 transition-colors hover:bg-slate-50"
+            >
+              <div class="relative flex-shrink-0">
+                <div
+                  class="flex h-12 w-12 items-center justify-center rounded-full bg-indigo-100 text-base font-bold text-indigo-600"
+                >
+                  DG
+                </div>
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-baseline justify-between">
+                  <h3 class="truncate text-sm font-bold text-slate-900">Design Group</h3>
+                  <span class="text-[10px] text-slate-400">Yesterday</span>
+                </div>
+                <p class="mt-0.5 truncate text-xs text-slate-500">
+                  <span class="font-medium text-slate-900">Jordan:</span>
+                  Love the new icons!
+                </p>
+              </div>
+            </div>
+            <!-- Chat Item 4 -->
+            <div
+              class="flex cursor-pointer items-center gap-4 rounded-2xl p-3 transition-colors hover:bg-slate-50"
+            >
+              <div class="relative flex-shrink-0">
+                <img
+                  alt="User"
+                  class="h-12 w-12 rounded-full object-cover"
+                  src="https://lh3.googleusercontent.com/aida-public/AB6AXuBeMr8uw0OGEke6McyWROeZI-D-rsHt-xfOVJGjWe_whCmbcezNKsBU8d3onNxPHd3QyF-rCP6ejkxye8DQBFRf__VXDhnO10qBkwrxF4F-zOlZ8GXqacbqbYvjVh6y7W1zvUbWfLQ1eWftBhW4hf_QhuAJrruK2HsdiSGNtweqK5T4Se-NYXJskq8HE1Kg0lppcggyrjRoUIfG9TkkKKhNDecOnNhjqNg5tMsO7RsREHaQwsSEQJWir6uNhLd09K1YxwGms9HlLygG"
+                />
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-baseline justify-between">
+                  <h3 class="truncate text-sm font-bold text-slate-900">Michael Scott</h3>
+                  <span class="text-[10px] text-slate-400">Yesterday</span>
+                </div>
+                <p class="mt-0.5 truncate text-xs text-slate-500">Sent an attachment</p>
+              </div>
+            </div>
+            <!-- Chat Item 5 -->
+            <div
+              class="flex cursor-pointer items-center gap-4 rounded-2xl p-3 transition-colors hover:bg-slate-50"
+            >
+              <div class="relative flex-shrink-0">
+                <img
+                  alt="User"
+                  class="h-12 w-12 rounded-full object-cover"
+                  src="https://lh3.googleusercontent.com/aida-public/AB6AXuDfkmtnOcgdy34pJWa6hgL5jHUGhSVTWO8cWOTMZh0HRrWatmQu_388ibjlB7SUxMp5Ou4AGlyPTwi2YIG4fvI7mT3-I3yG5aRCPQQkkZPCw3BkQdWO1uzVnG9WNRorWmrnfE41wCRVD8SO2XBBDWjRNak812KrAj99laSr37pjKh48gZQgNwPzw1zAzNSZ_FIvxz4a_u_bjy7Pw295XIvWcI5o_CGIgNnUp3ZU8p_c4EEiZ0VwD8XoIouQR2qJD0BemaelexVkcMj0"
+                />
+                <div
+                  class="absolute right-0 bottom-0 h-3 w-3 rounded-full border-2 border-white bg-green-500"
+                ></div>
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-baseline justify-between">
+                  <h3 class="truncate text-sm font-bold text-slate-900">Emma Wilson</h3>
+                  <span class="text-[10px] text-slate-400">Monday</span>
+                </div>
+                <p class="mt-0.5 truncate text-xs text-slate-500">Are we still on for lunch?</p>
+              </div>
+            </div>
+          </div>
+          <!-- Navigation Bar -->
+          <nav
+            class="flex items-center justify-between border-t border-slate-100 bg-white px-6 pt-3 pb-8"
+          >
+            <div class="flex flex-col items-center gap-1 text-blue-600">
+              <span class="material-symbols-outlined font-variation-fill text-xl">chat_bubble</span>
+              <span class="text-[10px] font-bold">Chats</span>
+            </div>
+            <div class="flex flex-col items-center gap-1 text-slate-400">
+              <span class="material-symbols-outlined text-xl">contacts</span>
+              <span class="text-[10px] font-medium">Contacts</span>
+            </div>
+            <div class="flex flex-col items-center gap-1 text-slate-400">
+              <span class="material-symbols-outlined text-xl">explore</span>
+              <span class="text-[10px] font-medium">Discover</span>
+            </div>
+            <div class="flex flex-col items-center gap-1 text-slate-400">
+              <span class="material-symbols-outlined text-xl">person</span>
+              <span class="text-[10px] font-medium">Me</span>
+            </div>
+          </nav>
+        </div>
+      </div>
+      <!-- END: Smartphone Mockup -->
+    </div>
+    <!-- END: Main Showcase Unit -->
+    <!-- BEGIN: Secondary Info -->
+    <section class="mt-16 pb-20 text-center">
+      <h2 class="text-2xl font-bold tracking-tight text-slate-800">Interface Preview</h2>
+      <p class="mt-1 text-sm text-slate-500">Real-time mobile experience on flagship hardware</p>
+      <div class="mt-4 flex justify-center gap-3">
+        <span
+          class="rounded-full border border-slate-200 bg-white/60 px-4 py-1.5 text-[10px] font-bold tracking-wider text-slate-500 uppercase shadow-sm backdrop-blur-md"
+        >
+          iOS 17 Compatible
+        </span>
+        <span
+          class="rounded-full border border-slate-200 bg-white/60 px-4 py-1.5 text-[10px] font-bold tracking-wider text-slate-500 uppercase shadow-sm backdrop-blur-md"
+        >
+          Retina Display
+        </span>
+      </div>
+    </section>
+    <!-- END: Secondary Info -->
+  </body>
+</html>
