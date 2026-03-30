@@ -137,7 +137,7 @@ impl MqttManager {
                             Event::Incoming(Incoming::Publish(publish)) => {
                                 let topic = publish.topic.clone();
                                 let payload = String::from_utf8_lossy(&publish.payload).to_string();
-                                route_message(&topic, &payload, &app_handle, connect_ts);
+                                route_message(&topic, &payload, &app_handle, &cid, connect_ts);
                             },
                             Event::Incoming(Incoming::Disconnect) => {
                                 was_connected = false;

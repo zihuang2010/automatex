@@ -9,6 +9,7 @@ import { $, esc, getDeviceName, timeAgo } from './utils';
 let _onLoadTasksForDevice: ((serial: string) => void) | null = null;
 let _onShowDeviceInfo: ((serial: string) => void) | null = null;
 let _onStartMirror: ((serial: string) => void) | null = null;
+let _pendingRafId: number | null = null;
 
 export function setDeviceCallbacks(
   onLoadTasks: (serial: string) => void,
@@ -227,20 +228,29 @@ function renderDeviceCards(devs: DeviceRow[]) {
       <div class="dev-section-body p-2 space-y-2">${offlineDevs.length ? offlineDevs.map(renderOfflineCard).join('') : emptyBody}</div>
     </div>`;
 
-  const sectionState = new Map<string, { collapsed: boolean; hadDevices: boolean }>();
-  tree.querySelectorAll('.dev-section').forEach(el => {
-    const label = el.querySelector('.dev-section-header span:last-child')?.textContent?.trim();
-    if (!label) return;
-    const body = el.querySelector('.dev-section-body');
-    const hadDevices = body ? body.querySelectorAll('.dev-card').length > 0 : false;
-    sectionState.set(label, { collapsed: el.classList.contains('collapsed'), hadDevices });
-  });
-
-  // 前端优化：innerHTML 去重 + requestAnimationFrame 分帧渲染
-  if (tree.innerHTML === html) return;
-
   // 使用 rAF 避免在 JS 主线程繁忙时强制同步重排
-  requestAnimationFrame(() => {
+  // 取消上一次挂起的 rAF，避免竞态（task://update 和 devices-changed 几乎同时触发时）
+  if (_pendingRafId) {
+    cancelAnimationFrame(_pendingRafId);
+    _pendingRafId = null;
+  }
+
+  _pendingRafId = requestAnimationFrame(() => {
+    _pendingRafId = null;
+
+    // 在 rAF 回调内采集折叠状态（此时读取的是最新 DOM，避免竞态）
+    const sectionState = new Map<string, { collapsed: boolean; hadDevices: boolean }>();
+    tree.querySelectorAll('.dev-section').forEach(el => {
+      const label = el.querySelector('.dev-section-header span:last-child')?.textContent?.trim();
+      if (!label) return;
+      const body = el.querySelector('.dev-section-body');
+      const hadDevices = body ? body.querySelectorAll('.dev-card').length > 0 : false;
+      sectionState.set(label, { collapsed: el.classList.contains('collapsed'), hadDevices });
+    });
+
+    // innerHTML 去重：在 rAF 内部对比，确保比较的是当前真实 DOM
+    if (tree.innerHTML === html) return;
+
     tree.innerHTML = html;
 
     tree.querySelectorAll('.dev-section').forEach(el => {
