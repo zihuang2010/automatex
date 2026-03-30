@@ -32,8 +32,10 @@ pub async fn sync_tasks_by_phones(
         }
 
         state.db.set_setting(constants::setting_key::SYNCED_PHONES, "[]").await;
-        let _ =
-            app_handle.emit(constants::tauri_event::ACCOUNT_SYNC_CHANGED, serde_json::json!({ "phones": [] }));
+        let _ = app_handle.emit(
+            constants::tauri_event::ACCOUNT_SYNC_CHANGED,
+            serde_json::json!({ "phones": [] }),
+        );
 
         engine.reload_tasks().await;
         engine.force_emit_update().await;
