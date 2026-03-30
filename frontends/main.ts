@@ -630,6 +630,9 @@ window.addEventListener('DOMContentLoaded', () => {
   listen<string>('mqtt-status', event => {
     updateMqttStatusUI(event.payload);
   });
+  invoke<string>('mqtt_status')
+    .then(status => updateMqttStatusUI(status))
+    .catch(() => {});
 
   // ── Step 7: 网络状态检测 ──
   function updateNetworkStatus() {
