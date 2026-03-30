@@ -6,10 +6,12 @@
 //!
 //! 所有业务代码依赖 `dyn ApiClient`，切换实现无需修改调用方。
 
+mod disabled;
 mod mock;
 mod real;
 pub mod types;
 
+pub use disabled::DisabledApiClient;
 pub use mock::MockApiClient;
 pub use real::RealApiClient;
 pub use types::*;

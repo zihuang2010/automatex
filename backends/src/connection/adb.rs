@@ -295,6 +295,81 @@ pub async fn run_adb_async(
     }
 }
 
+async fn run_adb_async_raw(args: &[&str], timeout_secs: u64) -> Result<String, String> {
+    let mut cmd = tokio::process::Command::new(adb_path());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+
+    cmd.args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    let mut child = cmd.spawn().map_err(|e| format!("spawn adb 失败: {}", e))?;
+    let mut stdout = child.stdout.take();
+    let mut stderr = child.stderr.take();
+
+    match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), child.wait()).await {
+        Ok(Ok(status)) => {
+            let mut stdout_buf = Vec::new();
+            if let Some(ref mut out) = stdout {
+                use tokio::io::AsyncReadExt;
+                let _ = out.read_to_end(&mut stdout_buf).await;
+            }
+            if status.success() {
+                Ok(String::from_utf8_lossy(&stdout_buf).trim().to_string())
+            } else {
+                let mut stderr_buf = Vec::new();
+                if let Some(ref mut err) = stderr {
+                    use tokio::io::AsyncReadExt;
+                    let _ = err.read_to_end(&mut stderr_buf).await;
+                }
+                let err = String::from_utf8_lossy(&stderr_buf).trim().to_string();
+                let stdout = String::from_utf8_lossy(&stdout_buf).trim().to_string();
+                if err.is_empty() {
+                    Err(stdout)
+                } else {
+                    Err(err)
+                }
+            }
+        },
+        Ok(Err(e)) => Err(format!("等待 adb 失败: {}", e)),
+        Err(_) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            Err(format!("ADB 命令超时 ({}s)", timeout_secs))
+        },
+    }
+}
+
+pub async fn adb_shell_async(serial: &str, command: &str) -> Result<String, String> {
+    run_adb_async(serial, &["shell", command], crate::constants::timing::ADB_COMMAND_TIMEOUT_SECS)
+        .await
+}
+
+pub async fn adb_cmd_async(serial: &str, args: &[&str]) -> Result<String, String> {
+    run_adb_async(serial, args, crate::constants::timing::ADB_COMMAND_TIMEOUT_SECS).await
+}
+
+pub async fn connect_wifi_via_adb_async(address: &str) -> Result<String, String> {
+    let addr = parse_wifi_address(address)?;
+    let addr_str = addr.to_string();
+
+    let stdout = run_adb_async_raw(
+        &["connect", &addr_str],
+        crate::constants::timing::WIFI_CONNECT_TIMEOUT_SECS,
+    )
+    .await?;
+
+    if stdout.contains("failed") {
+        Err(format!("ADB WiFi 连接失败: {}", stdout.trim()))
+    } else {
+        Ok(format!("WiFi 设备已连接: {}", addr_str))
+    }
+}
+
 /// 通过 adb CLI 执行 shell 命令（带超时保护）
 pub(crate) fn adb_shell(serial: &str, command: &str) -> Result<String, String> {
     let output = run_adb_timed(
@@ -343,6 +418,7 @@ pub fn batch_shell_commands(serial: &str, commands: &[&str]) -> Vec<Result<Strin
 }
 
 /// 通过 adb CLI 执行非 shell 命令（带超时保护）
+#[allow(dead_code)]
 pub(crate) fn adb_cmd(serial: &str, args: &[&str]) -> Result<String, String> {
     let mut cmd = adb_command();
     cmd.args(["-s", serial]);

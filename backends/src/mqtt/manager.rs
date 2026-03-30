@@ -68,14 +68,12 @@ impl MqttManager {
             let _ = tokio::time::timeout(Duration::from_secs(2), old_handle).await;
         }
 
-
         // ── Step 2: 设置状态 & 构建新连接选项 ──
         *self.status.lock().await = MqttStatus::Connecting;
         *self.client_id.lock().await = config.client_id.clone();
         let _ = app_handle.emit(tauri_event::MQTT_STATUS, mqtt_emit_status::CONNECTING);
 
-        let mut opts =
-            MqttOptions::new(&config.client_id, &config.broker_host, config.broker_port);
+        let mut opts = MqttOptions::new(&config.client_id, &config.broker_host, config.broker_port);
         opts.set_keep_alive(Duration::from_secs(crate::constants::timing::MQTT_KEEP_ALIVE_SECS));
         opts.set_clean_session(true);
 
@@ -149,17 +147,24 @@ impl MqttManager {
                                     mqtt_topic::broadcast_topic(mqtt_topic::BROADCAST_WILDCARD);
                                 let gen_for_sub = my_generation;
                                 tokio::spawn(async move {
-                                    if let Err(e) =
-                                        client_sub.subscribe(&sub_downstream, QoS::AtLeastOnce).await
+                                    if let Err(e) = client_sub
+                                        .subscribe(&sub_downstream, QoS::AtLeastOnce)
+                                        .await
                                     {
-                                        eprintln!("[mqtt] 订阅 downstream 失败 (gen={}): {}", gen_for_sub, e);
+                                        eprintln!(
+                                            "[mqtt] 订阅 downstream 失败 (gen={}): {}",
+                                            gen_for_sub, e
+                                        );
                                     } else {
                                         eprintln!("[mqtt] 已订阅: {}", sub_downstream);
                                     }
                                     if let Err(e) =
                                         client_sub.subscribe(&sub_broadcast, QoS::AtLeastOnce).await
                                     {
-                                        eprintln!("[mqtt] 订阅 broadcast 失败 (gen={}): {}", gen_for_sub, e);
+                                        eprintln!(
+                                            "[mqtt] 订阅 broadcast 失败 (gen={}): {}",
+                                            gen_for_sub, e
+                                        );
                                     } else {
                                         eprintln!("[mqtt] 已订阅: {}", sub_broadcast);
                                     }
@@ -172,8 +177,7 @@ impl MqttManager {
                             },
                             Event::Incoming(Incoming::Publish(publish)) => {
                                 let topic = publish.topic.clone();
-                                let payload =
-                                    String::from_utf8_lossy(&publish.payload).to_string();
+                                let payload = String::from_utf8_lossy(&publish.payload).to_string();
                                 route_message(&topic, &payload, &app_handle, &cid, connect_ts);
                             },
                             Event::Incoming(Incoming::Disconnect) => {

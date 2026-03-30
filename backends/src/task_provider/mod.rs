@@ -14,8 +14,20 @@ use crate::storage::Database;
 
 // ─── 任务提供者 ─────────────────────────────────────────────────
 
+pub fn mock_enabled() -> bool {
+    cfg!(debug_assertions)
+        || std::env::var("AUTOMATEX_ENABLE_MOCK")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+}
+
 /// 有绑定手机号时由 startup_sync_tasks 从服务端拉取真实数据
 pub async fn sync_task_cache(db: &Database) {
+    if !mock_enabled() {
+        eprintln!("[task_provider] 生产模式禁用 mock 写入");
+        return;
+    }
+
     let synced_phones = db
         .get_setting(crate::constants::setting_key::SYNCED_PHONES)
         .await
@@ -43,7 +55,12 @@ pub async fn load_tasks(db: &Database) -> Vec<Task> {
     let cached = db.load_all_task_defs().await;
     let (defs, all_orders): (Vec<TaskDef>, std::collections::HashMap<String, Vec<String>>) =
         if cached.is_empty() {
-            (load_mock_definitions(), Default::default())
+            if mock_enabled() {
+                (load_mock_definitions(), Default::default())
+            } else {
+                eprintln!("[task_provider] 任务缓存为空，生产模式不再回退到 mock");
+                (Vec::new(), Default::default())
+            }
         } else {
             let mut defs = Vec::new();
             let mut orders = std::collections::HashMap::new();
@@ -95,6 +112,9 @@ pub async fn load_task_by_id(db: &Database, target_id: &str) -> Option<Task> {
             return Some(build_task(db, TaskDef { id, name, cities }).await);
         }
     }
+    if !mock_enabled() {
+        return None;
+    }
     let defs: Vec<TaskDef> = load_mock_definitions();
     match defs.into_iter().find(|d| d.id == target_id) {
         Some(def) => Some(build_task(db, def).await),
@@ -104,6 +124,9 @@ pub async fn load_task_by_id(db: &Database, target_id: &str) -> Option<Task> {
 
 /// Mock 模式下按 ID 查找任务定义（供 TaskEngine 增量合并使用）
 pub fn load_mock_task_def_by_id(task_id: &str) -> Option<TaskDef> {
+    if !mock_enabled() {
+        return None;
+    }
     if let Some(def) = load_override_task_def(task_id) {
         eprintln!("[task_provider] 从外部 override 文件加载任务定义: {}", task_id);
         return Some(def);

@@ -94,15 +94,21 @@ pub fn run() {
                         .await
                         .unwrap_or_default();
                     let http_client: Arc<dyn http::ApiClient> = if http_base_url.is_empty() {
-                        let mock = http::MockApiClient::new();
-                        if let Some(scenario) =
-                            db_init.get_setting(constants::setting_key::MOCK_SCENARIO).await
-                        {
-                            if !scenario.is_empty() {
-                                mock.set_mock_scenario(&scenario);
+                        if task_provider::mock_enabled() {
+                            let mock = http::MockApiClient::new();
+                            if let Some(scenario) =
+                                db_init.get_setting(constants::setting_key::MOCK_SCENARIO).await
+                            {
+                                if !scenario.is_empty() {
+                                    mock.set_mock_scenario(&scenario);
+                                }
                             }
+                            Arc::new(mock)
+                        } else {
+                            Arc::new(http::DisabledApiClient::new(
+                                "未配置 api_base_url，生产模式不会自动回退到 MockApiClient",
+                            ))
                         }
-                        Arc::new(mock)
                     } else {
                         Arc::new(http::RealApiClient::new(&http_base_url))
                     };
@@ -118,40 +124,6 @@ pub fn run() {
 
                     eprintln!("[startup] 异步初始化完成，引擎已就绪");
 
-                    startup_sync_tasks(&db_init, &http_client, &eng, &client_id, &app_handle).await;
-
-                    // ── MQTT 自动连接 ──
-                    {
-                        let db_mqtt = Arc::clone(&db_init);
-                        let app_mqtt = app_handle.clone();
-                        tokio::spawn(async move {
-                            let startup_settings = db_mqtt.get_all_settings().await;
-                            let has_host =
-                                startup_settings.contains_key(constants::setting_key::MQTT_HOST);
-                            let auto_off = startup_settings
-                                .get(constants::setting_key::MQTT_AUTO_CONNECT)
-                                .map(|v| v == "false")
-                                .unwrap_or(false);
-
-                            if has_host && !auto_off {
-                                let config =
-                                    crate::commands::build_mqtt_config_from(&startup_settings);
-                                tokio::time::sleep(Duration::from_millis(500)).await;
-                                eprintln!(
-                                    "[startup] MQTT 自动连接: {}:{}",
-                                    config.broker_host, config.broker_port
-                                );
-                                let mqtt_state = app_mqtt.state::<AppState>();
-                                match mqtt_state.mqtt.connect(config, app_mqtt.clone()).await {
-                                    Ok(msg) => eprintln!("[startup] {}", msg),
-                                    Err(e) => eprintln!("[startup] MQTT 自动连接失败: {}", e),
-                                }
-                            } else {
-                                eprintln!("[startup] MQTT 未配置主机或已禁用自动连接，跳过");
-                            }
-                        });
-                    }
-
                     // 启动设备监控
                     monitor::spawn_device_monitor(
                         app_handle.clone(),
@@ -161,45 +133,103 @@ pub fn run() {
                     );
 
                     // ── 设备归属同步 ──
-                    eprintln!("[startup] 等待设备就绪...");
-                    device_ready_clone.notified().await;
-                    eprintln!("[startup] 设备就绪，开始归属同步");
-
-                    let devices = db_init.load_all_devices().await;
-                    let online: Vec<http::DeviceSyncItem> = devices
-                        .iter()
-                        .filter(|d| d.state == constants::device_state::DEVICE)
-                        .map(|d| http::DeviceSyncItem {
-                            hw_serial: d.hw_serial.clone(),
-                            serial: d.serial.clone(),
-                            state: d.state.clone(),
-                        })
-                        .collect();
-                    let offline_local: Vec<String> = devices
-                        .iter()
-                        .filter(|d| d.state != constants::device_state::DEVICE)
-                        .map(|d| d.hw_serial.clone())
-                        .collect();
-
-                    let req = http::DeviceSyncRequest { client_id, online, offline_local };
-
-                    match http_client.device_sync(&req).await {
-                        Ok(resp) => {
-                            if !resp.to_remove.is_empty() {
-                                eprintln!(
-                                    "[startup] 清理被其他客户端占用的设备: {:?}",
-                                    resp.to_remove
-                                );
-                                let n = eng.handle_device_kick(resp.to_remove).await;
-                                eprintln!("[startup] 已清理 {} 台设备", n);
-                                let _ =
-                                    app_handle.emit(constants::tauri_event::DEVICES_CHANGED, ());
+                    {
+                        let db_sync = Arc::clone(&db_init);
+                        let eng_sync = Arc::clone(&eng);
+                        let http_sync = Arc::clone(&http_client);
+                        let app_sync = app_handle.clone();
+                        let client_id_sync = client_id.clone();
+                        let ready_sync = Arc::clone(&device_ready_clone);
+                        tokio::spawn(async move {
+                            eprintln!("[startup] 等待设备就绪...");
+                            match tokio::time::timeout(
+                                Duration::from_secs(
+                                    constants::timing::STARTUP_DEVICE_READY_TIMEOUT_SECS,
+                                ),
+                                ready_sync.notified(),
+                            )
+                            .await
+                            {
+                                Ok(_) => eprintln!("[startup] 设备就绪，开始归属同步"),
+                                Err(_) => eprintln!(
+                                    "[startup] 设备就绪等待超时，使用当前设备快照继续归属同步"
+                                ),
                             }
-                        },
-                        Err(e) => {
-                            eprintln!("[startup] 设备归属同步失败: {}", e);
-                        },
+
+                            let devices = db_sync.load_all_devices().await;
+                            let online: Vec<http::DeviceSyncItem> = devices
+                                .iter()
+                                .filter(|d| d.state == constants::device_state::DEVICE)
+                                .map(|d| http::DeviceSyncItem {
+                                    hw_serial: d.hw_serial.clone(),
+                                    serial: d.serial.clone(),
+                                    state: d.state.clone(),
+                                })
+                                .collect();
+                            let offline_local: Vec<String> = devices
+                                .iter()
+                                .filter(|d| d.state != constants::device_state::DEVICE)
+                                .map(|d| d.hw_serial.clone())
+                                .collect();
+
+                            let req = http::DeviceSyncRequest {
+                                client_id: client_id_sync,
+                                online,
+                                offline_local,
+                            };
+
+                            match http_sync.device_sync(&req).await {
+                                Ok(resp) => {
+                                    if !resp.to_remove.is_empty() {
+                                        eprintln!(
+                                            "[startup] 清理被其他客户端占用的设备: {:?}",
+                                            resp.to_remove
+                                        );
+                                        let n = eng_sync.handle_device_kick(resp.to_remove).await;
+                                        eprintln!("[startup] 已清理 {} 台设备", n);
+                                        let _ = app_sync
+                                            .emit(constants::tauri_event::DEVICES_CHANGED, ());
+                                    }
+                                },
+                                Err(e) => {
+                                    eprintln!("[startup] 设备归属同步失败: {}", e);
+                                },
+                            }
+                        });
                     }
+
+                    let db_mqtt = Arc::clone(&db_init);
+                    let app_mqtt = app_handle.clone();
+                    let mqtt_connect = async move {
+                        let startup_settings = db_mqtt.get_all_settings().await;
+                        let has_host =
+                            startup_settings.contains_key(constants::setting_key::MQTT_HOST);
+                        let auto_off = startup_settings
+                            .get(constants::setting_key::MQTT_AUTO_CONNECT)
+                            .map(|v| v == "false")
+                            .unwrap_or(false);
+
+                        if has_host && !auto_off {
+                            let config = crate::commands::build_mqtt_config_from(&startup_settings);
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                            eprintln!(
+                                "[startup] MQTT 自动连接: {}:{}",
+                                config.broker_host, config.broker_port
+                            );
+                            let mqtt_state = app_mqtt.state::<AppState>();
+                            match mqtt_state.mqtt.connect(config, app_mqtt.clone()).await {
+                                Ok(msg) => eprintln!("[startup] {}", msg),
+                                Err(e) => eprintln!("[startup] MQTT 自动连接失败: {}", e),
+                            }
+                        } else {
+                            eprintln!("[startup] MQTT 未配置主机或已禁用自动连接，跳过");
+                        }
+                    };
+
+                    tokio::join!(
+                        startup_sync_tasks(&db_init, &http_client, &eng, &client_id, &app_handle),
+                        mqtt_connect
+                    );
                 });
             }
 

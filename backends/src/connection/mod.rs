@@ -17,6 +17,7 @@ use adb::{adb_cmd, adb_shell, parse_wifi_address};
 pub struct DeviceManager;
 
 impl DeviceManager {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self
     }
@@ -39,6 +40,7 @@ impl DeviceManager {
         }
     }
 
+    #[allow(dead_code)]
     pub fn execute_shell(&self, serial: &str, command: &str) -> ShellResult {
         match adb_shell(serial, command) {
             Ok(output) => ShellResult {
@@ -50,14 +52,17 @@ impl DeviceManager {
         }
     }
 
+    #[allow(dead_code)]
     pub fn install_apk(&self, serial: &str, apk_path: &str) -> Result<String, String> {
         adb_cmd(serial, &["install", apk_path]).map(|_| format!("APK 安装成功: {}", apk_path))
     }
 
+    #[allow(dead_code)]
     pub fn reboot_device(&self, serial: &str) -> Result<String, String> {
         adb_cmd(serial, &["reboot"]).map(|_| "设备正在重启...".to_string())
     }
 
+    #[allow(dead_code)]
     pub fn push_file(
         &self,
         serial: &str,
@@ -68,6 +73,7 @@ impl DeviceManager {
             .map(|_| format!("文件已推送: {} -> {}", local_path, remote_path))
     }
 
+    #[allow(dead_code)]
     pub fn pull_file(
         &self,
         serial: &str,
@@ -78,6 +84,7 @@ impl DeviceManager {
             .map(|_| format!("文件已拉取: {} -> {}", remote_path, local_path))
     }
 
+    #[allow(dead_code)]
     pub fn connect_wifi_via_adb(&self, address: &str) -> Result<String, String> {
         let addr = parse_wifi_address(address)?;
         let addr_str = addr.to_string();

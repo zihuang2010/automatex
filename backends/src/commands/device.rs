@@ -14,9 +14,7 @@ pub async fn add_device(
     }
     let entry = DeviceManager::build_wifi_entry(&address, &name)?;
 
-    let addr = address.clone();
-    let _ =
-        tokio::task::spawn_blocking(move || DeviceManager::new().connect_wifi_via_adb(&addr)).await;
+    connection::adb::connect_wifi_via_adb_async(&address).await?;
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -66,30 +64,26 @@ pub async fn list_devices(state: tauri::State<'_, AppState>) -> Result<Vec<Devic
 
 #[tauri::command]
 pub async fn execute_shell(serial: String, command: String) -> Result<ShellResult, String> {
-    // FIX #3: 限制危险命令（在 release 模式下拒绝可能破坏设备的操作）
-    #[cfg(not(debug_assertions))]
-    {
-        let cmd_lower = command.to_lowercase();
-        let denied_patterns = [
-            "rm -rf",
-            "mkfs",
-            "dd if=",
-            "reboot",
-            "shutdown",
-            "factory_reset",
-            "wipe",
-            "format",
-            "su -c",
-        ];
-        for pattern in &denied_patterns {
-            if cmd_lower.contains(pattern) {
-                return Err(format!("危险命令被拒绝: {}", pattern));
-            }
-        }
+    let shell_debug_enabled = cfg!(debug_assertions)
+        || std::env::var("AUTOMATEX_ALLOW_DEVICE_SHELL")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+    if !shell_debug_enabled {
+        return Err(
+            "生产模式已禁用任意 ADB shell；如需调试，请设置 AUTOMATEX_ALLOW_DEVICE_SHELL=1"
+                .to_string(),
+        );
     }
-    tokio::task::spawn_blocking(move || DeviceManager::new().execute_shell(&serial, &command))
-        .await
-        .map_err(|e| format!("执行失败: {}", e))
+
+    match connection::adb::adb_shell_async(&serial, &command).await {
+        Ok(output) => Ok(ShellResult {
+            success: true,
+            output: output.trim().to_string(),
+            error: String::new(),
+        }),
+        Err(e) => Ok(ShellResult { success: false, output: String::new(), error: e }),
+    }
 }
 
 #[tauri::command]
@@ -106,16 +100,15 @@ pub async fn get_device_info(
 
 #[tauri::command]
 pub async fn install_apk(serial: String, apk_path: String) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || DeviceManager::new().install_apk(&serial, &apk_path))
+    connection::adb::adb_cmd_async(&serial, &["install", &apk_path])
         .await
-        .map_err(|e| format!("执行失败: {}", e))?
+        .map(|_| format!("APK 安装成功: {}", apk_path))
 }
 
 #[tauri::command]
 pub async fn reboot_device(serial: String) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || DeviceManager::new().reboot_device(&serial))
-        .await
-        .map_err(|e| format!("执行失败: {}", e))?
+    connection::adb::adb_cmd_async(&serial, &["reboot"]).await?;
+    Ok("设备正在重启...".to_string())
 }
 
 #[tauri::command]
@@ -124,11 +117,9 @@ pub async fn push_file(
     local_path: String,
     remote_path: String,
 ) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || {
-        DeviceManager::new().push_file(&serial, &local_path, &remote_path)
-    })
-    .await
-    .map_err(|e| format!("执行失败: {}", e))?
+    connection::adb::adb_cmd_async(&serial, &["push", &local_path, &remote_path])
+        .await
+        .map(|_| format!("文件已推送: {} -> {}", local_path, remote_path))
 }
 
 #[tauri::command]
@@ -137,11 +128,9 @@ pub async fn pull_file(
     remote_path: String,
     local_path: String,
 ) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || {
-        DeviceManager::new().pull_file(&serial, &remote_path, &local_path)
-    })
-    .await
-    .map_err(|e| format!("执行失败: {}", e))?
+    connection::adb::adb_cmd_async(&serial, &["pull", &remote_path, &local_path])
+        .await
+        .map(|_| format!("文件已拉取: {} -> {}", remote_path, local_path))
 }
 
 #[tauri::command]

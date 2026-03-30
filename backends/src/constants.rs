@@ -103,6 +103,12 @@ pub mod timing {
     pub const ADB_COMMAND_TIMEOUT_SECS: u64 = 30;
     /// 设备列表缓存 TTL（毫秒）
     pub const DEVICE_CACHE_TTL_MS: u64 = 3000;
+    /// HTTP 连接超时
+    pub const HTTP_CONNECT_TIMEOUT_SECS: u64 = 5;
+    /// HTTP 请求总超时
+    pub const HTTP_REQUEST_TIMEOUT_SECS: u64 = 15;
+    /// 启动期等待首轮设备就绪的最长时间
+    pub const STARTUP_DEVICE_READY_TIMEOUT_SECS: u64 = 12;
 }
 
 /// 并发限制

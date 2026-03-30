@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tauri::Emitter;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -36,6 +36,7 @@ struct EngineState {
     http: Arc<dyn http::ApiClient>,
     app_handle: tauri::AppHandle,
     tx: mpsc::Sender<EngineMsg>,
+    snapshot_tx: watch::Sender<Vec<Task>>,
     last_emit: Instant,
     /// P1: 上次 emit 的 tasks 摘要 hash（状态去重，避免无变化时重复序列化）
     last_hash: u64,
@@ -79,6 +80,7 @@ fn rollback_running_keywords(task: &mut Task) {
 pub(super) fn spawn(
     rx: mpsc::Receiver<EngineMsg>,
     tx: mpsc::Sender<EngineMsg>,
+    snapshot_tx: watch::Sender<Vec<Task>>,
     tasks: Vec<Task>,
     storage: Arc<Database>,
     http: Arc<dyn http::ApiClient>,
@@ -92,6 +94,7 @@ pub(super) fn spawn(
         http,
         app_handle,
         tx,
+        snapshot_tx,
         last_emit: Instant::now() - Duration::from_secs(1),
         last_hash: 0,
     };
@@ -217,6 +220,7 @@ async fn emit_update(s: &mut EngineState) {
     }
     s.last_hash = hash;
     s.last_emit = Instant::now();
+    let _ = s.snapshot_tx.send(s.tasks.clone());
     let snapshot = TaskSnapshotRef { tasks: &s.tasks };
     let _ = s.app_handle.emit(constants::tauri_event::TASK_UPDATE, &snapshot);
 }
@@ -240,6 +244,7 @@ fn compute_tasks_hash(tasks: &[Task]) -> u64 {
 
 async fn force_emit(s: &mut EngineState) {
     s.last_emit = Instant::now();
+    let _ = s.snapshot_tx.send(s.tasks.clone());
     let snapshot = TaskSnapshotRef { tasks: &s.tasks };
     let _ = s.app_handle.emit(constants::tauri_event::TASK_UPDATE, &snapshot);
 }
@@ -298,6 +303,7 @@ async fn handle_pause(s: &mut EngineState, task_id: &str) -> Result<(), String> 
     let round_id = info.as_ref().map(|r| r.round_id);
 
     if let Some(ref run) = info {
+        s.storage.finish_round(run.round_id, round_status::STOPPED).await;
         s.storage.finish_task_run(task_id, run.started_at, run_status::PAUSED).await;
     }
 
@@ -333,7 +339,12 @@ async fn handle_resume(s: &mut EngineState, task_id: &str) -> Result<(), String>
     let saved_round_id = s.storage.load_task_state(task_id).await.and_then(|(_, _, rid)| rid);
 
     let round_id = match saved_round_id {
-        Some(rid) => rid,
+        Some(rid) => {
+            if !s.storage.resume_round(rid).await {
+                return Err("恢复轮次失败，无法继续任务".into());
+            }
+            rid
+        },
         None => match s.storage.create_round(task_id).await {
             Some(id) => id,
             None => {
@@ -520,6 +531,7 @@ async fn process_tick(s: &mut EngineState, task_id: &str, device_online: bool) -
         rollback_running_keywords(task);
         task.status = task_status::ERROR.to_string();
         task.assigned_device = None;
+        s.storage.finish_round(run_round_id, round_status::STOPPED).await;
         s.storage.finish_task_run(task_id, run_started_at, run_status::STOPPED).await;
         s.storage
             .save_task_state(task_id, task_status::ERROR, None, Some(run_round_id))
@@ -542,6 +554,7 @@ async fn process_tick(s: &mut EngineState, task_id: &str, device_online: bool) -
             task.status = task_status::ERROR.to_string();
             task.assigned_device = None;
 
+            s.storage.finish_round(run_round_id, round_status::STOPPED).await;
             s.storage.finish_task_run(task_id, run_started_at, run_status::STOPPED).await;
             s.storage
                 .save_task_state(task_id, task_status::ERROR, None, Some(run_round_id))
@@ -699,6 +712,7 @@ async fn handle_phones_unbind(s: &mut EngineState, phones: Vec<String>) -> u32 {
     // 取消 workers + 结束 runs
     for task_id in &all_task_ids {
         if let Some(info) = cancel_worker(s, task_id) {
+            s.storage.finish_round(info.round_id, round_status::STOPPED).await;
             s.storage.finish_task_run(task_id, info.started_at, run_status::STOPPED).await;
         }
     }
@@ -846,6 +860,7 @@ async fn handle_release_offline(s: &mut EngineState, online_serials: &[String]) 
 
     for task_id in &task_ids_to_release {
         if let Some(info) = cancel_worker(s, task_id) {
+            s.storage.finish_round(info.round_id, round_status::STOPPED).await;
             s.storage.finish_task_run(task_id, info.started_at, run_status::STOPPED).await;
             let round_id = info.round_id;
             s.storage

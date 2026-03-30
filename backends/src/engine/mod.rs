@@ -4,7 +4,7 @@ mod worker;
 use std::sync::Arc;
 
 use serde::Serialize;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::http;
 use crate::storage::Database;
@@ -107,6 +107,7 @@ const ENGINE_CHANNEL_SIZE: usize = 256;
 
 pub struct TaskEngine {
     tx: mpsc::Sender<EngineMsg>,
+    snapshot_rx: watch::Receiver<Vec<Task>>,
 }
 
 impl TaskEngine {
@@ -118,11 +119,12 @@ impl TaskEngine {
     ) -> Arc<Self> {
         let tasks = task_provider::load_tasks(&storage).await;
         let (tx, rx) = mpsc::channel(ENGINE_CHANNEL_SIZE);
+        let (snapshot_tx, snapshot_rx) = watch::channel(tasks.clone());
 
         // 启动事件循环
-        event_loop::spawn(rx, tx.clone(), tasks, storage, http, app_handle);
+        event_loop::spawn(rx, tx.clone(), snapshot_tx, tasks, storage, http, app_handle);
 
-        Arc::new(Self { tx })
+        Arc::new(Self { tx, snapshot_rx })
     }
 
     // ── 辅助：发送消息并等待回复 ──
@@ -146,6 +148,10 @@ impl TaskEngine {
         self.send_and_recv(|reply| EngineMsg::GetTasks { reply })
             .await
             .unwrap_or_default()
+    }
+
+    pub fn subscribe_tasks(&self) -> watch::Receiver<Vec<Task>> {
+        self.snapshot_rx.clone()
     }
 
     pub async fn start_task(self: &Arc<Self>, task_id: &str) -> Result<(), String> {

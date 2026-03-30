@@ -59,6 +59,20 @@ impl Database {
             .await;
     }
 
+    pub async fn resume_round(&self, round_id: i64) -> bool {
+        let Ok(conn) = self.pool.get().await else { return false };
+        conn.interact(move |conn| {
+            conn.execute(
+                "UPDATE a_task_rounds SET ended_at = NULL, status = 'running' WHERE id = ?1",
+                params![round_id],
+            )
+            .map(|n| n > 0)
+            .unwrap_or(false)
+        })
+        .await
+        .unwrap_or(false)
+    }
+
     /// 获取当前运行中的轮次 ID
     #[allow(dead_code)]
     pub async fn get_active_round(&self, task_id: &str) -> Option<i64> {
