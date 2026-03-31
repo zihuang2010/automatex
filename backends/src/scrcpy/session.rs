@@ -3,9 +3,9 @@
 //! 管理多台设备的投屏会话，每台设备一个 Session。
 //! 视频帧通过 Tauri Channel 直接推送到前端（避免 base64 + 全局事件广播）。
 
-use crate::{connection::adb, constants};
 use super::control::{DeviceMessage, ScrcpyControl};
 use super::server::ScrcpyServer;
+use crate::{connection::adb, constants};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -92,9 +92,22 @@ struct ClipboardEchoGuard {
 // ─── 控制流 Actor 消息 ─────────────────────────────────────
 
 enum ControlMsg {
-    Touch { action: u8, x: u32, y: u32 },
-    Scroll { x: u32, y: u32, h_scroll: f32, v_scroll: f32, buttons: u32 },
-    Key { keycode: u32, meta_state: u32 },
+    Touch {
+        action: u8,
+        x: u32,
+        y: u32,
+    },
+    Scroll {
+        x: u32,
+        y: u32,
+        h_scroll: f32,
+        v_scroll: f32,
+        buttons: u32,
+    },
+    Key {
+        keycode: u32,
+        meta_state: u32,
+    },
     Text(String),
     Back,
     ResetVideo,
@@ -138,31 +151,23 @@ async fn control_actor(
                     Err(_) => Err("发送触控消息超时".into()),
                 }
             },
-            ControlMsg::Scroll {
-                x,
-                y,
-                h_scroll,
-                v_scroll,
-                buttons,
-            } => {
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(CONTROL_WRITE_TIMEOUT_SECS),
-                    ScrcpyControl::inject_scroll(
-                        &mut stream,
-                        x,
-                        y,
-                        screen_w,
-                        screen_h,
-                        h_scroll,
-                        v_scroll,
-                        buttons,
-                    ),
-                )
-                .await
-                {
-                    Ok(result) => result,
-                    Err(_) => Err("发送滚轮消息超时".into()),
-                }
+            ControlMsg::Scroll { x, y, h_scroll, v_scroll, buttons } => match tokio::time::timeout(
+                std::time::Duration::from_secs(CONTROL_WRITE_TIMEOUT_SECS),
+                ScrcpyControl::inject_scroll(
+                    &mut stream,
+                    x,
+                    y,
+                    screen_w,
+                    screen_h,
+                    h_scroll,
+                    v_scroll,
+                    buttons,
+                ),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => Err("发送滚轮消息超时".into()),
             },
             ControlMsg::Key { keycode, meta_state } => {
                 match tokio::time::timeout(
@@ -577,7 +582,9 @@ impl SessionManager {
 
     pub async fn session_dimensions(&self, serial: &str) -> Option<(u32, u32)> {
         let sessions = self.sessions.read().await;
-        sessions.get(serial).map(|session| (session.screen_width, session.screen_height))
+        sessions
+            .get(serial)
+            .map(|session| (session.screen_width, session.screen_height))
     }
 
     /// 注入触控事件（P0 优化：单次 mpsc send，触控用 try_send 背压丢帧）
@@ -662,7 +669,7 @@ impl SessionManager {
                         "[scrcpy] ADB IME 输入失败，回退到剪贴板路径: serial={}, error={}",
                         serial, err
                     );
-                }
+                },
             }
         }
 
@@ -678,7 +685,11 @@ impl SessionManager {
             .await
             .map_err(|e| format!("控制消息发送失败: {}", e))?;
 
-        Ok(if text.is_ascii() { TextRoute::AsciiDirect } else { TextRoute::ClipboardFallback })
+        Ok(if text.is_ascii() {
+            TextRoute::AsciiDirect
+        } else {
+            TextRoute::ClipboardFallback
+        })
     }
 
     /// 注入返回键
@@ -808,15 +819,7 @@ impl SessionManager {
         if was_present {
             let _ = app_handle.emit("scrcpy-stopped", &serial);
         }
-        emit_session_state(
-            &app_handle,
-            &serial,
-            "stopped",
-            width,
-            height,
-            None,
-            last_frame_at_ms,
-        );
+        emit_session_state(&app_handle, &serial, "stopped", width, height, None, last_frame_at_ms);
         eprintln!("[scrcpy] 帧推送结束: {}", serial);
     }
 }
