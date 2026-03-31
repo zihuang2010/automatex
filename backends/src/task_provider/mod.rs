@@ -10,7 +10,7 @@ pub use types::*;
 use std::collections::HashSet;
 
 use crate::constants::{city_status, keyword_status, task_status};
-use crate::storage::Database;
+use crate::storage::{Database, TaskStateRow};
 
 // ─── 任务提供者 ─────────────────────────────────────────────────
 
@@ -83,7 +83,7 @@ pub async fn load_tasks(db: &Database) -> Vec<Task> {
     let all_states = db.load_all_task_states().await;
 
     let round_ids: Vec<i64> =
-        all_states.values().filter_map(|(_, _, round_id)| *round_id).collect();
+        all_states.values().filter_map(|state| state.current_round_id).collect();
     let all_progress = db.load_all_progress(&round_ids).await;
     let all_round_info = db.load_all_round_info(&round_ids).await;
 
@@ -98,7 +98,7 @@ pub async fn load_tasks(db: &Database) -> Vec<Task> {
         let progress = progress_map.remove(&def.id).unwrap_or_default();
         let state = all_states.get(&def.id).cloned();
         let order = all_orders.get(&def.id).cloned();
-        let round_id = state.as_ref().and_then(|(_, _, rid)| *rid);
+        let round_id = state.as_ref().and_then(|state| state.current_round_id);
         let round_no = round_id.and_then(|rid| all_round_info.get(&rid).copied()).unwrap_or(0);
         tasks.push(build_task_batched(def, progress, state, order, round_no));
     }
@@ -134,6 +134,38 @@ pub fn load_mock_task_def_by_id(task_id: &str) -> Option<TaskDef> {
     load_mock_definitions().into_iter().find(|d| d.id == task_id)
 }
 
+pub fn summarize_task(task: &Task) -> TaskSummary {
+    let keyword_total: i32 = task.cities.iter().map(|city| city.total).sum();
+    let keyword_done: i32 = task.cities.iter().map(|city| city.done).sum();
+    let progress = if keyword_total > 0 {
+        ((keyword_done as f64 / keyword_total as f64) * 100.0).round() as i32
+    } else {
+        0
+    };
+
+    let active_city_name = task
+        .cities
+        .iter()
+        .find(|city| city.status == city_status::ACTIVE)
+        .map(|city| city.name.clone())
+        .or_else(|| task.current_city_name.clone());
+
+    TaskSummary {
+        id: task.id.clone(),
+        name: task.name.clone(),
+        status: task.status.clone(),
+        assigned_device: task.assigned_device.clone(),
+        city_count: task.cities.len() as i32,
+        keyword_total,
+        keyword_done,
+        progress,
+        active_city_name,
+        current_city_name: task.current_city_name.clone(),
+        current_keyword_name: task.current_keyword_name.clone(),
+        round_no: task.round_no,
+    }
+}
+
 /// 从 ~/.automatex/mock_tasks_override.json 读取指定 task 的定义
 fn load_override_task_def(task_id: &str) -> Option<TaskDef> {
     let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).ok()?;
@@ -149,7 +181,7 @@ fn load_override_task_def(task_id: &str) -> Option<TaskDef> {
 /// 内部：从 Mock 定义 + DB 进度 + DB 状态 构建单个 Task
 pub async fn build_task(db: &Database, def: TaskDef) -> Task {
     let state = db.load_task_state(&def.id).await;
-    let round_id = state.as_ref().and_then(|(_, _, rid)| *rid).unwrap_or(0);
+    let round_id = state.as_ref().and_then(|state| state.current_round_id).unwrap_or(0);
     let progress = db.load_task_progress(&def.id, round_id).await;
     let order = db.load_city_order(&def.id).await;
     let round_no = if round_id > 0 { db.get_round_no(round_id).await.unwrap_or(0) } else { 0 };
@@ -160,7 +192,7 @@ pub async fn build_task(db: &Database, def: TaskDef) -> Task {
 fn build_task_batched(
     def: TaskDef,
     progress: Vec<crate::storage::ProgressRow>,
-    saved_state: Option<(String, Option<String>, Option<i64>)>,
+    saved_state: Option<TaskStateRow>,
     city_order: Option<Vec<String>>,
     round_no: i32,
 ) -> Task {
@@ -238,7 +270,8 @@ fn build_task_batched(
 
     // 从保存的运行时状态（覆盖推断值）
     let (final_status, assigned_device) = match saved_state {
-        Some((ref saved_status, ref dev, _)) => {
+        Some(ref saved) => {
+            let saved_status = &saved.status;
             let status = if saved_status == task_status::EXECUTING {
                 task_status::PAUSED.to_string()
             } else if saved_status == task_status::SUCCESS
@@ -252,20 +285,53 @@ fn build_task_batched(
             } else {
                 saved_status.clone()
             };
-            let device = if saved_status == task_status::EXECUTING { None } else { dev.clone() };
+            let device = if saved_status == task_status::EXECUTING {
+                None
+            } else {
+                saved.assigned_device.clone()
+            };
             (status, device)
         },
         None => (inferred_status.to_string(), None),
     };
 
-    // 只有任务在 EXECUTING 或 PAUSED 时，才激活第一个 pending 城市
+    let current_city_name = saved_state.as_ref().and_then(|s| s.current_city_name.clone());
+    let current_keyword_name = saved_state.as_ref().and_then(|s| s.current_keyword_name.clone());
+    let saved_status = saved_state.as_ref().map(|s| s.status.as_str());
+
+    // 只有任务在 EXECUTING 或 PAUSED 时，才激活当前或第一个 pending 城市
     if final_status != task_status::WAITING && final_status != task_status::SUCCESS {
-        if let Some(first_pending) = cities.iter_mut().find(|c| c.status == city_status::PENDING) {
-            first_pending.status = city_status::ACTIVE.to_string();
+        let mut activated = false;
+        if let Some(ref city_name) = current_city_name {
+            if let Some(city) = cities.iter_mut().find(|c| {
+                c.name == *city_name
+                    && c.status != city_status::DONE
+                    && c.keywords.iter().any(|k| k.status != keyword_status::OK)
+            }) {
+                city.status = city_status::ACTIVE.to_string();
+                if saved_status == Some(task_status::EXECUTING) {
+                    if let Some(ref keyword_name) = current_keyword_name {
+                        if let Some(keyword) = city.keywords.iter_mut().find(|k| {
+                            k.name == *keyword_name && k.status == keyword_status::PENDING
+                        }) {
+                            keyword.status = keyword_status::RUN.to_string();
+                        }
+                    }
+                }
+                activated = true;
+            }
+        }
+
+        if !activated {
+            if let Some(first_pending) =
+                cities.iter_mut().find(|c| c.status == city_status::PENDING)
+            {
+                first_pending.status = city_status::ACTIVE.to_string();
+            }
         }
     }
 
-    let current_round_id = saved_state.as_ref().and_then(|(_, _, rid)| *rid);
+    let current_round_id = saved_state.as_ref().and_then(|s| s.current_round_id);
 
     Task {
         id: def.id,
@@ -275,6 +341,8 @@ fn build_task_batched(
         cities,
         round_no,
         current_round_id,
+        current_city_name,
+        current_keyword_name,
     }
 }
 

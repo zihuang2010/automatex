@@ -1,48 +1,81 @@
-//! 引擎事件循环 —— 独占 Vec<Task> 和 HashMap<RunningTask>，零锁竞争
+//! 引擎事件循环 —— 独占任务明细，并维护轻量运行时与中央调度器
 
-use std::collections::{HashMap, HashSet};
+use std::cmp::Ordering;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant as StdInstant};
 
 use tauri::Emitter;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
+use tokio::time::Instant as TokioInstant;
 use tokio_util::sync::CancellationToken;
 
 use crate::constants::{self, city_status, keyword_status, round_status, run_status, task_status};
 use crate::http;
 use crate::storage::{Database, DeviceRow};
-use crate::task_provider::{self, Task};
+use crate::task_provider::{self, summarize_task, Task, TaskSummary};
 
 use super::worker::spawn_worker;
-use super::{EngineMsg, TaskSnapshotRef, TickOutcome};
-
-// ─── 内部状态 ──────────────────────────────────────────
+use super::{EngineMsg, ExecutionOutcome, TaskSummarySnapshotRef};
 
 struct WorkerInfo {
     cancel: CancellationToken,
     #[allow(dead_code)]
     handle: JoinHandle<()>,
-    started_at: i64,
+    worker_seq: u64,
+}
+
+struct RunningTaskState {
     round_id: i64,
+    started_at: i64,
+    device_serial: String,
+    active_worker: Option<WorkerInfo>,
+    next_wakeup_at: Option<TokioInstant>,
+    wakeup_seq: u64,
+    attempt: i32,
+    last_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SchedulerWakeup {
+    due_at: TokioInstant,
+    task_id: String,
+    wakeup_seq: u64,
+}
+
+impl Ord for SchedulerWakeup {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.due_at
+            .cmp(&other.due_at)
+            .then_with(|| self.wakeup_seq.cmp(&other.wakeup_seq))
+            .then_with(|| self.task_id.cmp(&other.task_id))
+    }
+}
+
+impl PartialOrd for SchedulerWakeup {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 struct EngineState {
     tasks: Vec<Task>,
-    running: HashMap<String, WorkerInfo>,
+    running: HashMap<String, RunningTaskState>,
+    wakeups: BinaryHeap<Reverse<SchedulerWakeup>>,
     reloading: HashSet<String>,
     storage: Arc<Database>,
     http: Arc<dyn http::ApiClient>,
     app_handle: tauri::AppHandle,
     tx: mpsc::Sender<EngineMsg>,
-    snapshot_tx: watch::Sender<Vec<Task>>,
-    last_emit: Instant,
-    /// P1: 上次 emit 的 tasks 摘要 hash（状态去重，避免无变化时重复序列化）
+    snapshot_tx: watch::Sender<Vec<TaskSummary>>,
+    last_emit: StdInstant,
+    next_worker_seq: u64,
+    next_wakeup_seq: u64,
     last_hash: u64,
 }
-
-// ─── 辅助函数 ──────────────────────────────────────────
 
 fn compute_assigned_set(tasks: &[Task]) -> HashSet<&str> {
     tasks
@@ -67,20 +100,289 @@ fn pick_ready_serial(devices: &[DeviceRow], tasks: &[Task]) -> Result<String, St
 
 fn rollback_running_keywords(task: &mut Task) {
     for city in &mut task.cities {
-        for kw in &mut city.keywords {
-            if kw.status == keyword_status::RUN {
-                kw.status = keyword_status::PENDING.to_string();
+        for keyword in &mut city.keywords {
+            if keyword.status == keyword_status::RUN {
+                keyword.status = keyword_status::PENDING.to_string();
             }
         }
     }
 }
 
-// ─── 事件循环 ──────────────────────────────────────────
+fn clear_execution_cursor(task: &mut Task) {
+    task.current_city_name = None;
+    task.current_keyword_name = None;
+}
+
+fn persist_cursor_candidates(
+    task: &mut Task,
+    city_idx: usize,
+    keyword_idx: usize,
+    mark_running: bool,
+) {
+    for city in &mut task.cities {
+        if city.status == city_status::ACTIVE {
+            city.status = city_status::PENDING.to_string();
+        }
+        for keyword in &mut city.keywords {
+            if keyword.status == keyword_status::RUN {
+                keyword.status = keyword_status::PENDING.to_string();
+            }
+        }
+    }
+
+    if let Some(city) = task.cities.get_mut(city_idx) {
+        city.status = city_status::ACTIVE.to_string();
+        task.current_city_name = Some(city.name.clone());
+        if let Some(keyword) = city.keywords.get_mut(keyword_idx) {
+            task.current_keyword_name = Some(keyword.name.clone());
+            if mark_running && keyword.status == keyword_status::PENDING {
+                keyword.status = keyword_status::RUN.to_string();
+            }
+        } else {
+            task.current_keyword_name = None;
+        }
+    } else {
+        clear_execution_cursor(task);
+    }
+}
+
+fn find_keyword_index_by_name(task: &Task, city_idx: usize, keyword_name: &str) -> Option<usize> {
+    task.cities
+        .get(city_idx)?
+        .keywords
+        .iter()
+        .position(|kw| kw.name == keyword_name && kw.status != keyword_status::OK)
+}
+
+fn keyword_index_by_name(task: &Task, city_idx: usize, keyword_name: &str) -> Option<usize> {
+    task.cities
+        .get(city_idx)?
+        .keywords
+        .iter()
+        .position(|kw| kw.name == keyword_name)
+}
+
+fn first_pending_keyword_idx(task: &Task, city_idx: usize) -> Option<usize> {
+    task.cities
+        .get(city_idx)?
+        .keywords
+        .iter()
+        .position(|k| k.status != keyword_status::OK)
+}
+
+fn ensure_execution_cursor(task: &mut Task, mark_running: bool) -> Option<(usize, usize)> {
+    if let Some(ref city_name) = task.current_city_name {
+        if let Some(city_idx) = task
+            .cities
+            .iter()
+            .position(|city| city.name == *city_name && city.status != city_status::DONE)
+        {
+            let keyword_idx = task
+                .current_keyword_name
+                .as_deref()
+                .and_then(|keyword_name| find_keyword_index_by_name(task, city_idx, keyword_name))
+                .or_else(|| first_pending_keyword_idx(task, city_idx));
+
+            if let Some(keyword_idx) = keyword_idx {
+                persist_cursor_candidates(task, city_idx, keyword_idx, mark_running);
+                return Some((city_idx, keyword_idx));
+            }
+        }
+    }
+
+    let next_city_idx = task
+        .cities
+        .iter()
+        .position(|city| {
+            city.status == city_status::ACTIVE
+                && city.keywords.iter().any(|kw| kw.status != keyword_status::OK)
+        })
+        .or_else(|| {
+            task.cities
+                .iter()
+                .position(|city| city.keywords.iter().any(|kw| kw.status != keyword_status::OK))
+        })?;
+    let next_keyword_idx = first_pending_keyword_idx(task, next_city_idx)?;
+    persist_cursor_candidates(task, next_city_idx, next_keyword_idx, mark_running);
+    Some((next_city_idx, next_keyword_idx))
+}
+
+fn move_to_next_cursor(task: &mut Task, mark_running: bool) -> Option<(usize, usize)> {
+    let current_city_idx = task
+        .current_city_name
+        .as_deref()
+        .and_then(|city_name| task.cities.iter().position(|city| city.name == city_name))
+        .or_else(|| ensure_execution_cursor(task, false).map(|(city_idx, _)| city_idx))?;
+    let current_keyword_idx = task
+        .current_keyword_name
+        .as_deref()
+        .and_then(|keyword| keyword_index_by_name(task, current_city_idx, keyword))
+        .or_else(|| first_pending_keyword_idx(task, current_city_idx))?;
+
+    if let Some(next_idx) = task.cities[current_city_idx]
+        .keywords
+        .iter()
+        .enumerate()
+        .skip(current_keyword_idx + 1)
+        .find(|(_, kw)| kw.status != keyword_status::OK)
+        .map(|(idx, _)| idx)
+    {
+        persist_cursor_candidates(task, current_city_idx, next_idx, mark_running);
+        return Some((current_city_idx, next_idx));
+    }
+
+    if task.cities[current_city_idx].done >= task.cities[current_city_idx].total {
+        task.cities[current_city_idx].status = city_status::DONE.to_string();
+        task.cities[current_city_idx].progress = 100;
+    }
+
+    for next_city_idx in current_city_idx + 1..task.cities.len() {
+        if let Some(next_keyword_idx) = first_pending_keyword_idx(task, next_city_idx) {
+            persist_cursor_candidates(task, next_city_idx, next_keyword_idx, mark_running);
+            return Some((next_city_idx, next_keyword_idx));
+        }
+    }
+
+    clear_execution_cursor(task);
+    None
+}
+
+fn task_state_cursor(task: &Task) -> (Option<&str>, Option<&str>) {
+    (task.current_city_name.as_deref(), task.current_keyword_name.as_deref())
+}
+
+fn build_summaries(tasks: &[Task]) -> Vec<TaskSummary> {
+    tasks.iter().map(summarize_task).collect()
+}
+
+fn compute_summaries_hash(summaries: &[TaskSummary]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    summaries.len().hash(&mut hasher);
+    for summary in summaries {
+        summary.id.hash(&mut hasher);
+        summary.status.hash(&mut hasher);
+        summary.assigned_device.hash(&mut hasher);
+        summary.keyword_done.hash(&mut hasher);
+        summary.keyword_total.hash(&mut hasher);
+        summary.progress.hash(&mut hasher);
+        summary.current_city_name.hash(&mut hasher);
+        summary.current_keyword_name.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn clear_task_schedule(run: &mut RunningTaskState) {
+    run.next_wakeup_at = None;
+    run.wakeup_seq = 0;
+}
+
+fn wakeup_unix(next_wakeup_at: Option<TokioInstant>) -> Option<i64> {
+    next_wakeup_at.map(|due_at| {
+        let now_unix = constants::now_unix();
+        let delta = due_at
+            .checked_duration_since(TokioInstant::now())
+            .unwrap_or_else(|| Duration::from_secs(0));
+        now_unix + delta.as_secs() as i64
+    })
+}
+
+async fn persist_runtime_state(s: &EngineState, task_id: &str) {
+    let Some(task) = s.tasks.iter().find(|task| task.id == task_id) else {
+        return;
+    };
+    let cursor = task_state_cursor(task);
+    let runtime = s.running.get(task_id);
+    let assigned_device = task.assigned_device.as_deref();
+    let current_round_id = runtime.map(|run| run.round_id).or(task.current_round_id);
+    let attempt = runtime.map(|run| run.attempt).unwrap_or(0);
+    let next_wakeup_at = runtime.and_then(|run| wakeup_unix(run.next_wakeup_at));
+    let last_error = runtime.and_then(|run| run.last_error.as_deref());
+    let runtime_status = if task.status == task_status::EXECUTING {
+        runtime
+            .map(|run| {
+                if run.active_worker.is_some() {
+                    "executing"
+                } else if run.next_wakeup_at.is_some() {
+                    "scheduled"
+                } else {
+                    "idle"
+                }
+            })
+            .or(Some("scheduled"))
+    } else {
+        None
+    };
+
+    s.storage
+        .save_task_state(
+            task_id,
+            &task.status,
+            assigned_device,
+            current_round_id,
+            cursor.0,
+            cursor.1,
+            attempt,
+            next_wakeup_at,
+            last_error,
+            runtime_status,
+        )
+        .await;
+}
+
+fn schedule_task(s: &mut EngineState, task_id: &str, delay_ms: u64) {
+    let due_at = TokioInstant::now() + Duration::from_millis(delay_ms);
+    if let Some(runtime) = s.running.get_mut(task_id) {
+        s.next_wakeup_seq += 1;
+        runtime.wakeup_seq = s.next_wakeup_seq;
+        runtime.next_wakeup_at = Some(due_at);
+        s.wakeups.push(Reverse(SchedulerWakeup {
+            due_at,
+            task_id: task_id.to_string(),
+            wakeup_seq: runtime.wakeup_seq,
+        }));
+    }
+}
+
+fn next_due_at(s: &EngineState) -> Option<TokioInstant> {
+    s.wakeups.peek().map(|item| item.0.due_at)
+}
+
+fn remove_runtime(s: &mut EngineState, task_id: &str) -> Option<RunningTaskState> {
+    let mut runtime = s.running.remove(task_id)?;
+    if let Some(worker) = runtime.active_worker.take() {
+        worker.cancel.cancel();
+    }
+    clear_task_schedule(&mut runtime);
+    Some(runtime)
+}
+
+fn spawn_task_worker(s: &mut EngineState, task_id: &str) {
+    let Some(runtime) = s.running.get_mut(task_id) else {
+        return;
+    };
+    if runtime.active_worker.is_some() {
+        return;
+    }
+
+    let worker_seq = s.next_worker_seq;
+    s.next_worker_seq += 1;
+    let cancel = CancellationToken::new();
+    let handle = spawn_worker(
+        task_id.to_string(),
+        runtime.device_serial.clone(),
+        worker_seq,
+        cancel.clone(),
+        s.tx.clone(),
+        Arc::clone(&s.storage),
+    );
+    runtime.active_worker = Some(WorkerInfo { cancel, handle, worker_seq });
+    runtime.next_wakeup_at = None;
+}
 
 pub(super) fn spawn(
     rx: mpsc::Receiver<EngineMsg>,
     tx: mpsc::Sender<EngineMsg>,
-    snapshot_tx: watch::Sender<Vec<Task>>,
+    snapshot_tx: watch::Sender<Vec<TaskSummary>>,
     tasks: Vec<Task>,
     storage: Arc<Database>,
     http: Arc<dyn http::ApiClient>,
@@ -89,123 +391,138 @@ pub(super) fn spawn(
     let state = EngineState {
         tasks,
         running: HashMap::new(),
+        wakeups: BinaryHeap::new(),
         reloading: HashSet::new(),
         storage,
         http,
         app_handle,
         tx,
         snapshot_tx,
-        last_emit: Instant::now() - Duration::from_secs(1),
+        last_emit: StdInstant::now() - Duration::from_secs(1),
+        next_worker_seq: 1,
+        next_wakeup_seq: 1,
         last_hash: 0,
     };
     tokio::spawn(engine_loop(state, rx));
 }
 
 async fn engine_loop(mut s: EngineState, mut rx: mpsc::Receiver<EngineMsg>) {
-    while let Some(msg) = rx.recv().await {
+    loop {
+        let next_due = next_due_at(&s);
+
+        let maybe_msg = if let Some(due_at) = next_due {
+            tokio::select! {
+                maybe_msg = rx.recv() => maybe_msg,
+                _ = tokio::time::sleep_until(due_at) => {
+                    dispatch_due_wakeups(&mut s).await;
+                    emit_update(&mut s).await;
+                    continue;
+                }
+            }
+        } else {
+            rx.recv().await
+        };
+
+        let Some(msg) = maybe_msg else { break };
+
         match msg {
-            // ── 生命周期 ──
             EngineMsg::StartTask { task_id, reply } => {
-                let result = handle_start(&mut s, &task_id).await;
-                let _ = reply.send(result);
+                let _ = reply.send(handle_start(&mut s, &task_id).await);
             },
             EngineMsg::PauseTask { task_id, reply } => {
-                let result = handle_pause(&mut s, &task_id).await;
-                let _ = reply.send(result);
+                let _ = reply.send(handle_pause(&mut s, &task_id).await);
             },
             EngineMsg::ResumeTask { task_id, reply } => {
-                let result = handle_resume(&mut s, &task_id).await;
-                let _ = reply.send(result);
+                let _ = reply.send(handle_resume(&mut s, &task_id).await);
             },
             EngineMsg::StopTask { task_id, reply } => {
-                let result = handle_stop(&mut s, &task_id).await;
-                let _ = reply.send(result);
+                let _ = reply.send(handle_stop(&mut s, &task_id).await);
             },
             EngineMsg::RetryTask { task_id, reply } => {
-                let result = handle_retry(&mut s, &task_id).await;
-                let _ = reply.send(result);
+                let _ = reply.send(handle_retry(&mut s, &task_id).await);
             },
-
-            // ── 查询 ──
             EngineMsg::GetTasks { reply } => {
-                let _ = reply.send(s.tasks.clone());
+                let _ = reply.send(build_summaries(&s.tasks));
+            },
+            EngineMsg::GetTaskDetail { task_id, reply } => {
+                let _ = reply.send(s.tasks.iter().find(|task| task.id == task_id).cloned());
             },
             EngineMsg::GetReadySerials { reply } => {
                 let devices = s.storage.load_all_devices().await;
                 let assigned = compute_assigned_set(&s.tasks);
-                let ready: Vec<String> = devices
+                let ready = devices
                     .into_iter()
-                    .filter(|d| {
-                        d.state == constants::device_state::DEVICE
-                            && !d.is_flagged
-                            && !assigned.contains(d.serial.as_str())
+                    .filter(|device| {
+                        device.state == constants::device_state::DEVICE
+                            && !device.is_flagged
+                            && !assigned.contains(device.serial.as_str())
                     })
-                    .map(|d| d.serial)
+                    .map(|device| device.serial)
                     .collect();
                 let _ = reply.send(ready);
             },
-
-            // ── 状态管理 ──
             EngineMsg::ReorderCities { task_id, new_order, reply } => {
-                let result = handle_reorder(&mut s, &task_id, new_order).await;
-                let _ = reply.send(result);
+                let _ = reply.send(handle_reorder(&mut s, &task_id, new_order).await);
             },
             EngineMsg::ReloadTasks => {
                 handle_reload_tasks(&mut s).await;
             },
-
-            // ── MQTT 处理 ──
             EngineMsg::HandleTaskReload { action, task_id } => {
                 handle_task_reload_msg(&mut s, &action, task_id.as_deref()).await;
             },
             EngineMsg::HandleDeviceKick { hw_serials, reply } => {
-                let n = handle_device_kick(&mut s, hw_serials).await;
-                let _ = reply.send(n);
+                let _ = reply.send(handle_device_kick(&mut s, hw_serials).await);
             },
             EngineMsg::HandlePhonesUnbind { phones, reply } => {
-                let n = handle_phones_unbind(&mut s, phones).await;
-                let _ = reply.send(n);
+                let _ = reply.send(handle_phones_unbind(&mut s, phones).await);
             },
             EngineMsg::ReleaseOfflineDevices { online_serials, reply } => {
-                let n = handle_release_offline(&mut s, &online_serials).await;
-                let _ = reply.send(n);
+                let _ = reply.send(handle_release_offline(&mut s, &online_serials).await);
             },
-
-            // ── Worker 回报 ──
-            EngineMsg::TickRequest { task_id, device_online, reply } => {
-                let outcome = process_tick(&mut s, &task_id, device_online).await;
-                let _ = reply.send(outcome);
+            EngineMsg::WorkerResult { task_id, worker_seq, outcome } => {
+                handle_worker_result(&mut s, &task_id, worker_seq, outcome).await;
             },
-            EngineMsg::WorkerExited { task_id, success } => {
-                if let Some(info) = s.running.remove(&task_id) {
-                    if success {
-                        s.storage.finish_round(info.round_id, round_status::COMPLETED).await;
-                        s.storage
-                            .finish_task_run(&task_id, info.started_at, run_status::COMPLETED)
-                            .await;
-                    }
-                }
-                emit_update(&mut s).await;
-            },
-
-            // ── P1 修复：优雅关闭 ──
             EngineMsg::Shutdown { reply } => {
-                // 取消所有正在运行的 worker
-                for (task_id, info) in s.running.drain() {
-                    info.cancel.cancel();
-                    eprintln!("[engine] shutdown: cancelled worker {}", task_id);
+                for (task_id, runtime) in s.running.drain() {
+                    if let Some(worker) = runtime.active_worker {
+                        worker.cancel.cancel();
+                    }
+                    eprintln!("[engine] shutdown: cancelled runtime {}", task_id);
                 }
                 let _ = reply.send(());
-                break; // 退出 event loop
+                break;
             },
         }
 
-        // 每条消息处理后自动 emit（带节流）
         emit_update(&mut s).await;
     }
 }
 
-// ─── emit 节流 ─────────────────────────────────────────
+async fn dispatch_due_wakeups(s: &mut EngineState) {
+    let now = TokioInstant::now();
+    while let Some(Reverse(wakeup)) = s.wakeups.peek().cloned() {
+        if wakeup.due_at > now {
+            break;
+        }
+        let _ = s.wakeups.pop();
+
+        let should_spawn = s
+            .running
+            .get(&wakeup.task_id)
+            .map(|runtime| {
+                runtime.wakeup_seq == wakeup.wakeup_seq
+                    && runtime.next_wakeup_at == Some(wakeup.due_at)
+                    && runtime.active_worker.is_none()
+            })
+            .unwrap_or(false);
+        if !should_spawn {
+            continue;
+        }
+
+        spawn_task_worker(s, &wakeup.task_id);
+        persist_runtime_state(s, &wakeup.task_id).await;
+    }
+}
 
 async fn emit_update(s: &mut EngineState) {
     let throttle_ms = constants::debug::EMIT_THROTTLE_MS;
@@ -213,50 +530,34 @@ async fn emit_update(s: &mut EngineState) {
         return;
     }
 
-    // P1: hash 去重 — 状态无变化时跳过序列化和 IPC
-    let hash = compute_tasks_hash(&s.tasks);
+    let summaries = build_summaries(&s.tasks);
+    let hash = compute_summaries_hash(&summaries);
     if hash == s.last_hash {
         return;
     }
-    s.last_hash = hash;
-    s.last_emit = Instant::now();
-    let _ = s.snapshot_tx.send(s.tasks.clone());
-    let snapshot = TaskSnapshotRef { tasks: &s.tasks };
-    let _ = s.app_handle.emit(constants::tauri_event::TASK_UPDATE, &snapshot);
-}
 
-/// 计算任务列表的轻量摘要 hash（仅基于 status/progress/device，微秒级）
-fn compute_tasks_hash(tasks: &[Task]) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    tasks.len().hash(&mut hasher);
-    for t in tasks {
-        t.id.hash(&mut hasher);
-        t.status.hash(&mut hasher);
-        t.assigned_device.hash(&mut hasher);
-        for c in &t.cities {
-            c.status.hash(&mut hasher);
-            c.progress.hash(&mut hasher);
-            c.done.hash(&mut hasher);
-        }
-    }
-    hasher.finish()
+    s.last_hash = hash;
+    s.last_emit = StdInstant::now();
+    let _ = s.snapshot_tx.send(summaries.clone());
+    let snapshot = TaskSummarySnapshotRef { tasks: summaries.as_slice() };
+    let _ = s.app_handle.emit(constants::tauri_event::TASK_UPDATE, &snapshot);
 }
 
 async fn force_emit(s: &mut EngineState) {
-    s.last_emit = Instant::now();
-    let _ = s.snapshot_tx.send(s.tasks.clone());
-    let snapshot = TaskSnapshotRef { tasks: &s.tasks };
+    s.last_emit = StdInstant::now();
+    let summaries = build_summaries(&s.tasks);
+    s.last_hash = compute_summaries_hash(&summaries);
+    let _ = s.snapshot_tx.send(summaries.clone());
+    let snapshot = TaskSummarySnapshotRef { tasks: summaries.as_slice() };
     let _ = s.app_handle.emit(constants::tauri_event::TASK_UPDATE, &snapshot);
 }
-
-// ─── 生命周期处理 ──────────────────────────────────────
 
 async fn handle_start(s: &mut EngineState, task_id: &str) -> Result<(), String> {
     let status = s
         .tasks
         .iter()
-        .find(|t| t.id == task_id)
-        .map(|t| t.status.clone())
+        .find(|task| task.id == task_id)
+        .map(|task| task.status.clone())
         .ok_or("任务不存在")?;
     if status != task_status::WAITING {
         return Err("任务状态非 WAITING，无法启动".into());
@@ -265,26 +566,38 @@ async fn handle_start(s: &mut EngineState, task_id: &str) -> Result<(), String> 
     let devices = s.storage.load_all_devices().await;
     let serial = pick_ready_serial(&devices, &s.tasks)?;
 
-    let task = s.tasks.iter_mut().find(|t| t.id == task_id).unwrap();
+    let task = s.tasks.iter_mut().find(|task| task.id == task_id).unwrap();
     task.status = task_status::EXECUTING.to_string();
     task.assigned_device = Some(serial.clone());
+    let _ = ensure_execution_cursor(task, true);
 
     let round_id = match s.storage.create_round(task_id).await {
-        Some(id) => id,
+        Some(round_id) => round_id,
         None => {
-            let task = s.tasks.iter_mut().find(|t| t.id == task_id).unwrap();
+            let task = s.tasks.iter_mut().find(|task| task.id == task_id).unwrap();
             task.status = task_status::WAITING.to_string();
             task.assigned_device = None;
+            clear_execution_cursor(task);
             return Err("创建轮次失败（数据库错误），无法启动任务".into());
         },
     };
 
-    s.storage
-        .save_task_state(task_id, task_status::EXECUTING, Some(&serial), Some(round_id))
-        .await;
     let started_at = s.storage.start_task_run(task_id, &serial, round_id).await;
-
-    spawn_task_worker(s, task_id, &serial, started_at, round_id);
+    s.running.insert(
+        task_id.to_string(),
+        RunningTaskState {
+            round_id,
+            started_at,
+            device_serial: serial,
+            active_worker: None,
+            next_wakeup_at: None,
+            wakeup_seq: 0,
+            attempt: 0,
+            last_error: None,
+        },
+    );
+    schedule_task(s, task_id, constants::timing::TASK_DISPATCH_INTERVAL_SECS * 1000);
+    persist_runtime_state(s, task_id).await;
     Ok(())
 }
 
@@ -292,28 +605,44 @@ async fn handle_pause(s: &mut EngineState, task_id: &str) -> Result<(), String> 
     let status = s
         .tasks
         .iter()
-        .find(|t| t.id == task_id)
-        .map(|t| t.status.clone())
+        .find(|task| task.id == task_id)
+        .map(|task| task.status.clone())
         .ok_or("任务不存在")?;
     if status != task_status::EXECUTING {
         return Err(format!("任务状态为 {}，只有 EXECUTING 可以暂停", status));
     }
 
-    let info = cancel_worker(s, task_id);
-    let round_id = info.as_ref().map(|r| r.round_id);
+    let runtime = remove_runtime(s, task_id);
+    let round_id = runtime.as_ref().map(|run| run.round_id);
 
-    if let Some(ref run) = info {
+    if let Some(run) = runtime {
         s.storage.finish_round(run.round_id, round_status::STOPPED).await;
         s.storage.finish_task_run(task_id, run.started_at, run_status::PAUSED).await;
     }
 
-    if let Some(task) = s.tasks.iter_mut().find(|t| t.id == task_id) {
+    if let Some(task) = s.tasks.iter_mut().find(|task| task.id == task_id) {
         rollback_running_keywords(task);
         task.status = task_status::PAUSED.to_string();
         task.assigned_device = None;
+        let _ = ensure_execution_cursor(task, false);
     }
 
-    s.storage.save_task_state(task_id, task_status::PAUSED, None, round_id).await;
+    let task = s.tasks.iter().find(|task| task.id == task_id).unwrap();
+    let cursor = task_state_cursor(task);
+    s.storage
+        .save_task_state(
+            task_id,
+            task_status::PAUSED,
+            None,
+            round_id,
+            cursor.0,
+            cursor.1,
+            0,
+            None,
+            None,
+            Some("paused"),
+        )
+        .await;
     Ok(())
 }
 
@@ -321,8 +650,8 @@ async fn handle_resume(s: &mut EngineState, task_id: &str) -> Result<(), String>
     let status = s
         .tasks
         .iter()
-        .find(|t| t.id == task_id)
-        .map(|t| t.status.clone())
+        .find(|task| task.id == task_id)
+        .map(|task| task.status.clone())
         .ok_or("任务不存在")?;
     if status != task_status::PAUSED && status != task_status::ERROR {
         return Err(format!("任务状态为 {}，只有 PAUSED/ERROR 可以继续", status));
@@ -330,45 +659,51 @@ async fn handle_resume(s: &mut EngineState, task_id: &str) -> Result<(), String>
 
     let devices = s.storage.load_all_devices().await;
     let serial = pick_ready_serial(&devices, &s.tasks)?;
+    let saved_state = s.storage.load_task_state(task_id).await;
 
-    let task = s.tasks.iter_mut().find(|t| t.id == task_id).unwrap();
+    let task = s.tasks.iter_mut().find(|task| task.id == task_id).unwrap();
     rollback_running_keywords(task);
     task.status = task_status::EXECUTING.to_string();
     task.assigned_device = Some(serial.clone());
+    let _ = ensure_execution_cursor(task, true);
 
-    let saved_round_id = s.storage.load_task_state(task_id).await.and_then(|(_, _, rid)| rid);
-
-    let round_id = match saved_round_id {
-        Some(rid) => {
-            if !s.storage.resume_round(rid).await {
+    let round_id = match saved_state.as_ref().and_then(|state| state.current_round_id) {
+        Some(round_id) => {
+            if !s.storage.resume_round(round_id).await {
                 return Err("恢复轮次失败，无法继续任务".into());
             }
-            rid
+            round_id
         },
-        None => match s.storage.create_round(task_id).await {
-            Some(id) => id,
-            None => {
-                let task = s.tasks.iter_mut().find(|t| t.id == task_id).unwrap();
-                task.status = task_status::PAUSED.to_string();
-                task.assigned_device = None;
-                return Err("创建轮次失败，无法继续任务".into());
-            },
-        },
+        None => s
+            .storage
+            .create_round(task_id)
+            .await
+            .ok_or_else(|| "创建轮次失败，无法继续任务".to_string())?,
     };
 
-    s.storage
-        .save_task_state(task_id, task_status::EXECUTING, Some(&serial), Some(round_id))
-        .await;
     let started_at = s.storage.start_task_run(task_id, &serial, round_id).await;
-
-    spawn_task_worker(s, task_id, &serial, started_at, round_id);
+    s.running.insert(
+        task_id.to_string(),
+        RunningTaskState {
+            round_id,
+            started_at,
+            device_serial: serial,
+            active_worker: None,
+            next_wakeup_at: None,
+            wakeup_seq: 0,
+            attempt: saved_state.as_ref().map(|state| state.attempt).unwrap_or(0),
+            last_error: saved_state.and_then(|state| state.last_error),
+        },
+    );
+    schedule_task(s, task_id, constants::timing::TASK_DISPATCH_INTERVAL_SECS * 1000);
+    persist_runtime_state(s, task_id).await;
     Ok(())
 }
 
 async fn handle_stop(s: &mut EngineState, task_id: &str) -> Result<(), String> {
     let fresh = cancel_and_cleanup(s, task_id).await?;
     if let Some(fresh) = fresh {
-        if let Some(pos) = s.tasks.iter().position(|t| t.id == task_id) {
+        if let Some(pos) = s.tasks.iter().position(|task| task.id == task_id) {
             s.tasks[pos] = fresh;
         }
     }
@@ -377,314 +712,340 @@ async fn handle_stop(s: &mut EngineState, task_id: &str) -> Result<(), String> {
 
 async fn handle_retry(s: &mut EngineState, task_id: &str) -> Result<(), String> {
     let fresh = cancel_and_cleanup(s, task_id).await?;
-
     let devices = s.storage.load_all_devices().await;
     let serial = pick_ready_serial(&devices, &s.tasks)?;
 
     if let Some(mut fresh) = fresh {
         fresh.status = task_status::EXECUTING.to_string();
         fresh.assigned_device = Some(serial.clone());
-        if let Some(pos) = s.tasks.iter().position(|t| t.id == task_id) {
+        let _ = ensure_execution_cursor(&mut fresh, true);
+        if let Some(pos) = s.tasks.iter().position(|task| task.id == task_id) {
             s.tasks[pos] = fresh;
         }
     } else {
         return Err("任务定义不存在，无法重试".into());
     }
 
-    let round_id = match s.storage.create_round(task_id).await {
-        Some(id) => id,
-        None => {
-            if let Some(task) = s.tasks.iter_mut().find(|t| t.id == task_id) {
-                task.status = task_status::WAITING.to_string();
-                task.assigned_device = None;
-            }
-            return Err("创建轮次失败（数据库错误），无法重试任务".into());
-        },
-    };
-
-    s.storage
-        .save_task_state(task_id, task_status::EXECUTING, Some(&serial), Some(round_id))
-        .await;
+    let round_id = s
+        .storage
+        .create_round(task_id)
+        .await
+        .ok_or_else(|| "创建轮次失败（数据库错误），无法重试任务".to_string())?;
     let started_at = s.storage.start_task_run(task_id, &serial, round_id).await;
 
-    spawn_task_worker(s, task_id, &serial, started_at, round_id);
+    s.running.insert(
+        task_id.to_string(),
+        RunningTaskState {
+            round_id,
+            started_at,
+            device_serial: serial,
+            active_worker: None,
+            next_wakeup_at: None,
+            wakeup_seq: 0,
+            attempt: 0,
+            last_error: None,
+        },
+    );
+    schedule_task(s, task_id, constants::timing::TASK_DISPATCH_INTERVAL_SECS * 1000);
+    persist_runtime_state(s, task_id).await;
     Ok(())
 }
 
-// ─── 内部辅助 ──────────────────────────────────────────
-
-fn cancel_worker(s: &mut EngineState, task_id: &str) -> Option<WorkerInfo> {
-    if let Some(info) = s.running.get(task_id) {
-        info.cancel.cancel();
-    }
-    s.running.remove(task_id)
-}
-
 async fn cancel_and_cleanup(s: &mut EngineState, task_id: &str) -> Result<Option<Task>, String> {
-    if !s.tasks.iter().any(|t| t.id == task_id) {
+    if !s.tasks.iter().any(|task| task.id == task_id) {
         return Err("任务不存在".into());
     }
 
-    let info = cancel_worker(s, task_id);
-
-    if let Some(ref run) = info {
-        s.storage.finish_round(run.round_id, round_status::STOPPED).await;
-        s.storage.finish_task_run(task_id, run.started_at, run_status::STOPPED).await;
+    if let Some(runtime) = remove_runtime(s, task_id) {
+        s.storage.finish_round(runtime.round_id, round_status::STOPPED).await;
+        s.storage
+            .finish_task_run(task_id, runtime.started_at, run_status::STOPPED)
+            .await;
     }
 
     s.storage.clear_task_progress(task_id).await;
     s.storage.delete_task_state(task_id).await;
-    let fresh = task_provider::load_task_by_id(&s.storage, task_id).await;
-    Ok(fresh)
+    Ok(task_provider::load_task_by_id(&s.storage, task_id).await)
 }
-
-fn spawn_task_worker(
-    s: &mut EngineState,
-    task_id: &str,
-    serial: &str,
-    started_at: i64,
-    round_id: i64,
-) {
-    let cancel = CancellationToken::new();
-    let handle = spawn_worker(
-        task_id.to_string(),
-        serial.to_string(),
-        cancel.clone(),
-        s.tx.clone(),
-        Arc::clone(&s.storage),
-    );
-    s.running
-        .insert(task_id.to_string(), WorkerInfo { cancel, handle, started_at, round_id });
-}
-
-// ─── 状态管理 ──────────────────────────────────────────
 
 async fn handle_reorder(
     s: &mut EngineState,
     task_id: &str,
     new_order: Vec<String>,
 ) -> Result<(), String> {
-    let task = s.tasks.iter_mut().find(|t| t.id == task_id).ok_or("任务不存在")?;
+    let task = s.tasks.iter_mut().find(|task| task.id == task_id).ok_or("任务不存在")?;
 
     let (fixed, mut pending): (Vec<_>, Vec<_>) =
-        task.cities.drain(..).partition(|c| c.status != city_status::PENDING);
-
-    pending
-        .sort_by_key(|c| new_order.iter().position(|name| name == &c.name).unwrap_or(usize::MAX));
-
+        task.cities.drain(..).partition(|city| city.status != city_status::PENDING);
+    pending.sort_by_key(|city| {
+        new_order.iter().position(|name| name == &city.name).unwrap_or(usize::MAX)
+    });
     task.cities = fixed.into_iter().chain(pending).collect();
     s.storage.save_city_order(task_id, &new_order).await;
     Ok(())
 }
 
 async fn handle_reload_tasks(s: &mut EngineState) {
-    let running_snapshot: HashMap<String, (String, Option<String>)> = s
+    let running_snapshot: HashMap<
+        String,
+        (String, Option<String>, Option<String>, Option<String>),
+    > = s
         .tasks
         .iter()
-        .filter(|t| s.running.contains_key(&t.id))
-        .map(|t| (t.id.clone(), (t.status.clone(), t.assigned_device.clone())))
+        .filter(|task| s.running.contains_key(&task.id))
+        .map(|task| {
+            (
+                task.id.clone(),
+                (
+                    task.status.clone(),
+                    task.assigned_device.clone(),
+                    task.current_city_name.clone(),
+                    task.current_keyword_name.clone(),
+                ),
+            )
+        })
         .collect();
 
     let mut tasks = task_provider::load_tasks(&s.storage).await;
     for task in &mut tasks {
-        if let Some((status, device)) = running_snapshot.get(&task.id) {
+        if let Some((status, device, city, keyword)) = running_snapshot.get(&task.id) {
             task.status = status.clone();
             task.assigned_device = device.clone();
+            task.current_city_name = city.clone();
+            task.current_keyword_name = keyword.clone();
+            let _ = ensure_execution_cursor(task, status == task_status::EXECUTING);
         }
     }
     s.tasks = tasks;
 }
 
-// ─── Tick 处理 ─────────────────────────────────────────
-
-async fn process_tick(s: &mut EngineState, task_id: &str, device_online: bool) -> TickOutcome {
-    let Some(run_info) = s.running.get(task_id) else {
-        return TickOutcome::Continue;
+async fn handle_worker_result(
+    s: &mut EngineState,
+    task_id: &str,
+    worker_seq: u64,
+    outcome: ExecutionOutcome,
+) {
+    let Some(runtime) = s.running.get_mut(task_id) else {
+        return;
     };
-    let run_started_at = run_info.started_at;
-    let run_round_id = run_info.round_id;
-
-    let task = match s.tasks.iter_mut().find(|t| t.id == task_id) {
-        Some(t) => t,
-        None => return TickOutcome::Continue,
+    let Some(active_worker_seq) = runtime.active_worker.as_ref().map(|worker| worker.worker_seq)
+    else {
+        return;
     };
+    if active_worker_seq != worker_seq {
+        return;
+    }
+    runtime.active_worker = None;
+
+    match outcome {
+        ExecutionOutcome::Cancelled => {},
+        ExecutionOutcome::DeviceOffline => {
+            mark_task_error(
+                s,
+                task_id,
+                "设备离线，任务已暂停".to_string(),
+                false,
+                run_status::STOPPED,
+            )
+            .await;
+        },
+        ExecutionOutcome::Failed { retryable, next_delay_ms, error_message } => {
+            if retryable {
+                if let Some(runtime) = s.running.get_mut(task_id) {
+                    runtime.attempt += 1;
+                    runtime.last_error = Some(error_message);
+                }
+                schedule_task(
+                    s,
+                    task_id,
+                    next_delay_ms.unwrap_or(constants::timing::TASK_DISPATCH_INTERVAL_SECS * 1000),
+                );
+                persist_runtime_state(s, task_id).await;
+            } else {
+                mark_task_error(s, task_id, error_message, false, run_status::STOPPED).await;
+            }
+        },
+        ExecutionOutcome::Success { next_delay_ms } => {
+            if handle_success_outcome(s, task_id, next_delay_ms).await.is_err() {
+                mark_task_error(
+                    s,
+                    task_id,
+                    "任务执行游标异常".to_string(),
+                    false,
+                    run_status::STOPPED,
+                )
+                .await;
+            }
+        },
+    }
+}
+
+async fn handle_success_outcome(
+    s: &mut EngineState,
+    task_id: &str,
+    next_delay_ms: u64,
+) -> Result<(), String> {
+    let (round_id, started_at, device_serial) = {
+        let runtime = s.running.get(task_id).ok_or("运行时不存在")?;
+        (runtime.round_id, runtime.started_at, runtime.device_serial.clone())
+    };
+
+    let task = s.tasks.iter_mut().find(|task| task.id == task_id).ok_or("任务不存在")?;
 
     if task.status != task_status::EXECUTING {
-        return TickOutcome::Continue;
+        return Ok(());
     }
 
-    let device_serial = task.assigned_device.clone().unwrap_or_default();
-
-    // 设备离线
-    if !device_online {
-        // 再次确认
-        let still_offline = s
-            .storage
-            .get_device_by_serial(&device_serial)
-            .await
-            .map(|d| d.state != constants::device_state::DEVICE)
-            .unwrap_or(true);
-        if !still_offline {
-            return TickOutcome::Continue;
-        }
-
-        rollback_running_keywords(task);
-        task.status = task_status::ERROR.to_string();
-        task.assigned_device = None;
-        s.storage.finish_round(run_round_id, round_status::STOPPED).await;
-        s.storage.finish_task_run(task_id, run_started_at, run_status::STOPPED).await;
-        s.storage
-            .save_task_state(task_id, task_status::ERROR, None, Some(run_round_id))
-            .await;
-        return TickOutcome::TaskError;
-    }
-
-    // 风控模拟
     if constants::debug::MOCK_RISK_ENABLED {
         let triggered = {
             let mut rng = rand::rng();
             rand::RngExt::random_bool(&mut rng, constants::debug::MOCK_RISK_PROBABILITY)
         };
         if triggered {
-            eprintln!(
-                "[engine] risk-control triggered (simulated): task={}, device={}",
-                task_id, device_serial
-            );
-            rollback_running_keywords(task);
-            task.status = task_status::ERROR.to_string();
-            task.assigned_device = None;
+            mark_task_error(
+                s,
+                task_id,
+                "设备风控触发，任务已停止，设备已标记".to_string(),
+                true,
+                run_status::STOPPED,
+            )
+            .await;
+            return Ok(());
+        }
+    }
 
-            s.storage.finish_round(run_round_id, round_status::STOPPED).await;
-            s.storage.finish_task_run(task_id, run_started_at, run_status::STOPPED).await;
-            s.storage
-                .save_task_state(task_id, task_status::ERROR, None, Some(run_round_id))
-                .await;
-            s.storage.flag_device(&device_serial).await;
+    let Some((city_idx, keyword_idx)) = ensure_execution_cursor(task, true) else {
+        complete_task_success(s, task_id, round_id, started_at).await;
+        return Ok(());
+    };
+
+    let done_city = task.cities[city_idx].name.clone();
+    let done_keyword = task.cities[city_idx].keywords[keyword_idx].name.clone();
+    task.cities[city_idx].keywords[keyword_idx].status = keyword_status::OK.to_string();
+    task.cities[city_idx].done += 1;
+    task.cities[city_idx].progress = if task.cities[city_idx].total > 0 {
+        ((task.cities[city_idx].done as f64 / task.cities[city_idx].total as f64) * 100.0).round()
+            as i32
+    } else {
+        0
+    };
+
+    s.storage
+        .record_keyword_done(task_id, &done_city, &done_keyword, &device_serial, round_id)
+        .await;
+
+    if move_to_next_cursor(task, true).is_some() {
+        if let Some(runtime) = s.running.get_mut(task_id) {
+            runtime.attempt = 0;
+            runtime.last_error = None;
+        }
+        schedule_task(s, task_id, next_delay_ms);
+        persist_runtime_state(s, task_id).await;
+    } else {
+        complete_task_success(s, task_id, round_id, started_at).await;
+    }
+
+    Ok(())
+}
+
+async fn complete_task_success(s: &mut EngineState, task_id: &str, round_id: i64, started_at: i64) {
+    if let Some(task) = s.tasks.iter_mut().find(|task| task.id == task_id) {
+        task.status = task_status::SUCCESS.to_string();
+        task.assigned_device = None;
+        clear_execution_cursor(task);
+    }
+    let _ = s.running.remove(task_id);
+    s.storage.finish_round(round_id, round_status::COMPLETED).await;
+    s.storage.finish_task_run(task_id, started_at, run_status::COMPLETED).await;
+    s.storage
+        .save_task_state(task_id, task_status::SUCCESS, None, None, None, None, 0, None, None, None)
+        .await;
+}
+
+async fn mark_task_error(
+    s: &mut EngineState,
+    task_id: &str,
+    error_message: String,
+    flag_device: bool,
+    run_finish_status: &str,
+) {
+    let runtime = remove_runtime(s, task_id);
+    let (round_id, started_at, device_serial, attempt) = runtime
+        .as_ref()
+        .map(|run| {
+            (Some(run.round_id), Some(run.started_at), Some(run.device_serial.clone()), run.attempt)
+        })
+        .unwrap_or((None, None, None, 0));
+
+    if let Some(round_id) = round_id {
+        s.storage.finish_round(round_id, round_status::STOPPED).await;
+    }
+    if let (Some(started_at), Some(device_serial)) = (started_at, device_serial.as_deref()) {
+        let _ = device_serial;
+        s.storage.finish_task_run(task_id, started_at, run_finish_status).await;
+    }
+
+    if let Some(task) = s.tasks.iter_mut().find(|task| task.id == task_id) {
+        rollback_running_keywords(task);
+        task.status = task_status::ERROR.to_string();
+        task.assigned_device = None;
+        let _ = ensure_execution_cursor(task, false);
+        let cursor = task_state_cursor(task);
+        s.storage
+            .save_task_state(
+                task_id,
+                task_status::ERROR,
+                None,
+                round_id,
+                cursor.0,
+                cursor.1,
+                attempt,
+                None,
+                Some(error_message.as_str()),
+                Some("error"),
+            )
+            .await;
+    }
+
+    if flag_device {
+        if let Some(serial) = device_serial.as_deref() {
+            s.storage.flag_device(serial).await;
             let _ = s.app_handle.emit(
                 constants::tauri_event::RISK_CONTROL,
                 serde_json::json!({
                     "task_id": task_id,
-                    "device_serial": device_serial,
-                    "message": "设备风控触发，任务已停止，设备已标记"
+                    "device_serial": serial,
+                    "message": error_message
                 }),
             );
             let _ = s.app_handle.emit(constants::tauri_event::DEVICES_CHANGED, ());
-            return TickOutcome::TaskError;
-        }
-    }
-
-    // 找活跃城市或激活第一个 pending
-    let active_idx =
-        task.cities.iter().position(|c| c.status == city_status::ACTIVE).or_else(|| {
-            let idx = task.cities.iter().position(|c| c.status == city_status::PENDING)?;
-            task.cities[idx].status = city_status::ACTIVE.to_string();
-            Some(idx)
-        });
-
-    let Some(active_idx) = active_idx else {
-        task.status = task_status::SUCCESS.to_string();
-        task.assigned_device = None;
-        s.storage.save_task_state(task_id, task_status::SUCCESS, None, None).await;
-        return TickOutcome::TaskDone;
-    };
-
-    let city = &mut task.cities[active_idx];
-
-    // 记录完成的关键词 (RUN → OK)
-    let mut completed_kw: Option<(String, String)> = None;
-    for kw in city.keywords.iter_mut() {
-        if kw.status == keyword_status::RUN {
-            completed_kw = Some((city.name.clone(), kw.name.clone()));
-            kw.status = keyword_status::OK.to_string();
-            city.done += 1;
-            city.progress = if city.total > 0 {
-                ((city.done as f64 / city.total as f64) * 100.0).round() as i32
-            } else {
-                0
-            };
-        }
-    }
-
-    // 找下一个 pending 关键词
-    let next_idx = city.keywords.iter().position(|k| k.status == keyword_status::PENDING);
-
-    if let Some(idx) = next_idx {
-        city.keywords[idx].status = keyword_status::RUN.to_string();
-
-        if let Some((done_city, done_kw)) = completed_kw {
-            s.storage
-                .record_keyword_done(task_id, &done_city, &done_kw, &device_serial, run_round_id)
-                .await;
-        }
-        TickOutcome::Continue
-    } else if let Some((done_city, done_kw)) = completed_kw {
-        city.status = city_status::DONE.to_string();
-        city.progress = 100;
-
-        s.storage
-            .record_keyword_done(task_id, &done_city, &done_kw, &device_serial, run_round_id)
-            .await;
-
-        let has_next = task
-            .cities
-            .iter_mut()
-            .find(|c| c.status == city_status::PENDING)
-            .map(|nc| {
-                nc.status = city_status::ACTIVE.to_string();
-            })
-            .is_some();
-
-        if has_next {
-            TickOutcome::Continue
-        } else {
-            task.status = task_status::SUCCESS.to_string();
-            task.assigned_device = None;
-            s.storage.save_task_state(task_id, task_status::SUCCESS, None, None).await;
-            TickOutcome::TaskDone
-        }
-    } else {
-        city.status = city_status::DONE.to_string();
-        city.progress = 100;
-        let next = task.cities.iter_mut().find(|c| c.status == city_status::PENDING);
-        if let Some(nc) = next {
-            nc.status = city_status::ACTIVE.to_string();
-            TickOutcome::Continue
-        } else {
-            task.status = task_status::SUCCESS.to_string();
-            task.assigned_device = None;
-            s.storage.save_task_state(task_id, task_status::SUCCESS, None, None).await;
-            TickOutcome::TaskDone
         }
     }
 }
-
-// ─── MQTT 处理 ─────────────────────────────────────────
 
 async fn handle_device_kick(s: &mut EngineState, hw_serials: Vec<String>) -> u32 {
     let mut kicked = 0u32;
 
     for hw_serial in &hw_serials {
-        let device = s.storage.get_device_by_hw_serial(hw_serial).await;
-        let Some(device) = device else { continue };
+        let Some(device) = s.storage.get_device_by_hw_serial(hw_serial).await else {
+            continue;
+        };
         let serial = device.serial.clone();
 
-        let task_to_pause: Option<String> = s
+        let task_to_pause = s
             .tasks
             .iter()
-            .find(|t| {
-                t.assigned_device.as_deref() == Some(&serial)
-                    && (t.status == task_status::EXECUTING || t.status == task_status::PAUSED)
+            .find(|task| {
+                task.assigned_device.as_deref() == Some(&serial)
+                    && (task.status == task_status::EXECUTING || task.status == task_status::PAUSED)
             })
-            .map(|t| t.id.clone());
+            .map(|task| task.id.clone());
 
         if let Some(task_id) = task_to_pause {
-            if let Err(e) = handle_pause(s, &task_id).await {
-                eprintln!("[engine] 踢设备时暂停任务失败: task={}, err={}", task_id, e);
-            }
+            let _ = handle_pause(s, &task_id).await;
         }
 
         s.storage.delete_device(&serial).await;
-        eprintln!("[engine] 设备已踢下线: hw_serial={}, serial={}", hw_serial, serial);
         kicked += 1;
     }
 
@@ -695,132 +1056,124 @@ async fn handle_device_kick(s: &mut EngineState, hw_serials: Vec<String>) -> u32
 }
 
 async fn handle_phones_unbind(s: &mut EngineState, phones: Vec<String>) -> u32 {
-    let mut all_task_ids: Vec<String> = Vec::new();
+    let mut all_task_ids = Vec::new();
     for phone in &phones {
-        let task_ids = s.storage.get_tasks_by_phone(phone).await;
-        all_task_ids.extend(task_ids);
+        all_task_ids.extend(s.storage.get_tasks_by_phone(phone).await);
     }
     all_task_ids.sort();
     all_task_ids.dedup();
-
     if all_task_ids.is_empty() {
         return 0;
     }
 
-    let all_ids_set: HashSet<String> = all_task_ids.iter().cloned().collect();
-
-    // 取消 workers + 结束 runs
     for task_id in &all_task_ids {
-        if let Some(info) = cancel_worker(s, task_id) {
-            s.storage.finish_round(info.round_id, round_status::STOPPED).await;
-            s.storage.finish_task_run(task_id, info.started_at, run_status::STOPPED).await;
+        if let Some(runtime) = remove_runtime(s, task_id) {
+            s.storage.finish_round(runtime.round_id, round_status::STOPPED).await;
+            s.storage
+                .finish_task_run(task_id, runtime.started_at, run_status::STOPPED)
+                .await;
         }
     }
 
-    // 移除任务
-    s.tasks.retain(|t| !all_ids_set.contains(&t.id));
+    let id_set: HashSet<String> = all_task_ids.iter().cloned().collect();
+    s.tasks.retain(|task| !id_set.contains(&task.id));
     s.storage.batch_cleanup_tasks(&all_task_ids).await;
-
-    let removed = all_task_ids.len() as u32;
-    eprintln!("[engine] 批量清理完成: {} 个任务（解绑手机号: {:?}）", removed, phones);
-    removed
+    all_task_ids.len() as u32
 }
 
 async fn handle_task_reload_msg(s: &mut EngineState, action: &str, task_id: Option<&str>) {
     match action {
         "reload_all" => {
-            eprintln!("[engine] 收到 reload_all，重新加载所有任务");
             handle_reload_tasks(s).await;
             force_emit(s).await;
         },
         "reload_task" => {
-            if let Some(tid) = task_id {
-                if s.reloading.contains(tid) {
-                    eprintln!("[engine] reload_task 防重入跳过: {}", tid);
+            if let Some(task_id) = task_id {
+                if s.reloading.contains(task_id) {
                     return;
                 }
-                s.reloading.insert(tid.to_string());
-
-                eprintln!("[engine] 收到 reload_task: {}", tid);
-                merge_single_task(s, tid).await;
+                s.reloading.insert(task_id.to_string());
+                merge_single_task(s, task_id).await;
                 force_emit(s).await;
-                s.reloading.remove(tid);
+                s.reloading.remove(task_id);
             }
         },
         "delete_task" => {
-            if let Some(tid) = task_id {
-                eprintln!("[engine] 收到 delete_task: {}", tid);
-                let is_running = s.tasks.iter().any(|t| {
-                    t.id == tid
-                        && (t.status == task_status::EXECUTING
-                            || t.status == task_status::PAUSED
-                            || t.status == task_status::ERROR)
+            if let Some(task_id) = task_id {
+                let is_running = s.tasks.iter().any(|task| {
+                    task.id == task_id
+                        && (task.status == task_status::EXECUTING
+                            || task.status == task_status::PAUSED
+                            || task.status == task_status::ERROR)
                 });
                 if is_running {
-                    let _ = handle_stop(s, tid).await;
+                    let _ = handle_stop(s, task_id).await;
                 }
-                s.tasks.retain(|t| t.id != tid);
-                s.storage.batch_cleanup_tasks(&[tid.to_string()]).await;
+                s.tasks.retain(|task| task.id != task_id);
+                s.storage.batch_cleanup_tasks(&[task_id.to_string()]).await;
                 force_emit(s).await;
             }
         },
-        _ => {
-            eprintln!("[engine] 未知的 task reload action: {}", action);
-        },
+        _ => {},
     }
 }
 
 async fn merge_single_task(s: &mut EngineState, task_id: &str) {
     let new_def = match s.http.fetch_task(task_id).await {
         Ok(def) => def,
-        Err(e) => {
-            eprintln!("[engine] merge_single_task: 获取任务定义失败 {}: {}", task_id, e);
-            return;
-        },
+        Err(_) => return,
     };
 
     let payload = match serde_json::to_string(&new_def.cities) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("[engine] merge_single_task: 序列化 payload 失败: {}", e);
-            return;
-        },
+        Ok(payload) => payload,
+        Err(_) => return,
     };
 
     s.storage.upsert_task_def(task_id, &new_def.name, &payload, 1, "").await;
 
-    let was_success = s.tasks.iter().any(|t| t.id == task_id && t.status == task_status::SUCCESS);
+    let was_success = s
+        .tasks
+        .iter()
+        .any(|task| task.id == task_id && task.status == task_status::SUCCESS);
     if was_success {
         s.storage.clear_task_progress(task_id).await;
         s.storage.delete_task_state(task_id).await;
     }
 
     let merged = task_provider::build_task(&s.storage, new_def).await;
-
-    if let Some(local) = s.tasks.iter_mut().find(|t| t.id == task_id) {
-        let is_running = local.status == task_status::EXECUTING
+    if let Some(local) = s.tasks.iter_mut().find(|task| task.id == task_id) {
+        let keep_runtime = local.status == task_status::EXECUTING
             || local.status == task_status::PAUSED
             || local.status == task_status::ERROR;
 
-        if is_running {
+        if keep_runtime {
             let saved_status = local.status.clone();
             let saved_device = local.assigned_device.clone();
+            let saved_city = local.current_city_name.clone();
+            let saved_keyword = local.current_keyword_name.clone();
             let old_cities = std::mem::take(&mut local.cities);
             *local = merged;
             local.status = saved_status;
             local.assigned_device = saved_device;
+            local.current_city_name = saved_city;
+            local.current_keyword_name = saved_keyword;
+
             for city in &mut local.cities {
-                if let Some(old_city) = old_cities.iter().find(|c| c.name == city.name) {
+                if let Some(old_city) = old_cities.iter().find(|item| item.name == city.name) {
                     city.status = old_city.status.clone();
                     city.done = old_city.done;
                     city.progress = old_city.progress;
-                    for kw in &mut city.keywords {
-                        if let Some(old_kw) = old_city.keywords.iter().find(|k| k.name == kw.name) {
-                            kw.status = old_kw.status.clone();
+                    for keyword in &mut city.keywords {
+                        if let Some(old_keyword) =
+                            old_city.keywords.iter().find(|item| item.name == keyword.name)
+                        {
+                            keyword.status = old_keyword.status.clone();
                         }
                     }
                 }
             }
+
+            let _ = ensure_execution_cursor(local, local.status == task_status::EXECUTING);
         } else {
             *local = merged;
         }
@@ -828,52 +1181,116 @@ async fn merge_single_task(s: &mut EngineState, task_id: &str) {
         s.tasks.push(merged);
     }
 
-    let valid_pairs: Vec<(String, String)> = s
+    let valid_pairs = s
         .tasks
         .iter()
-        .find(|t| t.id == task_id)
-        .map(|t| {
-            t.cities
+        .find(|task| task.id == task_id)
+        .map(|task| {
+            task.cities
                 .iter()
-                .flat_map(|c| c.keywords.iter().map(move |k| (c.name.clone(), k.name.clone())))
+                .flat_map(|city| {
+                    city.keywords
+                        .iter()
+                        .map(move |keyword| (city.name.clone(), keyword.name.clone()))
+                })
                 .collect()
         })
         .unwrap_or_default();
-
     s.storage.cleanup_orphan_progress(task_id, valid_pairs).await;
 }
 
 async fn handle_release_offline(s: &mut EngineState, online_serials: &[String]) -> u32 {
-    let online_set: HashSet<&str> = online_serials.iter().map(|s| s.as_str()).collect();
-    let mut released = 0u32;
-
-    let task_ids_to_release: Vec<String> = s
+    let online_set: HashSet<&str> = online_serials.iter().map(|serial| serial.as_str()).collect();
+    let task_ids: Vec<String> = s
         .tasks
         .iter()
-        .filter(|t| {
-            t.assigned_device.is_some()
-                && t.status == task_status::EXECUTING
-                && !online_set.contains(t.assigned_device.as_deref().unwrap_or(""))
+        .filter(|task| {
+            task.assigned_device.is_some()
+                && task.status == task_status::EXECUTING
+                && !online_set.contains(task.assigned_device.as_deref().unwrap_or(""))
         })
-        .map(|t| t.id.clone())
+        .map(|task| task.id.clone())
         .collect();
 
-    for task_id in &task_ids_to_release {
-        if let Some(info) = cancel_worker(s, task_id) {
-            s.storage.finish_round(info.round_id, round_status::STOPPED).await;
-            s.storage.finish_task_run(task_id, info.started_at, run_status::STOPPED).await;
-            let round_id = info.round_id;
-            s.storage
-                .save_task_state(task_id, task_status::ERROR, None, Some(round_id))
-                .await;
-        }
-
-        if let Some(task) = s.tasks.iter_mut().find(|t| t.id == *task_id) {
-            task.status = task_status::ERROR.to_string();
-            task.assigned_device = None;
-        }
-        released += 1;
+    for task_id in &task_ids {
+        mark_task_error(s, task_id, "设备离线，任务已暂停".to_string(), false, run_status::STOPPED)
+            .await;
     }
 
-    released
+    task_ids.len() as u32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::task_provider::{TaskCity, TaskKeyword};
+
+    fn make_task() -> Task {
+        Task {
+            id: "task-1".to_string(),
+            name: "task".to_string(),
+            status: task_status::WAITING.to_string(),
+            assigned_device: None,
+            cities: vec![
+                TaskCity {
+                    name: "Wuhan".to_string(),
+                    poi: "poi".to_string(),
+                    progress: 0,
+                    total: 2,
+                    done: 0,
+                    status: city_status::PENDING.to_string(),
+                    keywords: vec![
+                        TaskKeyword {
+                            name: "k1".to_string(),
+                            status: keyword_status::PENDING.to_string(),
+                        },
+                        TaskKeyword {
+                            name: "k2".to_string(),
+                            status: keyword_status::PENDING.to_string(),
+                        },
+                    ],
+                },
+                TaskCity {
+                    name: "Shanghai".to_string(),
+                    poi: "poi".to_string(),
+                    progress: 0,
+                    total: 1,
+                    done: 0,
+                    status: city_status::PENDING.to_string(),
+                    keywords: vec![TaskKeyword {
+                        name: "k3".to_string(),
+                        status: keyword_status::PENDING.to_string(),
+                    }],
+                },
+            ],
+            round_no: 0,
+            current_round_id: None,
+            current_city_name: None,
+            current_keyword_name: None,
+        }
+    }
+
+    #[test]
+    fn ensure_cursor_picks_first_pending_keyword() {
+        let mut task = make_task();
+        let cursor = ensure_execution_cursor(&mut task, true);
+        assert_eq!(cursor, Some((0, 0)));
+        assert_eq!(task.current_city_name.as_deref(), Some("Wuhan"));
+        assert_eq!(task.current_keyword_name.as_deref(), Some("k1"));
+        assert_eq!(task.cities[0].keywords[0].status, keyword_status::RUN);
+    }
+
+    #[test]
+    fn move_cursor_skips_completed_keywords() {
+        let mut task = make_task();
+        let _ = ensure_execution_cursor(&mut task, true);
+        task.cities[0].keywords[0].status = keyword_status::OK.to_string();
+        task.cities[0].done = 1;
+        task.cities[0].progress = 50;
+
+        let cursor = move_to_next_cursor(&mut task, true);
+        assert_eq!(cursor, Some((0, 1)));
+        assert_eq!(task.current_keyword_name.as_deref(), Some("k2"));
+        assert_eq!(task.cities[0].keywords[1].status, keyword_status::RUN);
+    }
 }

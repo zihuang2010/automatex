@@ -8,14 +8,14 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::http;
 use crate::storage::Database;
-use crate::task_provider::{self, Task};
+use crate::task_provider::{self, Task, TaskSummary};
 
 // ─── 公共类型 ──────────────────────────────────────────
 
 /// 零拷贝快照：序列化时直接引用 tasks
 #[derive(Serialize)]
-pub(crate) struct TaskSnapshotRef<'a> {
-    pub tasks: &'a [Task],
+pub(crate) struct TaskSummarySnapshotRef<'a> {
+    pub tasks: &'a [TaskSummary],
 }
 
 // ─── 消息类型 ──────────────────────────────────────────
@@ -45,7 +45,11 @@ pub(crate) enum EngineMsg {
 
     // ── 查询 ──
     GetTasks {
-        reply: oneshot::Sender<Vec<Task>>,
+        reply: oneshot::Sender<Vec<TaskSummary>>,
+    },
+    GetTaskDetail {
+        task_id: String,
+        reply: oneshot::Sender<Option<Task>>,
     },
     GetReadySerials {
         reply: oneshot::Sender<Vec<String>>,
@@ -78,14 +82,10 @@ pub(crate) enum EngineMsg {
     },
 
     // ── Worker 回报 ──
-    TickRequest {
+    WorkerResult {
         task_id: String,
-        device_online: bool,
-        reply: oneshot::Sender<TickOutcome>,
-    },
-    WorkerExited {
-        task_id: String,
-        success: bool,
+        worker_seq: u64,
+        outcome: ExecutionOutcome,
     },
     /// P1 修复：优雅关闭，取消所有 worker
     Shutdown {
@@ -93,12 +93,18 @@ pub(crate) enum EngineMsg {
     },
 }
 
-/// tick 处理结果，告知 worker 下一步
 #[derive(Debug)]
-pub(crate) enum TickOutcome {
-    Continue,
-    TaskDone,
-    TaskError,
+pub(crate) enum ExecutionOutcome {
+    Success {
+        next_delay_ms: u64,
+    },
+    DeviceOffline,
+    Failed {
+        retryable: bool,
+        next_delay_ms: Option<u64>,
+        error_message: String,
+    },
+    Cancelled,
 }
 
 // ─── TaskEngine（thin sender wrapper）─────────────────
@@ -107,7 +113,7 @@ const ENGINE_CHANNEL_SIZE: usize = 256;
 
 pub struct TaskEngine {
     tx: mpsc::Sender<EngineMsg>,
-    snapshot_rx: watch::Receiver<Vec<Task>>,
+    snapshot_rx: watch::Receiver<Vec<TaskSummary>>,
 }
 
 impl TaskEngine {
@@ -118,8 +124,9 @@ impl TaskEngine {
         app_handle: tauri::AppHandle,
     ) -> Arc<Self> {
         let tasks = task_provider::load_tasks(&storage).await;
+        let summaries = tasks.iter().map(task_provider::summarize_task).collect::<Vec<_>>();
         let (tx, rx) = mpsc::channel(ENGINE_CHANNEL_SIZE);
-        let (snapshot_tx, snapshot_rx) = watch::channel(tasks.clone());
+        let (snapshot_tx, snapshot_rx) = watch::channel(summaries);
 
         // 启动事件循环
         event_loop::spawn(rx, tx.clone(), snapshot_tx, tasks, storage, http, app_handle);
@@ -144,13 +151,20 @@ impl TaskEngine {
 
     // ── 公共 API（与旧接口完全兼容）──
 
-    pub async fn get_tasks(&self) -> Vec<Task> {
+    pub async fn get_tasks(&self) -> Vec<TaskSummary> {
         self.send_and_recv(|reply| EngineMsg::GetTasks { reply })
             .await
             .unwrap_or_default()
     }
 
-    pub fn subscribe_tasks(&self) -> watch::Receiver<Vec<Task>> {
+    pub async fn get_task_detail(&self, task_id: &str) -> Option<Task> {
+        self.send_and_recv(|reply| EngineMsg::GetTaskDetail { task_id: task_id.to_string(), reply })
+            .await
+            .ok()
+            .flatten()
+    }
+
+    pub fn subscribe_tasks(&self) -> watch::Receiver<Vec<TaskSummary>> {
         self.snapshot_rx.clone()
     }
 

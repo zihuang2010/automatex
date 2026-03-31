@@ -1,36 +1,33 @@
-use crate::task_provider::Task;
+use crate::task_provider::{Task, TaskSummary};
 use crate::{constants, AppState};
 
-fn build_task_progress_payload(task: &Task) -> serde_json::Value {
-    let total_kw: i32 = task.cities.iter().map(|c| c.total).sum();
-    let done_kw: i32 = task.cities.iter().map(|c| c.done).sum();
-    let progress = if total_kw > 0 {
-        ((done_kw as f64 / total_kw as f64) * 100.0).round() as i32
-    } else {
-        0
-    };
-
-    let active_city = task.cities.iter().find(|c| c.status == "active");
-
+fn build_task_progress_payload(task: &TaskSummary) -> serde_json::Value {
     serde_json::json!({
         "task_id": task.id,
         "status": task.status,
-        "progress": progress,
-        "total_keywords": total_kw,
-        "done_keywords": done_kw,
-        "active_city": active_city.map(|c| serde_json::json!({
-            "name": c.name,
-            "progress": c.progress,
-            "done": c.done,
-            "total": c.total,
+        "progress": task.progress,
+        "total_keywords": task.keyword_total,
+        "done_keywords": task.keyword_done,
+        "active_city": task.active_city_name.as_ref().map(|name| serde_json::json!({
+            "name": name,
         })),
         "device": task.assigned_device,
     })
 }
 
 #[tauri::command]
-pub async fn engine_get_tasks(state: tauri::State<'_, AppState>) -> Result<Vec<Task>, String> {
+pub async fn engine_get_tasks(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<TaskSummary>, String> {
     Ok(state.engine()?.get_tasks().await)
+}
+
+#[tauri::command]
+pub async fn engine_get_task_detail(
+    task_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<Task>, String> {
+    Ok(state.engine()?.get_task_detail(&task_id).await)
 }
 
 #[tauri::command]
@@ -114,7 +111,7 @@ pub async fn subscribe_task_progress(
     let engine = state.engine()?;
     let mut rx = engine.subscribe_tasks();
 
-    let send_snapshot = |tasks: &[Task]| -> Result<bool, String> {
+    let send_snapshot = |tasks: &[TaskSummary]| -> Result<bool, String> {
         let Some(task) = tasks.iter().find(|t| t.id == task_id) else {
             let _ = on_progress.send(serde_json::json!({
                 "status": "not_found",

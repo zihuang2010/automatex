@@ -1,6 +1,5 @@
 /* ===== Shared TypeScript Types ===== */
-
-import { TaskStatus, CityStatus, KeywordStatus } from './constants';
+import { CityStatus, KeywordStatus, TaskStatus } from './constants';
 
 export type TaskStatusType = (typeof TaskStatus)[keyof typeof TaskStatus];
 export type CityStatusType = (typeof CityStatus)[keyof typeof CityStatus];
@@ -27,6 +26,24 @@ export interface Task {
   status: TaskStatusType;
   assigned_device: string | null;
   cities: TaskCity[];
+  round_no?: number;
+  current_city_name?: string | null;
+  current_keyword_name?: string | null;
+}
+
+export interface TaskSummary {
+  id: string;
+  name: string;
+  status: TaskStatusType;
+  assigned_device: string | null;
+  city_count: number;
+  keyword_total: number;
+  keyword_done: number;
+  progress: number;
+  active_city_name: string | null;
+  current_city_name: string | null;
+  current_keyword_name: string | null;
+  round_no: number;
 }
 
 /** 设备行（与后端 DeviceRow 一一对应） */

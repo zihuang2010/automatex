@@ -6,12 +6,14 @@ import { CityStatus, KeywordStatus, TaskStatus } from './constants';
 import {
   activeCityIdx,
   activeTask,
+  activeTaskDetail,
   globalQueue,
   setActiveCityIdx,
   setActiveTask,
+  setActiveTaskDetail,
   setSelectedDevice,
 } from './state';
-import { TaskCity, TaskKeyword, TaskRunStats } from './types';
+import { Task, TaskCity, TaskKeyword, TaskRunStats } from './types';
 import { $, esc, formatRunTime } from './utils';
 
 // 回调注册（由 main.ts 初始化后设置，避免循环依赖）
@@ -41,12 +43,38 @@ export async function loadTasksForDevice(serial: string) {
   const task = globalQueue.find(t => t.assigned_device === serial);
   if (task && task !== activeTask) {
     setActiveTask(task);
+    setActiveTaskDetail(null);
     setActiveCityIdx(0);
   }
   await renderTaskView();
   if (serial) {
     _onLoadChainForDevice?.(serial);
   }
+}
+
+function detailMatchesSummary(task: Task, summary: typeof activeTask): boolean {
+  if (!summary) return false;
+  if (task.id !== summary.id) return false;
+  if (task.status !== summary.status) return false;
+  if ((task.assigned_device ?? null) !== summary.assigned_device) return false;
+  const total = task.cities.reduce((sum, city) => sum + city.total, 0);
+  const done = task.cities.reduce((sum, city) => sum + city.done, 0);
+  return total === summary.keyword_total && done === summary.keyword_done;
+}
+
+async function ensureActiveTaskDetail(): Promise<Task | null> {
+  if (!activeTask) {
+    setActiveTaskDetail(null);
+    return null;
+  }
+
+  if (activeTaskDetail && detailMatchesSummary(activeTaskDetail, activeTask)) {
+    return activeTaskDetail;
+  }
+
+  const detail = await invoke<Task | null>('engine_get_task_detail', { taskId: activeTask.id });
+  setActiveTaskDetail(detail);
+  return detail;
 }
 
 /* ===== 骨架：首次渲染时创建带 id 的容器结构 ===== */
@@ -86,9 +114,9 @@ function patchHtml(id: string, html: string, prev: string): string {
 /* ===== 主渲染函数 ===== */
 export async function renderTaskView() {
   const mid = $('#col-mid')!;
-  const task = activeTask;
+  const task = await ensureActiveTaskDetail();
 
-  if (!task) {
+  if (!task || !activeTask) {
     mid.innerHTML =
       '<div class="empty-hint" style="padding:40px;text-align:center">选择任务以查看详情</div>';
     _prevTaskId = null;
@@ -481,6 +509,7 @@ export function registerViewActions() {
       const task = globalQueue.find(t => t.id === (taskId as string));
       if (!task || task === activeTask) return;
       setActiveTask(task);
+      setActiveTaskDetail(null);
       setActiveCityIdx(0);
       setSelectedDevice(null);
       _onUpdateCardSelection?.();

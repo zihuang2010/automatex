@@ -1,4 +1,4 @@
-use super::{log_exec, now_unix, Database};
+use super::{log_exec, now_unix, Database, TaskStateRow};
 use rusqlite::params;
 
 impl Database {
@@ -181,22 +181,52 @@ impl Database {
         status: &str,
         assigned_device: Option<&str>,
         current_round_id: Option<i64>,
+        current_city_name: Option<&str>,
+        current_keyword_name: Option<&str>,
+        attempt: i32,
+        next_wakeup_at: Option<i64>,
+        last_error: Option<&str>,
+        runtime_status: Option<&str>,
     ) {
         let task_id = task_id.to_string();
         let status = status.to_string();
         let assigned_device = assigned_device.map(|s| s.to_string());
+        let current_city_name = current_city_name.map(|s| s.to_string());
+        let current_keyword_name = current_keyword_name.map(|s| s.to_string());
+        let last_error = last_error.map(|s| s.to_string());
+        let runtime_status = runtime_status.map(|s| s.to_string());
         let Ok(conn) = self.pool.get().await else { return };
         let _ = conn
             .interact(move |conn| {
                 log_exec(
                     conn.execute(
-                        "INSERT INTO a_task_state (task_id, status, assigned_device, current_round_id)
-                         VALUES (?1, ?2, ?3, ?4)
+                        "INSERT INTO a_task_state (
+                            task_id, status, assigned_device, current_round_id, current_city_name, current_keyword_name,
+                            attempt, next_wakeup_at, last_error, runtime_status
+                         )
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                          ON CONFLICT(task_id) DO UPDATE SET
                              status=excluded.status,
                              assigned_device=excluded.assigned_device,
-                             current_round_id=excluded.current_round_id",
-                        params![task_id, status, assigned_device, current_round_id],
+                             current_round_id=excluded.current_round_id,
+                             current_city_name=excluded.current_city_name,
+                             current_keyword_name=excluded.current_keyword_name,
+                             attempt=excluded.attempt,
+                             next_wakeup_at=excluded.next_wakeup_at,
+                             last_error=excluded.last_error,
+                             runtime_status=excluded.runtime_status",
+                        params![
+                            task_id,
+                            status,
+                            assigned_device,
+                            current_round_id,
+                            current_city_name,
+                            current_keyword_name,
+                            attempt,
+                            next_wakeup_at,
+                            last_error,
+                            runtime_status
+                        ],
                     ),
                     "save_task_state",
                 );
@@ -204,17 +234,28 @@ impl Database {
             .await;
     }
 
-    pub async fn load_task_state(
-        &self,
-        task_id: &str,
-    ) -> Option<(String, Option<String>, Option<i64>)> {
+    pub async fn load_task_state(&self, task_id: &str) -> Option<TaskStateRow> {
         let task_id = task_id.to_string();
         let conn = self.pool.get().await.ok()?;
         conn.interact(move |conn| {
             conn.query_row(
-                "SELECT status, assigned_device, current_round_id FROM a_task_state WHERE task_id = ?1",
+                "SELECT status, assigned_device, current_round_id, current_city_name, current_keyword_name,
+                        attempt, next_wakeup_at, last_error, runtime_status
+                 FROM a_task_state WHERE task_id = ?1",
                 params![task_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| {
+                    Ok(TaskStateRow {
+                        status: row.get(0)?,
+                        assigned_device: row.get(1)?,
+                        current_round_id: row.get(2)?,
+                        current_city_name: row.get(3)?,
+                        current_keyword_name: row.get(4)?,
+                        attempt: row.get(5)?,
+                        next_wakeup_at: row.get(6)?,
+                        last_error: row.get(7)?,
+                        runtime_status: row.get(8)?,
+                    })
+                },
             )
             .ok()
         })
@@ -237,27 +278,35 @@ impl Database {
     }
 
     /// 批量加载全部任务状态（用于 load_tasks 消除 N+1）
-    pub async fn load_all_task_states(
-        &self,
-    ) -> std::collections::HashMap<String, (String, Option<String>, Option<i64>)> {
+    pub async fn load_all_task_states(&self) -> std::collections::HashMap<String, TaskStateRow> {
         let Ok(conn) = self.pool.get().await else {
             return Default::default();
         };
         conn.interact(|conn| {
             let mut map = std::collections::HashMap::new();
             if let Ok(mut stmt) = conn.prepare(
-                "SELECT task_id, status, assigned_device, current_round_id FROM a_task_state",
+                "SELECT task_id, status, assigned_device, current_round_id, current_city_name, current_keyword_name,
+                        attempt, next_wakeup_at, last_error, runtime_status
+                 FROM a_task_state",
             ) {
                 if let Ok(rows) = stmt.query_map([], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                        row.get::<_, Option<i64>>(3)?,
+                        TaskStateRow {
+                            status: row.get(1)?,
+                            assigned_device: row.get(2)?,
+                            current_round_id: row.get(3)?,
+                            current_city_name: row.get(4)?,
+                            current_keyword_name: row.get(5)?,
+                            attempt: row.get(6)?,
+                            next_wakeup_at: row.get(7)?,
+                            last_error: row.get(8)?,
+                            runtime_status: row.get(9)?,
+                        },
                     ))
                 }) {
                     for row in rows.flatten() {
-                        map.insert(row.0, (row.1, row.2, row.3));
+                        map.insert(row.0, row.1);
                     }
                 }
             }
@@ -273,7 +322,16 @@ impl Database {
         let _ = conn
             .interact(|conn| {
                 let result = conn.execute(
-                    "UPDATE a_task_state SET status = 'waiting', assigned_device = NULL, current_round_id = NULL",
+                    "UPDATE a_task_state
+                         SET status = 'waiting',
+                         assigned_device = NULL,
+                         current_round_id = NULL,
+                         current_city_name = NULL,
+                         current_keyword_name = NULL,
+                         attempt = 0,
+                         next_wakeup_at = NULL,
+                         last_error = NULL,
+                         runtime_status = NULL",
                     [],
                 );
                 match result {

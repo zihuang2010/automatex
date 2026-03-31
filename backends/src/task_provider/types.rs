@@ -30,6 +30,26 @@ pub struct Task {
     pub round_no: i32,
     /// 当前轮次 ID（用于内部关联，前端可忽略）
     pub current_round_id: Option<i64>,
+    /// 当前执行城市（用于精确恢复，前端可忽略）
+    pub current_city_name: Option<String>,
+    /// 当前执行关键词（用于精确恢复，前端可忽略）
+    pub current_keyword_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskSummary {
+    pub id: String,
+    pub name: String,
+    pub status: String,
+    pub assigned_device: Option<String>,
+    pub city_count: i32,
+    pub keyword_total: i32,
+    pub keyword_done: i32,
+    pub progress: i32,
+    pub active_city_name: Option<String>,
+    pub current_city_name: Option<String>,
+    pub current_keyword_name: Option<String>,
+    pub round_no: i32,
 }
 
 // ─── 任务定义格式（Mock / HTTP 共用）───────────────────────────────

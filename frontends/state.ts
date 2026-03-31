@@ -1,9 +1,10 @@
 import { TaskStatus } from './constants';
-import { Task } from './types';
+import { Task, TaskSummary } from './types';
 
 export let selectedDevice: string | null = null;
-export let globalQueue: Task[] = [];
-export let activeTask: Task | null = null;
+export let globalQueue: TaskSummary[] = [];
+export let activeTask: TaskSummary | null = null;
+export let activeTaskDetail: Task | null = null;
 export let activeCityIdx = 0;
 const TASK_ORDER_STORAGE_KEY = 'automatex.task_order';
 
@@ -26,7 +27,7 @@ function writeTaskOrder(order: string[]) {
   }
 }
 
-function applyTaskOrder(tasks: Task[]): Task[] {
+function applyTaskOrder(tasks: TaskSummary[]): TaskSummary[] {
   if (tasks.length <= 1) {
     writeTaskOrder(tasks.map(task => task.id));
     return [...tasks];
@@ -56,12 +57,16 @@ export function setSelectedDevice(serial: string | null) {
   selectedDevice = serial;
 }
 
-export function setGlobalQueue(tasks: Task[]) {
+export function setGlobalQueue(tasks: TaskSummary[]) {
   globalQueue = applyTaskOrder(tasks);
 }
 
-export function setActiveTask(task: Task | null) {
+export function setActiveTask(task: TaskSummary | null) {
   activeTask = task;
+}
+
+export function setActiveTaskDetail(task: Task | null) {
+  activeTaskDetail = task;
 }
 
 export function setActiveCityIdx(idx: number) {

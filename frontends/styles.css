@@ -967,21 +967,59 @@
 
 /* ══════ TASK QUEUE DRAG & DROP (SortableJS) ══════ */
 .task-queue-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  min-width: 18px;
+  height: 18px;
+  font-size: 18px;
+  line-height: 1;
   touch-action: none;
+  transition:
+    color 0.2s ease,
+    transform 0.2s ease,
+    opacity 0.2s ease;
+  opacity: 0.82;
+}
+
+.task-queue-item:hover .task-queue-drag-handle {
+  color: #475569;
+  transform: scale(1.06);
+  opacity: 1;
+}
+
+.task-queue-sorting .task-queue-drag-handle {
+  cursor: grabbing;
+}
+
+.task-queue-fallback {
+  opacity: 0.98;
+  transform: rotate(-1deg);
+  box-shadow:
+    0 20px 38px rgba(15, 23, 42, 0.18),
+    0 8px 18px rgba(37, 99, 235, 0.14);
 }
 
 .task-queue-ghost {
-  opacity: 0.35;
+  opacity: 0.18;
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.08), rgba(148, 163, 184, 0.08));
+  border-color: rgba(96, 165, 250, 0.35);
 }
 
 .task-queue-chosen {
-  box-shadow: 0 6px 18px rgba(37, 99, 235, 0.15);
+  transform: scale(1.015);
+  box-shadow:
+    0 14px 30px rgba(37, 99, 235, 0.14),
+    0 6px 12px rgba(15, 23, 42, 0.08);
 }
 
 .task-queue-dragging {
-  transform: scale(1.01);
-  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.12);
-  z-index: 20;
+  transform: scale(1.02);
+  box-shadow:
+    0 20px 40px rgba(15, 23, 42, 0.16),
+    0 10px 22px rgba(37, 99, 235, 0.12);
+  z-index: 40;
 }
 
 /* ══════ EMPTY HINT ══════ */

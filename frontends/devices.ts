@@ -92,10 +92,7 @@ function renderDeviceCards(devs: DeviceRow[]) {
     const shortHwid = hwid.length > 16 ? hwid.substring(0, 16) + '…' : hwid;
     const devTask = globalQueue.find(t => t.assigned_device === d.serial);
     const taskLabel = devTask ? devTask.name : '空闲';
-    const kwTotal =
-      devTask?.cities.reduce((s: number, c: { total: number }) => s + c.total, 0) ?? 0;
-    const kwDone = devTask?.cities.reduce((s: number, c: { done: number }) => s + c.done, 0) ?? 0;
-    const progress = kwTotal > 0 ? Math.round((kwDone / kwTotal) * 100) : 0;
+    const progress = devTask?.progress ?? 0;
     const batteryIcon =
       battery > 80 ? 'battery_charging_80' : battery > 50 ? 'battery_5_bar' : 'battery_3_bar';
     const isSel = d.serial === selectedDevice;

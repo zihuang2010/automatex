@@ -36,6 +36,19 @@ pub struct Database {
     pub(crate) pool: Pool,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TaskStateRow {
+    pub status: String,
+    pub assigned_device: Option<String>,
+    pub current_round_id: Option<i64>,
+    pub current_city_name: Option<String>,
+    pub current_keyword_name: Option<String>,
+    pub attempt: i32,
+    pub next_wakeup_at: Option<i64>,
+    pub last_error: Option<String>,
+    pub runtime_status: Option<String>,
+}
+
 // ─── 辅助函数 ──────────────────────────────────────────────────
 
 pub(crate) fn log_exec(result: rusqlite::Result<usize>, op: &str) {
@@ -128,7 +141,13 @@ impl Database {
                 task_id          TEXT PRIMARY KEY,
                 status           TEXT NOT NULL DEFAULT 'waiting',
                 assigned_device  TEXT,
-                current_round_id INTEGER
+                current_round_id INTEGER,
+                current_city_name TEXT,
+                current_keyword_name TEXT,
+                attempt          INTEGER NOT NULL DEFAULT 0,
+                next_wakeup_at   INTEGER,
+                last_error       TEXT,
+                runtime_status   TEXT
             );
 
             CREATE TABLE IF NOT EXISTS a_task_rounds (
@@ -183,6 +202,12 @@ impl Database {
                 "ALTER TABLE a_task_runs ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'pending';",
                 "ALTER TABLE a_task_runs ADD COLUMN cities_baseline INTEGER NOT NULL DEFAULT 0;",
                 "ALTER TABLE a_task_runs ADD COLUMN keywords_baseline INTEGER NOT NULL DEFAULT 0;",
+                "ALTER TABLE a_task_state ADD COLUMN current_city_name TEXT;",
+                "ALTER TABLE a_task_state ADD COLUMN current_keyword_name TEXT;",
+                "ALTER TABLE a_task_state ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0;",
+                "ALTER TABLE a_task_state ADD COLUMN next_wakeup_at INTEGER;",
+                "ALTER TABLE a_task_state ADD COLUMN last_error TEXT;",
+                "ALTER TABLE a_task_state ADD COLUMN runtime_status TEXT;",
             ];
             for sql in &migrations {
                 let _ = conn.execute_batch(sql); // 列已存在时忽略错误

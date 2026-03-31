@@ -109,6 +109,8 @@ pub mod timing {
     pub const HTTP_REQUEST_TIMEOUT_SECS: u64 = 15;
     /// 启动期等待首轮设备就绪的最长时间
     pub const STARTUP_DEVICE_READY_TIMEOUT_SECS: u64 = 12;
+    /// 任务默认调度节拍
+    pub const TASK_DISPATCH_INTERVAL_SECS: u64 = 10;
 }
 
 /// 并发限制

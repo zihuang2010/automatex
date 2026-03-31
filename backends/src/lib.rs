@@ -385,6 +385,7 @@ pub fn run() {
             clear_task_progress,
             get_task_run_stats,
             engine_get_tasks,
+            engine_get_task_detail,
             engine_start_task,
             engine_pause_task,
             engine_resume_task,

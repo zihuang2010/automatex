@@ -528,8 +528,8 @@ window.addEventListener('DOMContentLoaded', () => {
       if (globalQueue.length > 0 && !activeTask) {
         setActiveTask(globalQueue[0]);
         setActiveCityIdx(0);
-        renderTaskView();
       }
+      renderTaskView();
       loadChainForDevice('');
       // 启动时从数据库加载已同步的账号（修复重启后显示 0 个）
       refreshAccountList().then(phones => {
