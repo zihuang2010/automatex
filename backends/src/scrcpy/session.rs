@@ -3,6 +3,7 @@
 //! 管理多台设备的投屏会话，每台设备一个 Session。
 //! 视频帧通过 Tauri Channel 直接推送到前端（避免 base64 + 全局事件广播）。
 
+use crate::{connection::adb, constants};
 use super::control::{DeviceMessage, ScrcpyControl};
 use super::server::ScrcpyServer;
 use serde::Serialize;
@@ -27,6 +28,7 @@ const CLIPBOARD_ACK_TIMEOUT_MS: u64 = 1500;
 const CLIPBOARD_ECHO_GUARD_TTL_SECS: u64 = 10;
 const NON_ASCII_PASTE_CHUNK_BYTES: usize = 2048;
 const NON_ASCII_PASTE_CHUNK_DELAY_MS: u64 = 24;
+const FIRST_FRAME_STATE_EMIT_DEBOUNCE_MS: u64 = 250;
 
 type ClipboardAckMap = Arc<Mutex<HashMap<u64, oneshot::Sender<()>>>>;
 type ClipboardEchoGuards = Arc<Mutex<VecDeque<ClipboardEchoGuard>>>;
@@ -38,6 +40,40 @@ pub struct MirrorStartedPayload {
     pub serial: String,
     pub width: u32,
     pub height: u32,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextRoute {
+    AsciiDirect,
+    AdbImeText,
+    ClipboardFallback,
+}
+
+impl TextRoute {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AsciiDirect => "ascii_direct",
+            Self::AdbImeText => "adb_ime_text",
+            Self::ClipboardFallback => "clipboard_fallback",
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+pub struct ScrcpyTextRoutePayload {
+    pub serial: String,
+    pub route: &'static str,
+}
+
+#[derive(Clone, Serialize)]
+pub struct ScrcpySessionStatePayload {
+    pub serial: String,
+    pub phase: &'static str,
+    pub width: u32,
+    pub height: u32,
+    pub recover_reason: Option<String>,
+    pub last_frame_at_ms: Option<u64>,
 }
 
 #[derive(Clone, Serialize)]
@@ -57,6 +93,7 @@ struct ClipboardEchoGuard {
 
 enum ControlMsg {
     Touch { action: u8, x: u32, y: u32 },
+    Scroll { x: u32, y: u32, h_scroll: f32, v_scroll: f32, buttons: u32 },
     Key { keycode: u32, meta_state: u32 },
     Text(String),
     Back,
@@ -67,6 +104,8 @@ enum ControlMsg {
 
 struct ScrcpySession {
     cancel: CancellationToken,
+    screen_width: u32,
+    screen_height: u32,
     /// C-2 修复：持有 pump 任务句柄，stop 时等待完成
     pump_handle: tokio::task::JoinHandle<()>,
     /// P0 优化：控制流 Actor 通道（替代 Arc<Mutex<TcpStream>>）
@@ -97,6 +136,32 @@ async fn control_actor(
                 {
                     Ok(result) => result,
                     Err(_) => Err("发送触控消息超时".into()),
+                }
+            },
+            ControlMsg::Scroll {
+                x,
+                y,
+                h_scroll,
+                v_scroll,
+                buttons,
+            } => {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(CONTROL_WRITE_TIMEOUT_SECS),
+                    ScrcpyControl::inject_scroll(
+                        &mut stream,
+                        x,
+                        y,
+                        screen_w,
+                        screen_h,
+                        h_scroll,
+                        v_scroll,
+                        buttons,
+                    ),
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(_) => Err("发送滚轮消息超时".into()),
                 }
             },
             ControlMsg::Key { keycode, meta_state } => {
@@ -152,11 +217,11 @@ async fn control_actor(
                         )
                         .await
                         {
-                            Ok(Ok(())) => {}
+                            Ok(Ok(())) => {},
                             Ok(Err(_)) => {
                                 paste_result = Err("设备剪贴板确认通道已关闭".into());
                                 break;
-                            }
+                            },
                             Err(_) => {
                                 pending_acks.lock().await.remove(&sequence);
                                 paste_result = Err("等待设备剪贴板确认超时".into());
@@ -265,13 +330,17 @@ async fn remember_local_clipboard(local_clipboards: &ClipboardEchoGuards, text: 
     guards.push_back(ClipboardEchoGuard { hash, len, expires_at });
 }
 
-async fn should_suppress_clipboard_echo(local_clipboards: &ClipboardEchoGuards, text: &str) -> bool {
+async fn should_suppress_clipboard_echo(
+    local_clipboards: &ClipboardEchoGuards,
+    text: &str,
+) -> bool {
     let (hash, len) = clipboard_fingerprint(text);
     let mut guards = local_clipboards.lock().await;
     prune_clipboard_guards(&mut guards);
     let now = Instant::now();
-    if let Some(index) =
-        guards.iter().position(|guard| guard.hash == hash && guard.len == len && guard.expires_at > now)
+    if let Some(index) = guards
+        .iter()
+        .position(|guard| guard.hash == hash && guard.len == len && guard.expires_at > now)
     {
         guards.remove(index);
         return true;
@@ -310,11 +379,34 @@ fn split_utf8_chunks(text: &str, max_bytes: usize) -> Vec<&str> {
     chunks
 }
 
+fn emit_session_state(
+    app_handle: &tauri::AppHandle,
+    serial: &str,
+    phase: &'static str,
+    width: u32,
+    height: u32,
+    recover_reason: Option<String>,
+    last_frame_at_ms: Option<u64>,
+) {
+    let _ = app_handle.emit(
+        constants::tauri_event::SCRCPY_SESSION_STATE,
+        ScrcpySessionStatePayload {
+            serial: serial.to_string(),
+            phase,
+            width,
+            height,
+            recover_reason,
+            last_frame_at_ms,
+        },
+    );
+}
+
 // ─── SessionManager ─────────────────────────────────────────
 
 pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<String, ScrcpySession>>>,
     starting: Arc<Mutex<HashSet<String>>>,
+    adb_keyboard_available: Arc<Mutex<HashMap<String, bool>>>,
 }
 
 impl SessionManager {
@@ -322,6 +414,7 @@ impl SessionManager {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             starting: Arc::new(Mutex::new(HashSet::new())),
+            adb_keyboard_available: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -334,11 +427,8 @@ impl SessionManager {
             // 等待 pump 完成清理（pump 内部会调 server.stop()）
             let _ =
                 tokio::time::timeout(std::time::Duration::from_secs(5), session.pump_handle).await;
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                session.control_handle,
-            )
-            .await;
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), session.control_handle)
+                .await;
             let _ = tokio::time::timeout(
                 std::time::Duration::from_secs(2),
                 session.control_reader_handle,
@@ -376,11 +466,12 @@ impl SessionManager {
             Err(e) => {
                 self.starting.lock().await.remove(serial);
                 return Err(e);
-            }
+            },
         };
 
         let screen_w = server.screen_width;
         let screen_h = server.screen_height;
+        emit_session_state(&app_handle, serial, "starting", screen_w, screen_h, None, None);
 
         let video_stream = match server.video_stream.take() {
             Some(stream) => stream,
@@ -428,6 +519,7 @@ impl SessionManager {
         let serial_owned = serial.to_string();
         let cancel_clone = cancel.clone();
         let sessions_ref = Arc::clone(&self.sessions);
+        let app_handle_for_pump = app_handle.clone();
 
         // C-2 修复：保存 JoinHandle
         let pump_handle = tokio::spawn(async move {
@@ -435,7 +527,7 @@ impl SessionManager {
                 serial_owned,
                 video_stream,
                 server,
-                app_handle,
+                app_handle_for_pump,
                 on_frame,
                 cancel_clone,
                 sessions_ref,
@@ -447,6 +539,8 @@ impl SessionManager {
             serial.to_string(),
             ScrcpySession {
                 cancel: cancel.clone(),
+                screen_width: screen_w,
+                screen_height: screen_h,
                 pump_handle,
                 control_tx,
                 control_handle,
@@ -468,11 +562,8 @@ impl SessionManager {
             // 等待 pump 任务完成清理（最长 5s）
             let _ =
                 tokio::time::timeout(std::time::Duration::from_secs(5), session.pump_handle).await;
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                session.control_handle,
-            )
-            .await;
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), session.control_handle)
+                .await;
             let _ = tokio::time::timeout(
                 std::time::Duration::from_secs(2),
                 session.control_reader_handle,
@@ -482,6 +573,11 @@ impl SessionManager {
         }
         // pump 可能已先于用户操作退出并清理，不报错
         Ok(())
+    }
+
+    pub async fn session_dimensions(&self, serial: &str) -> Option<(u32, u32)> {
+        let sessions = self.sessions.read().await;
+        sessions.get(serial).map(|session| (session.screen_width, session.screen_height))
     }
 
     /// 注入触控事件（P0 优化：单次 mpsc send，触控用 try_send 背压丢帧）
@@ -505,6 +601,27 @@ impl SessionManager {
             .map_err(|e| format!("控制消息发送失败: {}", e))
     }
 
+    pub async fn inject_scroll(
+        &self,
+        serial: &str,
+        x: u32,
+        y: u32,
+        h_scroll: f32,
+        v_scroll: f32,
+        buttons: u32,
+    ) -> Result<(), String> {
+        let control_tx = {
+            let sessions = self.sessions.read().await;
+            let session =
+                sessions.get(serial).ok_or_else(|| format!("设备 {} 未在投屏", serial))?;
+            session.control_tx.clone()
+        };
+
+        control_tx
+            .try_send(ControlMsg::Scroll { x, y, h_scroll, v_scroll, buttons })
+            .map_err(|e| format!("控制消息发送失败: {}", e))
+    }
+
     /// 注入按键事件
     pub async fn inject_key(
         &self,
@@ -525,8 +642,30 @@ impl SessionManager {
             .map_err(|e| format!("控制消息发送失败: {}", e))
     }
 
-    /// 注入文本（UTF-8 直传，支持中文等）
-    pub async fn inject_text(&self, serial: &str, text: &str) -> Result<(), String> {
+    async fn detect_adb_keyboard(&self, serial: &str) -> bool {
+        if let Some(cached) = self.adb_keyboard_available.lock().await.get(serial).copied() {
+            return cached;
+        }
+
+        let available = adb::adb_keyboard_available(serial).await.unwrap_or(false);
+        self.adb_keyboard_available.lock().await.insert(serial.to_string(), available);
+        available
+    }
+
+    /// 注入文本（优先独立输入通道，其次回退到 scrcpy）
+    pub async fn inject_text(&self, serial: &str, text: &str) -> Result<TextRoute, String> {
+        if !text.is_ascii() && self.detect_adb_keyboard(serial).await {
+            match adb::adb_keyboard_input_text(serial, text).await {
+                Ok(()) => return Ok(TextRoute::AdbImeText),
+                Err(err) => {
+                    eprintln!(
+                        "[scrcpy] ADB IME 输入失败，回退到剪贴板路径: serial={}, error={}",
+                        serial, err
+                    );
+                }
+            }
+        }
+
         let control_tx = {
             let sessions = self.sessions.read().await;
             let session =
@@ -537,7 +676,9 @@ impl SessionManager {
         control_tx
             .send(ControlMsg::Text(text.to_string()))
             .await
-            .map_err(|e| format!("控制消息发送失败: {}", e))
+            .map_err(|e| format!("控制消息发送失败: {}", e))?;
+
+        Ok(if text.is_ascii() { TextRoute::AsciiDirect } else { TextRoute::ClipboardFallback })
     }
 
     /// 注入返回键
@@ -584,6 +725,10 @@ impl SessionManager {
         let start = std::time::Instant::now();
         // P1 优化：预分配帧缓冲池
         let mut pool = super::video::FramePool::new();
+        let mut first_frame_emitted = false;
+        let mut last_frame_at_ms = None;
+        let width = server.screen_width;
+        let height = server.screen_height;
 
         loop {
             tokio::select! {
@@ -603,6 +748,24 @@ impl SessionManager {
                                 eprintln!("[scrcpy] channel 已关闭: {}", serial);
                                 break;
                             }
+                            let now_ms = start.elapsed().as_millis() as u64;
+                            last_frame_at_ms = Some(now_ms);
+                            if !first_frame_emitted {
+                                first_frame_emitted = true;
+                                tokio::time::sleep(std::time::Duration::from_millis(
+                                    FIRST_FRAME_STATE_EMIT_DEBOUNCE_MS,
+                                ))
+                                .await;
+                                emit_session_state(
+                                    &app_handle,
+                                    &serial,
+                                    "streaming",
+                                    width,
+                                    height,
+                                    None,
+                                    last_frame_at_ms,
+                                );
+                            }
                         }
                         Ok(Ok(None)) => {
                             // 空帧，跳过
@@ -610,10 +773,28 @@ impl SessionManager {
                         }
                         Ok(Err(e)) => {
                             eprintln!("[scrcpy] 帧读取失败: {} - {}", serial, e);
+                            emit_session_state(
+                                &app_handle,
+                                &serial,
+                                "stalled",
+                                width,
+                                height,
+                                Some(format!("frame-read-error: {}", e)),
+                                last_frame_at_ms,
+                            );
                             break;
                         }
                         Err(_) => {
                             eprintln!("[scrcpy] 帧读取超时 {}s，断开: {}", FRAME_READ_TIMEOUT_SECS, serial);
+                            emit_session_state(
+                                &app_handle,
+                                &serial,
+                                "stalled",
+                                width,
+                                height,
+                                Some(format!("frame-timeout-{}s", FRAME_READ_TIMEOUT_SECS)),
+                                last_frame_at_ms,
+                            );
                             break;
                         }
                     }
@@ -627,6 +808,15 @@ impl SessionManager {
         if was_present {
             let _ = app_handle.emit("scrcpy-stopped", &serial);
         }
+        emit_session_state(
+            &app_handle,
+            &serial,
+            "stopped",
+            width,
+            height,
+            None,
+            last_frame_at_ms,
+        );
         eprintln!("[scrcpy] 帧推送结束: {}", serial);
     }
 }

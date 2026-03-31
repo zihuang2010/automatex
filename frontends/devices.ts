@@ -30,10 +30,30 @@ export async function refreshDevices(): Promise<DeviceRow[]> {
   try {
     const devs: DeviceRow[] = await invoke('list_devices');
     _deviceCache = devs;
-    renderDeviceCards(devs);
+    const executingSerials = getAssignedDeviceSerials();
+    let clearedSelection = false;
 
-    if (selectedDevice && !devs.some(d => d.serial === selectedDevice)) {
-      setSelectedDevice(null);
+    if (selectedDevice) {
+      const selectedRow = devs.find(d => d.serial === selectedDevice);
+      const shouldClearSelection =
+        !selectedRow ||
+        (selectedRow.state !== DeviceState.OFFLINE &&
+          !selectedRow.is_flagged &&
+          !executingSerials.has(selectedRow.serial));
+
+      if (shouldClearSelection) {
+        setSelectedDevice(null);
+        clearedSelection = true;
+        const removeBtn = $('#btn-remove-selected') as HTMLButtonElement | null;
+        const unflagBtn = $('#btn-unflag-device') as HTMLButtonElement | null;
+        if (removeBtn) removeBtn.disabled = true;
+        if (unflagBtn) unflagBtn.disabled = true;
+      }
+    }
+
+    renderDeviceCards(devs);
+    if (clearedSelection) {
+      updateCardSelection();
     }
 
     return devs;

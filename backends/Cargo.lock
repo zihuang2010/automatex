@@ -295,6 +295,7 @@ version = "0.1.0"
 dependencies = [
  "adb_client",
  "async-trait",
+ "base64 0.22.1",
  "byteorder",
  "chrono",
  "deadpool-sqlite",

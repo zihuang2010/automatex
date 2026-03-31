@@ -29,9 +29,32 @@ interface ScrcpyClipboardPayload {
   text: string;
 }
 
+type MirrorStreamState =
+  | 'starting'
+  | 'streaming'
+  | 'degraded'
+  | 'recovering'
+  | 'stalled'
+  | 'stopped';
+
+interface ScrcpySessionStatePayload {
+  serial: string;
+  phase: MirrorStreamState;
+  width: number;
+  height: number;
+  recover_reason?: string | null;
+  last_frame_at_ms?: number | null;
+}
+
+interface ScrcpyTextRoutePayload {
+  serial: string;
+  route: 'ascii_direct' | 'adb_ime_text' | 'clipboard_fallback';
+}
+
 interface MirrorInstance {
   serial: string;
   decoder: VideoDecoder;
+  frameChannel: Channel<ArrayBuffer>;
   unlistenStopped: UnlistenFn;
   width: number;
   height: number;
@@ -40,8 +63,15 @@ interface MirrorInstance {
   canvas: HTMLCanvasElement;
   viewport: HTMLElement;
   gl: WebGL2RenderingContext;
+  program: WebGLProgram;
+  vertexBuffer: WebGLBuffer;
   texture: WebGLTexture;
   win: HTMLElement; // .mirror-window DOM
+  streamState: MirrorStreamState;
+  textRoute: ScrcpyTextRoutePayload['route'] | null;
+  lastFrameAtMs: number | null;
+  resetTimerId: number | null;
+  cleanupFns: Array<() => void>;
   scheduleVideoReset: (reason: string) => void;
 }
 
@@ -56,12 +86,20 @@ const DEFAULT_DEVICE_WIDTH = 1080;
 const DEFAULT_DEVICE_HEIGHT = 2400;
 const MIN_SCREEN_WIDTH = 240;
 const MAX_SCREEN_WIDTH = 440;
+const WHEEL_SCROLL_MAX = 16;
+const WHEEL_DELTA_DIVISOR = 54;
+const DEFAULT_CONCAT_BUFFER_BYTES = 128 * 1024;
+const MAX_CONCAT_BUFFER_RETAIN_BYTES = 512 * 1024;
 
 // ─── 状态 ─────────────────────────────────────────────
 
 const mirrors = new Map<string, MirrorInstance>();
 let focusedSerial: string | null = null;
 let zIndexCounter = 1000;
+let clipboardListenBound = false;
+let sessionStateListenBound = false;
+let textRouteListenBound = false;
+let inputBindingsBound = false;
 
 // ─── WebGL ─────────────────────────────────────────────
 
@@ -122,7 +160,10 @@ function initWebGL(canvas: HTMLCanvasElement) {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 
-  return { gl, texture };
+  gl.deleteShader(vs);
+  gl.deleteShader(fs);
+
+  return { gl, program, vertexBuffer: vbo, texture };
 }
 
 function compileShader(gl: WebGL2RenderingContext, type: number, source: string) {
@@ -179,22 +220,30 @@ function getInitialMirrorMetrics(serial: string) {
 }
 
 function buildMirrorMarkup(serial: string) {
-  const shortSerial = serial.length > 16 ? serial.substring(0, 16) + '…' : serial;
-
   return `
     <div class="mirror-showcase-unit">
       <div class="mirror-info-panel mirror-win-header">
-        <div class="flex min-w-0 flex-col">
-          <span class="text-[8px] font-bold leading-none tracking-[0.28em] text-slate-400 uppercase mb-1">Device ID</span>
-          <span class="mirror-info-text" title="${esc(serial)}">${esc(shortSerial)}</span>
+        <div class="mirror-info-main">
+          <div class="mirror-info-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <rect x="7" y="2.5" width="10" height="19" rx="2.6" stroke="currentColor" stroke-width="1.7"></rect>
+              <circle cx="12" cy="18" r="0.9" fill="currentColor"></circle>
+            </svg>
+          </div>
+          <div class="mirror-info-id-block">
+            <span class="mirror-info-kicker">Device ID</span>
+            <span class="mirror-info-text" title="${esc(serial)}">${esc(serial)}</span>
+          </div>
         </div>
-        <div class="mirror-win-res">-- <span class="opacity-30">×</span> --</div>
-        <button class="mirror-win-close" title="关闭投屏" aria-label="关闭投屏">
-          <svg fill="none" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <line x1="18" y1="6" x2="6" y2="18"></line>
-            <line x1="6" y1="6" x2="18" y2="18"></line>
-          </svg>
-        </button>
+        <div class="mirror-info-actions">
+          <div class="mirror-win-res">-- <span class="opacity-30">×</span> --</div>
+          <button type="button" class="mirror-win-close" title="关闭投屏" aria-label="关闭投屏">
+            <svg fill="none" width="16" height="16" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
       </div>
 
       <div class="mirror-phone-shell">
@@ -253,27 +302,35 @@ function createMirrorWindow(
 
   const canvas = win.querySelector('.mirror-win-canvas') as HTMLCanvasElement;
   const viewport = win.querySelector('.mirror-device-viewport') as HTMLElement;
+  const mirrorHost = win as HTMLElement & {
+    __mirrorOnWindowMouseDown?: (event: MouseEvent) => void;
+    __mirrorOnCloseClick?: (event: MouseEvent) => void;
+  };
 
   // 关闭按钮
-  win.querySelector('.mirror-win-close')?.addEventListener('click', e => {
+  const closeBtn = win.querySelector('.mirror-win-close') as HTMLElement | null;
+  const handleClose = (e: Event) => {
     e.stopPropagation();
+    e.preventDefault();
     stopMirrorBySerial(serial);
-  });
+  };
+  mirrorHost.__mirrorOnCloseClick = handleClose as (event: MouseEvent) => void;
+  closeBtn?.addEventListener('click', handleClose);
+  closeBtn?.addEventListener('pointerdown', handleClose);
 
   // 点击窗口 → 焦点 + 置顶
-  win.addEventListener('mousedown', () => {
+  mirrorHost.__mirrorOnWindowMouseDown = () => {
     bringToFront(serial);
-  });
-
-  // 拖拽引擎（仅从 header 触发）
-  bindDragEngine(win);
+  };
+  win.addEventListener('mousedown', mirrorHost.__mirrorOnWindowMouseDown);
 
   return { win, canvas, viewport };
 }
 
 // ─── 拖拽引擎 ─────────────────────────────────────────
 
-function bindDragEngine(win: HTMLElement) {
+function bindDragEngine(instance: MirrorInstance) {
+  const win = instance.win;
   const header = win.querySelector('.mirror-win-header') as HTMLElement;
   if (!header) return;
 
@@ -281,27 +338,36 @@ function bindDragEngine(win: HTMLElement) {
   let offsetX = 0;
   let offsetY = 0;
 
-  header.addEventListener('mousedown', (e: MouseEvent) => {
+  const onHeaderMouseDown = (e: MouseEvent) => {
     // 忽略按钮点击
     if ((e.target as HTMLElement).closest('button')) return;
     isDragging = true;
     offsetX = e.clientX - win.offsetLeft;
     offsetY = e.clientY - win.offsetTop;
     e.preventDefault();
-  });
+  };
 
   // 事件绑到 document 以确保拖拽到窗口外也能正常追踪
-  document.addEventListener('mousemove', (e: MouseEvent) => {
+  const onDocumentMouseMove = (e: MouseEvent) => {
     if (!isDragging) return;
     const nextX = e.clientX - offsetX;
     const nextY = e.clientY - offsetY;
     const { left: newX, top: newY } = clampMirrorWindowPosition(win, nextX, nextY);
     win.style.left = `${newX}px`;
     win.style.top = `${newY}px`;
-  });
+  };
 
-  document.addEventListener('mouseup', () => {
+  const onDocumentMouseUp = () => {
     isDragging = false;
+  };
+
+  header.addEventListener('mousedown', onHeaderMouseDown);
+  document.addEventListener('mousemove', onDocumentMouseMove);
+  document.addEventListener('mouseup', onDocumentMouseUp);
+  instance.cleanupFns.push(() => {
+    header.removeEventListener('mousedown', onHeaderMouseDown);
+    document.removeEventListener('mousemove', onDocumentMouseMove);
+    document.removeEventListener('mouseup', onDocumentMouseUp);
   });
 }
 
@@ -338,13 +404,94 @@ function applyMirrorMetrics(instance: MirrorInstance, width: number, height: num
   instance.screenWidth = nextScreenWidth;
   setMirrorWindowVars(instance.win, width, height, nextScreenWidth, instance.aspectRatio);
 
-  const statusEl = instance.win.querySelector('.mirror-win-status');
-  if (statusEl) statusEl.textContent = '在线';
-
   const resEl = instance.win.querySelector('.mirror-win-res');
   if (resEl) resEl.textContent = `${width}×${height}`;
 
   keepMirrorWindowReachable(instance.win);
+}
+
+function getStreamStateMeta(phase: MirrorStreamState, reason?: string | null) {
+  switch (phase) {
+    case 'starting':
+      return {
+        className: '',
+        title: '正在建立投屏链路',
+        subtitle: '正在等待设备首帧回传，连接完成后将平滑切入实时画面',
+      };
+    case 'streaming':
+      return {
+        className: '',
+        title: '实时画面已连接',
+        subtitle: '当前视频链路稳定，可直接进行触控、键盘和滚轮操作',
+      };
+    case 'recovering':
+      return {
+        className: '',
+        title: '正在恢复视频流',
+        subtitle: reason ? `恢复原因：${reason}` : '输入法或视频链路变化后，正在请求新的关键帧',
+      };
+    case 'stalled':
+      return {
+        className: '',
+        title: '画面暂时停滞',
+        subtitle: reason ? `检测到异常：${reason}` : '等待自动恢复或重新请求视频流',
+      };
+    case 'degraded':
+      return {
+        className: '',
+        title: '当前处于降级运行',
+        subtitle: '已进入保守恢复模式，尽量维持会话可用',
+      };
+    case 'stopped':
+      return {
+        className: '',
+        title: '投屏已停止',
+        subtitle: '当前会话已关闭，可重新打开投屏窗口',
+      };
+  }
+}
+
+function setMirrorStreamState(
+  instance: MirrorInstance,
+  phase: MirrorStreamState,
+  reason?: string | null,
+  lastFrameAtMs?: number | null,
+) {
+  instance.streamState = phase;
+  if (lastFrameAtMs !== undefined) {
+    instance.lastFrameAtMs = lastFrameAtMs ?? null;
+  }
+
+  instance.win.dataset.streamState = phase;
+  const meta = getStreamStateMeta(phase, reason);
+  const statusEl = instance.win.querySelector('.mirror-win-status') as HTMLElement | null;
+  if (statusEl) {
+    statusEl.className = meta.className;
+  }
+
+  const titleEl = instance.win.querySelector('.mirror-stream-placeholder-title');
+  if (titleEl) titleEl.textContent = meta.title;
+  const subtitleEl = instance.win.querySelector('.mirror-stream-placeholder-subtitle');
+  if (subtitleEl) subtitleEl.textContent = meta.subtitle;
+}
+
+function setMirrorTextRoute(
+  instance: MirrorInstance,
+  route: ScrcpyTextRoutePayload['route'] | null,
+) {
+  instance.textRoute = route;
+  const idEl = instance.win.querySelector('.mirror-info-text') as HTMLElement | null;
+  if (!idEl) return;
+
+  const routeTitleMap: Record<NonNullable<MirrorInstance['textRoute']>, string> = {
+    ascii_direct: '当前短文本通过直发通道输入',
+    adb_ime_text: '当前中文/长文本通过 ADB 输入法桥接',
+    clipboard_fallback: '当前文本走剪贴板兜底路径',
+  };
+
+  const rawTitle = idEl.dataset.rawTitle || idEl.title || idEl.textContent || '';
+  idEl.dataset.rawTitle = rawTitle;
+  idEl.title = route ? `${rawTitle}\n${routeTitleMap[route]}` : rawTitle;
 }
 
 function bindResizeHandle(instance: MirrorInstance) {
@@ -355,7 +502,7 @@ function bindResizeHandle(instance: MirrorInstance) {
   let startX = 0;
   let startWidth = 0;
 
-  handle.addEventListener('mousedown', (e: MouseEvent) => {
+  const onHandleMouseDown = (e: MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     bringToFront(instance.serial);
@@ -363,20 +510,29 @@ function bindResizeHandle(instance: MirrorInstance) {
     startX = e.clientX;
     startWidth = instance.screenWidth;
     document.body.classList.add('mirror-resizing');
-  });
+  };
 
-  document.addEventListener('mousemove', (e: MouseEvent) => {
+  const onDocumentMouseMove = (e: MouseEvent) => {
     if (!isResizing) return;
     const deltaX = e.clientX - startX;
     const nextWidth = clamp(startWidth + deltaX, MIN_SCREEN_WIDTH, getMaxScreenWidth());
     instance.screenWidth = nextWidth;
     applyMirrorMetrics(instance, instance.width, instance.height);
-  });
+  };
 
-  document.addEventListener('mouseup', () => {
+  const onDocumentMouseUp = () => {
     if (!isResizing) return;
     isResizing = false;
     document.body.classList.remove('mirror-resizing');
+  };
+
+  handle.addEventListener('mousedown', onHandleMouseDown);
+  document.addEventListener('mousemove', onDocumentMouseMove);
+  document.addEventListener('mouseup', onDocumentMouseUp);
+  instance.cleanupFns.push(() => {
+    handle.removeEventListener('mousedown', onHandleMouseDown);
+    document.removeEventListener('mousemove', onDocumentMouseMove);
+    document.removeEventListener('mouseup', onDocumentMouseUp);
   });
 }
 
@@ -401,7 +557,8 @@ function bringToFront(serial: string) {
 
 // ─── 触控事件绑定 ─────────────────────────────────────
 
-function bindTouchEvents(canvas: HTMLCanvasElement, serial: string) {
+function bindTouchEvents(instance: MirrorInstance) {
+  const { canvas, serial } = instance;
   let isDown = false;
 
   const getCoords = (e: MouseEvent): { x: number; y: number } | null => {
@@ -414,7 +571,13 @@ function bindTouchEvents(canvas: HTMLCanvasElement, serial: string) {
     };
   };
 
-  canvas.addEventListener('mousedown', e => {
+  const normalizeWheelDelta = (delta: number, mode: number) => {
+    const factor =
+      mode === WheelEvent.DOM_DELTA_LINE ? 16 : mode === WheelEvent.DOM_DELTA_PAGE ? 120 : 1;
+    return clamp((delta / WHEEL_DELTA_DIVISOR) * factor, -WHEEL_SCROLL_MAX, WHEEL_SCROLL_MAX);
+  };
+
+  const onCanvasMouseDown = (e: MouseEvent) => {
     e.preventDefault();
     bringToFront(serial);
     const textInput = $('#mirror-text-input') as HTMLInputElement;
@@ -425,12 +588,12 @@ function bindTouchEvents(canvas: HTMLCanvasElement, serial: string) {
       invoke('scrcpy_inject_touch', { serial, action: TOUCH_ACTION.DOWN, x: c.x, y: c.y }).catch(
         console.warn,
       );
-  });
+  };
 
   let pendingMove: { x: number; y: number } | null = null;
   let rafId = 0;
 
-  canvas.addEventListener('mousemove', e => {
+  const onCanvasMouseMove = (e: MouseEvent) => {
     if (!isDown) return;
     const c = getCoords(e);
     if (!c || !mirrors.has(serial)) return;
@@ -449,9 +612,9 @@ function bindTouchEvents(canvas: HTMLCanvasElement, serial: string) {
         }
       });
     }
-  });
+  };
 
-  canvas.addEventListener('mouseup', e => {
+  const onCanvasMouseUp = (e: MouseEvent) => {
     isDown = false;
     if (rafId) {
       cancelAnimationFrame(rafId);
@@ -463,9 +626,9 @@ function bindTouchEvents(canvas: HTMLCanvasElement, serial: string) {
       invoke('scrcpy_inject_touch', { serial, action: TOUCH_ACTION.UP, x: c.x, y: c.y }).catch(
         console.warn,
       );
-  });
+  };
 
-  canvas.addEventListener('mouseleave', () => {
+  const onCanvasMouseLeave = () => {
     if (isDown && mirrors.has(serial)) {
       isDown = false;
       if (rafId) {
@@ -477,6 +640,74 @@ function bindTouchEvents(canvas: HTMLCanvasElement, serial: string) {
         console.warn,
       );
     }
+  };
+
+  let pendingWheel: {
+    x: number;
+    y: number;
+    hScroll: number;
+    vScroll: number;
+  } | null = null;
+  let wheelRaf = 0;
+
+  const onCanvasWheel = (e: WheelEvent) => {
+    if (!mirrors.has(serial)) return;
+    e.preventDefault();
+    bringToFront(serial);
+    const textInput = $('#mirror-text-input') as HTMLInputElement;
+    if (textInput) textInput.focus();
+    const c = getCoords(e);
+    if (!c) return;
+
+    const hDelta = normalizeWheelDelta(e.deltaX, e.deltaMode);
+    const vDelta = normalizeWheelDelta(e.deltaY, e.deltaMode);
+    if (hDelta === 0 && vDelta === 0) return;
+
+    pendingWheel = {
+      x: c.x,
+      y: c.y,
+      hScroll: clamp((pendingWheel?.hScroll ?? 0) + hDelta, -WHEEL_SCROLL_MAX, WHEEL_SCROLL_MAX),
+      vScroll: clamp((pendingWheel?.vScroll ?? 0) + vDelta, -WHEEL_SCROLL_MAX, WHEEL_SCROLL_MAX),
+    };
+
+    if (wheelRaf) return;
+    wheelRaf = requestAnimationFrame(() => {
+      wheelRaf = 0;
+      const next = pendingWheel;
+      pendingWheel = null;
+      if (!next || !mirrors.has(serial)) return;
+      invoke('scrcpy_inject_scroll', {
+        serial,
+        x: next.x,
+        y: next.y,
+        hScroll: next.hScroll,
+        vScroll: next.vScroll,
+        buttons: 0,
+      }).catch(console.warn);
+    });
+  };
+
+  canvas.addEventListener('mousedown', onCanvasMouseDown);
+  canvas.addEventListener('mousemove', onCanvasMouseMove);
+  canvas.addEventListener('mouseup', onCanvasMouseUp);
+  canvas.addEventListener('mouseleave', onCanvasMouseLeave);
+  canvas.addEventListener('wheel', onCanvasWheel, { passive: false });
+  instance.cleanupFns.push(() => {
+    canvas.removeEventListener('mousedown', onCanvasMouseDown);
+    canvas.removeEventListener('mousemove', onCanvasMouseMove);
+    canvas.removeEventListener('mouseup', onCanvasMouseUp);
+    canvas.removeEventListener('mouseleave', onCanvasMouseLeave);
+    canvas.removeEventListener('wheel', onCanvasWheel);
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+    }
+    if (wheelRaf) {
+      cancelAnimationFrame(wheelRaf);
+      wheelRaf = 0;
+    }
+    pendingMove = null;
+    pendingWheel = null;
   });
 }
 
@@ -503,20 +734,34 @@ export async function startMirror(serial: string) {
   container.appendChild(win);
 
   try {
-    const { gl, texture } = initWebGL(canvas);
+    const { gl, program, vertexBuffer, texture } = initWebGL(canvas);
     let hasRenderedFirstFrame = false;
     let resetTimer = 0;
 
     const scheduleVideoReset = (reason: string) => {
+      const live = mirrors.get(serial);
+      if (live) {
+        setMirrorStreamState(live, 'recovering', reason);
+        if (live.resetTimerId) {
+          window.clearTimeout(live.resetTimerId);
+        }
+      }
       if (resetTimer) window.clearTimeout(resetTimer);
       resetTimer = window.setTimeout(() => {
         resetTimer = 0;
+        const current = mirrors.get(serial);
+        if (current) {
+          current.resetTimerId = null;
+        }
         if (!mirrors.has(serial)) return;
         console.warn(`[mirror:${serial}] 请求重置视频流: ${reason}`);
-        invoke('scrcpy_reset_video', { serial }).catch(err =>
+        invoke('scrcpy_reset_video', { serial, reason }).catch(err =>
           console.error(`[mirror:${serial}] reset_video 失败:`, err),
         );
       }, 120);
+      if (live) {
+        live.resetTimerId = resetTimer;
+      }
     };
 
     const decoder = new VideoDecoder({
@@ -535,6 +780,10 @@ export async function startMirror(serial: string) {
           requestAnimationFrame(() => {
             win.classList.add('mirror-stream-ready');
           });
+          const live = mirrors.get(serial);
+          if (live) {
+            setMirrorStreamState(live, 'streaming');
+          }
         }
       },
       error: (e: DOMException) => {
@@ -562,6 +811,7 @@ export async function startMirror(serial: string) {
 
       if (is_config) {
         configData = new Uint8Array(data);
+        concatBuf = null;
         const codecStr = parseCodecFromSPS(configData);
         try {
           if (decoder.state !== 'closed') {
@@ -616,6 +866,12 @@ export async function startMirror(serial: string) {
             data: frameData,
           }),
         );
+        if (concatBuf && concatBuf.length > MAX_CONCAT_BUFFER_RETAIN_BYTES) {
+          const retainSize = Math.max(DEFAULT_CONCAT_BUFFER_BYTES, frameData.byteLength + 1024);
+          if (retainSize < concatBuf.length) {
+            concatBuf = new Uint8Array(retainSize);
+          }
+        }
       } catch (e) {
         console.error(`[mirror:${serial}] decode 调用失败:`, e);
         isKeyFrameNeeded = true;
@@ -635,6 +891,7 @@ export async function startMirror(serial: string) {
     const instance: MirrorInstance = {
       serial,
       decoder,
+      frameChannel: onFrame,
       unlistenStopped,
       width: result.width,
       height: result.height,
@@ -643,19 +900,48 @@ export async function startMirror(serial: string) {
       canvas,
       viewport,
       gl,
+      program,
+      vertexBuffer,
       texture,
       win,
+      streamState: 'starting',
+      textRoute: null,
+      lastFrameAtMs: null,
+      resetTimerId: null,
+      cleanupFns: [],
       scheduleVideoReset,
     };
 
+    const mirrorHost = win as HTMLElement & {
+      __mirrorOnWindowMouseDown?: (event: MouseEvent) => void;
+      __mirrorOnCloseClick?: (event: MouseEvent) => void;
+    };
+    const closeBtn = win.querySelector('.mirror-win-close') as HTMLElement | null;
+    if (mirrorHost.__mirrorOnWindowMouseDown) {
+      instance.cleanupFns.push(() => {
+        win.removeEventListener('mousedown', mirrorHost.__mirrorOnWindowMouseDown!);
+        delete mirrorHost.__mirrorOnWindowMouseDown;
+      });
+    }
+    if (closeBtn && mirrorHost.__mirrorOnCloseClick) {
+      instance.cleanupFns.push(() => {
+        closeBtn.removeEventListener('click', mirrorHost.__mirrorOnCloseClick!);
+        closeBtn.removeEventListener('pointerdown', mirrorHost.__mirrorOnCloseClick!);
+        delete mirrorHost.__mirrorOnCloseClick;
+      });
+    }
+
     applyMirrorMetrics(instance, result.width, result.height);
+    setMirrorStreamState(instance, 'starting');
+    setMirrorTextRoute(instance, null);
     canvas.width = result.width;
     canvas.height = result.height;
     gl.viewport(0, 0, result.width, result.height);
 
     mirrors.set(serial, instance);
+    bindDragEngine(instance);
     bindResizeHandle(instance);
-    bindTouchEvents(canvas, serial);
+    bindTouchEvents(instance);
     bringToFront(serial);
   } catch (e) {
     const errMsg = String(e);
@@ -725,11 +1011,38 @@ function cleanupInstance(serial: string) {
   if (!inst) return;
   mirrors.delete(serial);
   inst.unlistenStopped();
+  if (inst.resetTimerId) {
+    window.clearTimeout(inst.resetTimerId);
+    inst.resetTimerId = null;
+  }
+  for (const cleanup of inst.cleanupFns.splice(0)) {
+    try {
+      cleanup();
+    } catch {
+      /* ignore */
+    }
+  }
+  try {
+    inst.frameChannel.onmessage = () => {};
+  } catch {
+    /* ignore */
+  }
   try {
     inst.decoder.close();
   } catch {
     /* ignore */
   }
+  try {
+    inst.gl.deleteProgram(inst.program);
+    inst.gl.deleteBuffer(inst.vertexBuffer);
+    inst.gl.deleteTexture(inst.texture);
+    const loseContext = inst.gl.getExtension('WEBGL_lose_context');
+    loseContext?.loseContext();
+  } catch {
+    /* ignore */
+  }
+  inst.canvas.width = 0;
+  inst.canvas.height = 0;
   inst.win.remove();
 
   if (focusedSerial === serial) {
@@ -798,6 +1111,8 @@ export function initMirror() {
 
   const textInput = $('#mirror-text-input') as HTMLInputElement;
   if (!textInput) return;
+  if (inputBindingsBound) return;
+  inputBindingsBound = true;
 
   let isComposing = false;
 
@@ -847,13 +1162,42 @@ export function initMirror() {
     }
   }
 
-  if (textInput.dataset.clipboardBound !== 'true') {
-    textInput.dataset.clipboardBound = 'true';
+  if (!clipboardListenBound) {
+    clipboardListenBound = true;
     listen<ScrcpyClipboardPayload>('scrcpy-clipboard', event => {
       const payload = event.payload;
       if (!payload?.serial || !mirrors.has(payload.serial)) return;
       void writeSystemClipboard(payload.text);
     }).catch(err => console.error('[mirror] 监听 scrcpy-clipboard 失败:', err));
+  }
+
+  if (!sessionStateListenBound) {
+    sessionStateListenBound = true;
+    listen<ScrcpySessionStatePayload>('scrcpy-session-state', event => {
+      const payload = event.payload;
+      const inst = mirrors.get(payload?.serial ?? '');
+      if (!inst) return;
+
+      if (payload.width > 0 && payload.height > 0) {
+        applyMirrorMetrics(inst, payload.width, payload.height);
+      }
+      setMirrorStreamState(
+        inst,
+        payload.phase,
+        payload.recover_reason ?? null,
+        payload.last_frame_at_ms ?? null,
+      );
+    }).catch(err => console.error('[mirror] 监听 scrcpy-session-state 失败:', err));
+  }
+
+  if (!textRouteListenBound) {
+    textRouteListenBound = true;
+    listen<ScrcpyTextRoutePayload>('scrcpy-text-route', event => {
+      const payload = event.payload;
+      const inst = mirrors.get(payload?.serial ?? '');
+      if (!inst) return;
+      setMirrorTextRoute(inst, payload.route);
+    }).catch(err => console.error('[mirror] 监听 scrcpy-text-route 失败:', err));
   }
 
   textInput.addEventListener('keydown', e => {

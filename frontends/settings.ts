@@ -8,6 +8,8 @@ const THEME_OPT_ACTIVE = 'bg-white text-s800 shadow-sm';
 const THEME_OPT_INACTIVE = 'text-s400 hover:text-s600';
 const DEFAULT_MQTT_HOST = '39.98.170.208';
 const DEFAULT_MQTT_PORT = '30002';
+let themeSwitcherBound = false;
+let settingsBound = false;
 
 function normalizeMqttFormValues() {
   const hostInput = $('#set-mqtt-host') as HTMLInputElement;
@@ -43,6 +45,8 @@ function syncThemeSwitcher() {
 }
 
 function initThemeSwitcher() {
+  if (themeSwitcherBound) return;
+  themeSwitcherBound = true;
   document.querySelectorAll<HTMLButtonElement>('#theme-switcher .theme-opt').forEach(btn => {
     btn.addEventListener('click', () => {
       const theme = btn.getAttribute('data-theme');
@@ -96,6 +100,8 @@ export function updateMqttStatusUI(status: string) {
 }
 
 export function initSettings() {
+  if (settingsBound) return;
+  settingsBound = true;
   const settingsOverlay = $('#settings-overlay') as HTMLElement;
   initThemeSwitcher();
 

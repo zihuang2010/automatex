@@ -18,6 +18,9 @@ export interface PhoneBindFlowOptions {
   emptyTasksMessage?: string;
 }
 
+let activePhoneBindPromise: Promise<void> | null = null;
+let activePhoneBindCleanup: (() => void) | null = null;
+
 /* ===== 手机号验证 ===== */
 
 /** 验证单个手机号格式（中国大陆 11 位） */
@@ -63,7 +66,12 @@ export function isPhoneBindFlowVisible(): boolean {
 }
 
 export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<void> {
-  return new Promise(resolve => {
+  if (activePhoneBindPromise && isPhoneBindFlowVisible()) {
+    return activePhoneBindPromise;
+  }
+
+  activePhoneBindPromise = new Promise(resolve => {
+    activePhoneBindCleanup?.();
     const el = $('#transition')!;
     const app = $('#app')!;
     const textarea = el.querySelector('#phone-numbers') as HTMLTextAreaElement;
@@ -139,6 +147,8 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
         el.classList.remove('out');
       }, 500);
       cleanup();
+      activePhoneBindCleanup = null;
+      activePhoneBindPromise = null;
       resolve();
     }
 
@@ -147,6 +157,8 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
       submitBtn?.removeEventListener('click', onSubmit);
       resetBtn?.removeEventListener('click', onReset);
     }
+
+    activePhoneBindCleanup = cleanup;
 
     const onInput = () => {
       hideError();
@@ -201,7 +213,6 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
           return;
         }
 
-        console.log('[transition] 同步完成:', result.phones, '个手机号,', result.tasks, '个任务');
         exit();
       } catch (e) {
         showError(`同步失败: ${e}`);
@@ -214,4 +225,6 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
     updateCounter();
     textarea.focus();
   });
+
+  return activePhoneBindPromise;
 }

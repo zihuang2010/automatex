@@ -401,6 +401,7 @@ pub fn run() {
             scrcpy_start_mirror,
             scrcpy_stop_mirror,
             scrcpy_inject_touch,
+            scrcpy_inject_scroll,
             scrcpy_inject_key,
             scrcpy_inject_text,
             scrcpy_press_back,

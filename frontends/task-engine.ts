@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { type UnlistenFn, listen } from '@tauri-apps/api/event';
 
 import {
   activeTask,
@@ -13,6 +13,7 @@ import { showToast } from './utils';
 
 // 回调注册（由 main.ts 初始化后设置，避免循环依赖）
 let _onRefresh: (() => Promise<void>) | null = null;
+let _taskUpdateUnlisten: UnlistenFn | null = null;
 
 export function setRefreshCallbacks(onRefresh: () => Promise<void>) {
   _onRefresh = onRefresh;
@@ -41,12 +42,14 @@ function syncActiveTaskFromQueue() {
 /** 初始化后端引擎事件监听 + 加载初始任务 */
 export async function initEngine() {
   // 监听后端推送的任务状态更新
-  await listen<{ tasks: TaskSummary[] }>('task://update', event => {
-    const { tasks } = event.payload;
-    setGlobalQueue(tasks);
-    syncActiveTaskFromQueue();
-    _onRefresh?.();
-  });
+  if (!_taskUpdateUnlisten) {
+    _taskUpdateUnlisten = await listen<{ tasks: TaskSummary[] }>('task://update', event => {
+      const { tasks } = event.payload;
+      setGlobalQueue(tasks);
+      syncActiveTaskFromQueue();
+      _onRefresh?.();
+    });
+  }
 
   // 从后端引擎加载初始任务列表
   const tasks = await invoke<TaskSummary[]>('engine_get_tasks');

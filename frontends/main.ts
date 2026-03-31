@@ -2,7 +2,7 @@
  * AutomateX — Application Entry Point
  */
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { type UnlistenFn, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { platform } from '@tauri-apps/plugin-os';
 
@@ -36,9 +36,20 @@ import {
 } from './transition';
 import { $, showToast } from './utils';
 
+let appBootstrapped = false;
+let accountPanelInitialized = false;
+const appUnlisteners: UnlistenFn[] = [];
+
 // 窗口关闭时优雅停止所有投屏
 window.addEventListener('beforeunload', () => {
   stopAllMirrors();
+  while (appUnlisteners.length > 0) {
+    try {
+      appUnlisteners.pop()?.();
+    } catch {
+      /* ignore */
+    }
+  }
 });
 
 /* ===== Theme Toggle ===== */
@@ -215,6 +226,8 @@ async function openPhoneBindPage(mode: 'startup' | 'rebind' | 'empty-tasks' = 'r
 }
 
 function initAccountPanel() {
+  if (accountPanelInitialized) return;
+  accountPanelInitialized = true;
   const btn = document.getElementById('btn-account-sync');
   const panel = document.getElementById('account-panel');
   const chevron = document.getElementById('account-chevron');
@@ -451,6 +464,8 @@ function initAccountPanel() {
 /* ===== Init ===== */
 
 window.addEventListener('DOMContentLoaded', () => {
+  if (appBootstrapped) return;
+  appBootstrapped = true;
   // ── Step 0: 初始化主题 ──
   initTheme();
 
@@ -524,7 +539,6 @@ window.addEventListener('DOMContentLoaded', () => {
   // ── Step 4: 初始化后端引擎（加载任务 + 监听事件）──
   initEngine()
     .then(tasks => {
-      console.log('[AutomateX] 引擎初始化成功:', tasks.length, '个任务');
       if (globalQueue.length > 0 && !activeTask) {
         setActiveTask(globalQueue[0]);
         setActiveCityIdx(0);
@@ -583,53 +597,71 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // ── Step 6: 监听后台设备事件 ──
   let devicesChangedTimer: ReturnType<typeof setTimeout> | null = null;
-  listen('devices-changed', () => {
-    if (devicesChangedTimer) clearTimeout(devicesChangedTimer);
-    devicesChangedTimer = setTimeout(async () => {
-      devicesChangedTimer = null;
-      const devs = await refreshDevices();
-      // 设备离线处理现在由后端引擎负责
-      // 只需通知引擎当前在线设备列表
-      const onlineSerials = devs.filter(d => d.state === DeviceState.DEVICE).map(d => d.serial);
-      invoke('engine_release_offline', { onlineSerials }).catch(() => {});
-    }, 300);
-  });
+  void (async () => {
+    appUnlisteners.push(
+      await listen('devices-changed', () => {
+        if (devicesChangedTimer) clearTimeout(devicesChangedTimer);
+        devicesChangedTimer = setTimeout(async () => {
+          devicesChangedTimer = null;
+          const devs = await refreshDevices();
+          // 设备离线处理现在由后端引擎负责
+          // 只需通知引擎当前在线设备列表
+          const onlineSerials = devs.filter(d => d.state === DeviceState.DEVICE).map(d => d.serial);
+          invoke('engine_release_offline', { onlineSerials }).catch(() => {});
+        }, 300);
+      }),
+    );
 
-  // ── 监听账号同步变更事件（唯一更新路径）──
-  listen<{ phones: string[] }>('account://sync-changed', event => {
-    renderAccountList(event.payload.phones);
-  });
+    // ── 监听账号同步变更事件（唯一更新路径）──
+    appUnlisteners.push(
+      await listen<{ phones: string[] }>('account://sync-changed', event => {
+        renderAccountList(event.payload.phones);
+      }),
+    );
 
-  listen<{ tasks: Array<{ id: string }> }>('task://update', async event => {
-    if (event.payload.tasks.length > 0 || isPhoneBindFlowVisible()) return;
-    const phones = await getSyncedPhones();
-    if (phones.length > 0) {
-      openPhoneBindPage('empty-tasks').catch(console.error);
-    }
-  });
+    appUnlisteners.push(
+      await listen<{ tasks: Array<{ id: string }> }>('task://update', async event => {
+        if (event.payload.tasks.length > 0 || isPhoneBindFlowVisible()) return;
+        const phones = await getSyncedPhones();
+        if (phones.length > 0) {
+          openPhoneBindPage('empty-tasks').catch(console.error);
+        }
+      }),
+    );
 
-  listen<{ reason?: string; message?: string }>('require-phone-bind', event => {
-    const reason = event.payload?.reason;
-    if (reason === 'no_phones') {
-      openPhoneBindPage('startup').catch(console.error);
-      return;
-    }
-    if (reason === 'all_expired') {
-      openPhoneBindPage('rebind').catch(console.error);
-      return;
-    }
-    openPhoneBindPage('rebind').catch(console.error);
-  });
+    appUnlisteners.push(
+      await listen<{ reason?: string; message?: string }>('require-phone-bind', event => {
+        const reason = event.payload?.reason;
+        if (reason === 'no_phones') {
+          openPhoneBindPage('startup').catch(console.error);
+          return;
+        }
+        if (reason === 'all_expired') {
+          openPhoneBindPage('rebind').catch(console.error);
+          return;
+        }
+        openPhoneBindPage('rebind').catch(console.error);
+      }),
+    );
 
-  // 监听风控触发事件
-  listen<{ task_id: string; device_serial: string; message: string }>('risk-control', event => {
-    const { device_serial, message } = event.payload;
-    showToast(`⚠ ${device_serial}: ${message}`, 'error');
-  });
+    // 监听风控触发事件
+    appUnlisteners.push(
+      await listen<{ task_id: string; device_serial: string; message: string }>(
+        'risk-control',
+        event => {
+          const { device_serial, message } = event.payload;
+          showToast(`⚠ ${device_serial}: ${message}`, 'error');
+        },
+      ),
+    );
 
-  listen<string>('mqtt-status', event => {
-    updateMqttStatusUI(event.payload);
-  });
+    appUnlisteners.push(
+      await listen<string>('mqtt-status', event => {
+        updateMqttStatusUI(event.payload);
+      }),
+    );
+  })();
+
   invoke<string>('mqtt_status')
     .then(status => updateMqttStatusUI(status))
     .catch(() => {});

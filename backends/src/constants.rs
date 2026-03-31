@@ -54,6 +54,10 @@ pub mod tauri_event {
     pub const STARTUP_SYNC_STATUS: &str = "startup-sync-status";
     /// 已同步手机号变更通知（payload: { phones: string[] }）
     pub const ACCOUNT_SYNC_CHANGED: &str = "account://sync-changed";
+    /// scrcpy 会话状态变化
+    pub const SCRCPY_SESSION_STATE: &str = "scrcpy-session-state";
+    /// scrcpy 文本路由变化
+    pub const SCRCPY_TEXT_ROUTE: &str = "scrcpy-text-route";
 }
 
 /// MQTT 状态推送到前端的字符串值

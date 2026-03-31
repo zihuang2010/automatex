@@ -11,6 +11,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 const MSG_INJECT_KEYCODE: u8 = 0;
 const MSG_INJECT_TEXT: u8 = 1;
 const MSG_INJECT_TOUCH: u8 = 2;
+const MSG_INJECT_SCROLL: u8 = 3;
 const MSG_BACK_OR_SCREEN_ON: u8 = 4;
 const MSG_SET_CLIPBOARD: u8 = 9;
 const MSG_RESET_VIDEO: u8 = 17;
@@ -66,6 +67,11 @@ pub enum DeviceMessage {
 }
 
 impl ScrcpyControl {
+    fn scroll_to_fixed_point(value: f32) -> i16 {
+        let normalized = (value / 16.0).clamp(-1.0, 1.0);
+        (normalized * i16::MAX as f32).round() as i16
+    }
+
     /// 注入触控事件（固定 32 字节消息）
     pub async fn inject_touch<W: AsyncWrite + Unpin>(
         stream: &mut W,
@@ -151,7 +157,10 @@ impl ScrcpyControl {
     /// 注入文本（ASCII 直发）
     ///
     /// 非 ASCII 文本请改走 `set_clipboard(..., paste=true)`，这样更贴近 scrcpy 官方行为。
-    pub async fn inject_text<W: AsyncWrite + Unpin>(stream: &mut W, text: &str) -> Result<(), String> {
+    pub async fn inject_text<W: AsyncWrite + Unpin>(
+        stream: &mut W,
+        text: &str,
+    ) -> Result<(), String> {
         let bytes = text.as_bytes();
         if bytes.len() <= INJECT_TEXT_MAX_LENGTH {
             return Self::inject_text_raw(stream, bytes).await;
@@ -175,6 +184,33 @@ impl ScrcpyControl {
         send(stream, &[MSG_BACK_OR_SCREEN_ON, ACTION_KEY_DOWN]).await?;
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         send(stream, &[MSG_BACK_OR_SCREEN_ON, ACTION_KEY_UP]).await
+    }
+
+    pub async fn inject_scroll<W: AsyncWrite + Unpin>(
+        stream: &mut W,
+        x: u32,
+        y: u32,
+        screen_w: u32,
+        screen_h: u32,
+        h_scroll: f32,
+        v_scroll: f32,
+        buttons: u32,
+    ) -> Result<(), String> {
+        let x = x.min(screen_w);
+        let y = y.min(screen_h);
+        let h_scroll = Self::scroll_to_fixed_point(h_scroll);
+        let v_scroll = Self::scroll_to_fixed_point(v_scroll);
+
+        let mut buf = [0u8; 21];
+        buf[0] = MSG_INJECT_SCROLL;
+        byteorder::BigEndian::write_u32(&mut buf[1..5], x);
+        byteorder::BigEndian::write_u32(&mut buf[5..9], y);
+        byteorder::BigEndian::write_u16(&mut buf[9..11], screen_w.min(u16::MAX as u32) as u16);
+        byteorder::BigEndian::write_u16(&mut buf[11..13], screen_h.min(u16::MAX as u32) as u16);
+        byteorder::BigEndian::write_i16(&mut buf[13..15], h_scroll);
+        byteorder::BigEndian::write_i16(&mut buf[15..17], v_scroll);
+        byteorder::BigEndian::write_u32(&mut buf[17..21], buttons);
+        send(stream, &buf).await
     }
 
     pub async fn reset_video<W: AsyncWrite + Unpin>(stream: &mut W) -> Result<(), String> {
@@ -202,37 +238,33 @@ impl ScrcpyControl {
     pub async fn read_device_message<R: AsyncRead + Unpin>(
         stream: &mut R,
     ) -> Result<DeviceMessage, String> {
-        let msg_type = stream.read_u8().await.map_err(|e| format!("读取设备消息类型失败: {}", e))?;
+        let msg_type =
+            stream.read_u8().await.map_err(|e| format!("读取设备消息类型失败: {}", e))?;
         match msg_type {
             DEVICE_MSG_CLIPBOARD => {
-                let len = stream
-                    .read_u32()
-                    .await
-                    .map_err(|e| format!("读取设备剪贴板长度失败: {}", e))? as usize;
+                let len =
+                    stream.read_u32().await.map_err(|e| format!("读取设备剪贴板长度失败: {}", e))?
+                        as usize;
                 let mut buf = vec![0u8; len];
                 stream
                     .read_exact(&mut buf)
                     .await
                     .map_err(|e| format!("读取设备剪贴板内容失败: {}", e))?;
-                let text = String::from_utf8(buf).map_err(|e| format!("设备剪贴板内容不是合法 UTF-8: {}", e))?;
+                let text = String::from_utf8(buf)
+                    .map_err(|e| format!("设备剪贴板内容不是合法 UTF-8: {}", e))?;
                 Ok(DeviceMessage::Clipboard(text))
             },
             DEVICE_MSG_ACK_CLIPBOARD => {
-                let sequence = stream
-                    .read_u64()
-                    .await
-                    .map_err(|e| format!("读取剪贴板 ACK 失败: {}", e))?;
+                let sequence =
+                    stream.read_u64().await.map_err(|e| format!("读取剪贴板 ACK 失败: {}", e))?;
                 Ok(DeviceMessage::AckClipboard(sequence))
             },
             DEVICE_MSG_UHID_OUTPUT => {
-                let id = stream
-                    .read_u16()
-                    .await
-                    .map_err(|e| format!("读取 UHID id 失败: {}", e))?;
-                let len = stream
-                    .read_u16()
-                    .await
-                    .map_err(|e| format!("读取 UHID 数据长度失败: {}", e))? as usize;
+                let id =
+                    stream.read_u16().await.map_err(|e| format!("读取 UHID id 失败: {}", e))?;
+                let len =
+                    stream.read_u16().await.map_err(|e| format!("读取 UHID 数据长度失败: {}", e))?
+                        as usize;
                 let mut data = vec![0u8; len];
                 stream
                     .read_exact(&mut data)

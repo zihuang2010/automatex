@@ -3,8 +3,13 @@
 //! 负责 adb 路径发现、命令构建、超时执行等底层操作。
 //! DeviceManager 方法通过本模块与 ADB 交互。
 
+use base64::Engine;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::OnceLock;
+
+const ADB_KEYBOARD_IME: &str = "com.android.adbkeyboard/.AdbIME";
+const ADB_KEYBOARD_SWITCH_DELAY_MS: u64 = 120;
+const ADB_KEYBOARD_RESTORE_DELAY_MS: u64 = 40;
 
 /// 获取内嵌 adb 的路径（Tauri sidecar，与可执行文件同目录）
 pub fn adb_path() -> &'static str {
@@ -386,6 +391,45 @@ pub async fn disconnect_wifi_via_adb_async(serial: &str) -> Result<String, Strin
     } else {
         stdout
     })
+}
+
+pub async fn adb_keyboard_available(serial: &str) -> Result<bool, String> {
+    let output = adb_shell_async(serial, "ime list -s").await?;
+    Ok(output.lines().map(str::trim).any(|line| line == ADB_KEYBOARD_IME))
+}
+
+pub async fn adb_keyboard_input_text(serial: &str, text: &str) -> Result<(), String> {
+    if text.is_empty() {
+        return Ok(());
+    }
+
+    let previous_ime = adb_shell_async(serial, "settings get secure default_input_method")
+        .await
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let should_restore = !previous_ime.is_empty() && previous_ime != ADB_KEYBOARD_IME;
+
+    if previous_ime != ADB_KEYBOARD_IME {
+        adb_shell_async(serial, &format!("ime set {}", ADB_KEYBOARD_IME)).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(ADB_KEYBOARD_SWITCH_DELAY_MS)).await;
+    }
+
+    let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+    let broadcast_cmd = format!("am broadcast -a ADB_INPUT_B64 --es msg '{}'", encoded);
+    let broadcast_result = adb_shell_async(serial, &broadcast_cmd).await;
+
+    if should_restore {
+        tokio::time::sleep(std::time::Duration::from_millis(ADB_KEYBOARD_RESTORE_DELAY_MS)).await;
+        let _ = adb_shell_async(serial, &format!("ime set {}", previous_ime)).await;
+    }
+
+    let output = broadcast_result?;
+    if output.contains("Broadcast completed") || output.contains("result=0") {
+        Ok(())
+    } else {
+        Err(format!("ADBKeyBoard 输入失败: {}", output.trim()))
+    }
 }
 
 /// 通过 adb CLI 执行 shell 命令（带超时保护）
