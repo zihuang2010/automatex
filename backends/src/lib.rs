@@ -404,6 +404,7 @@ pub fn run() {
             scrcpy_inject_key,
             scrcpy_inject_text,
             scrcpy_press_back,
+            scrcpy_reset_video,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

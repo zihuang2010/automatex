@@ -264,7 +264,7 @@ impl ScrcpyServer {
             "shell",
             &format!(
                 "CLASSPATH={} app_process / com.genymobile.scrcpy.Server {} \
-                     tunnel_forward=true video=true audio=false control=true \
+                     tunnel_forward=true video=true audio=false control=true clipboard_autosync=false \
                      video_codec=h264 max_size=0 max_fps=30",
                 DEVICE_JAR_PATH, SCRCPY_VERSION
             ),

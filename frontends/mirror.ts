@@ -24,6 +24,11 @@ interface MirrorStartedPayload {
   height: number;
 }
 
+interface ScrcpyClipboardPayload {
+  serial: string;
+  text: string;
+}
+
 interface MirrorInstance {
   serial: string;
   decoder: VideoDecoder;
@@ -37,6 +42,7 @@ interface MirrorInstance {
   gl: WebGL2RenderingContext;
   texture: WebGLTexture;
   win: HTMLElement; // .mirror-window DOM
+  scheduleVideoReset: (reason: string) => void;
 }
 
 const TOUCH_ACTION = { DOWN: 0, UP: 1, MOVE: 2 } as const;
@@ -219,6 +225,12 @@ function buildMirrorMarkup(serial: string) {
       <button class="mirror-resize-handle" title="拖拽缩放" aria-label="拖拽缩放投屏窗口"></button>
     </div>
   `;
+}
+
+function scheduleMirrorVideoReset(serial: string, reason: string) {
+  const inst = mirrors.get(serial);
+  if (!inst) return;
+  inst.scheduleVideoReset(reason);
 }
 
 function createMirrorWindow(
@@ -493,6 +505,19 @@ export async function startMirror(serial: string) {
   try {
     const { gl, texture } = initWebGL(canvas);
     let hasRenderedFirstFrame = false;
+    let resetTimer = 0;
+
+    const scheduleVideoReset = (reason: string) => {
+      if (resetTimer) window.clearTimeout(resetTimer);
+      resetTimer = window.setTimeout(() => {
+        resetTimer = 0;
+        if (!mirrors.has(serial)) return;
+        console.warn(`[mirror:${serial}] 请求重置视频流: ${reason}`);
+        invoke('scrcpy_reset_video', { serial }).catch(err =>
+          console.error(`[mirror:${serial}] reset_video 失败:`, err),
+        );
+      }, 120);
+    };
 
     const decoder = new VideoDecoder({
       output: (frame: VideoFrame) => {
@@ -539,10 +564,14 @@ export async function startMirror(serial: string) {
         configData = new Uint8Array(data);
         const codecStr = parseCodecFromSPS(configData);
         try {
+          if (decoder.state !== 'closed') {
+            decoder.reset();
+          }
           decoder.configure({ codec: codecStr, optimizeForLatency: true });
           isKeyFrameNeeded = true;
         } catch (e) {
           console.error(`[mirror:${serial}] 解码器配置失败:`, e);
+          scheduleVideoReset('decoder-config-failed');
         }
         return;
       }
@@ -555,7 +584,16 @@ export async function startMirror(serial: string) {
       isKeyFrameNeeded = false;
 
       if (!isKey && decoder.decodeQueueSize > MAX_DECODE_QUEUE_SIZE) {
+        try {
+          decoder.reset();
+          if (configData) {
+            decoder.configure({ codec: parseCodecFromSPS(configData), optimizeForLatency: true });
+          }
+        } catch (e) {
+          console.warn(`[mirror:${serial}] 解码器压力重置失败:`, e);
+        }
         isKeyFrameNeeded = true;
+        scheduleVideoReset('decode-queue-overflow');
         return;
       }
 
@@ -570,13 +608,19 @@ export async function startMirror(serial: string) {
         frameData = concatBuf.subarray(0, needed);
       }
 
-      decoder.decode(
-        new EncodedVideoChunk({
-          type: isKey ? 'key' : 'delta',
-          timestamp: ts * 1000,
-          data: frameData,
-        }),
-      );
+      try {
+        decoder.decode(
+          new EncodedVideoChunk({
+            type: isKey ? 'key' : 'delta',
+            timestamp: ts * 1000,
+            data: frameData,
+          }),
+        );
+      } catch (e) {
+        console.error(`[mirror:${serial}] decode 调用失败:`, e);
+        isKeyFrameNeeded = true;
+        scheduleVideoReset('decode-call-failed');
+      }
     };
 
     const result: MirrorStartedPayload = await invoke('scrcpy_start_mirror', { serial, onFrame });
@@ -601,6 +645,7 @@ export async function startMirror(serial: string) {
       gl,
       texture,
       win,
+      scheduleVideoReset,
     };
 
     applyMirrorMetrics(instance, result.width, result.height);
@@ -756,6 +801,61 @@ export function initMirror() {
 
   let isComposing = false;
 
+  async function forwardClipboardText(serial: string, providedText?: string) {
+    let text = providedText ?? '';
+    if (!text) {
+      try {
+        text = await navigator.clipboard.readText();
+      } catch (error) {
+        console.warn('[mirror] 读取系统剪贴板失败:', error);
+      }
+    }
+    if (!text) return;
+    invoke('scrcpy_inject_text', { serial, text })
+      .catch(err => {
+        console.error('[mirror] inject_text 失败:', err);
+        showToast(`粘贴到设备失败：${String(err)}`, 'error');
+      })
+      .finally(() => {
+        scheduleMirrorVideoReset(serial, 'clipboard-paste');
+      });
+  }
+
+  async function writeSystemClipboard(text: string) {
+    if (!text) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return;
+      }
+    } catch (error) {
+      console.warn('[mirror] 写入系统剪贴板失败，尝试降级方案:', error);
+    }
+
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', 'true');
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    textarea.style.pointerEvents = 'none';
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+      document.execCommand('copy');
+    } finally {
+      textarea.remove();
+    }
+  }
+
+  if (textInput.dataset.clipboardBound !== 'true') {
+    textInput.dataset.clipboardBound = 'true';
+    listen<ScrcpyClipboardPayload>('scrcpy-clipboard', event => {
+      const payload = event.payload;
+      if (!payload?.serial || !mirrors.has(payload.serial)) return;
+      void writeSystemClipboard(payload.text);
+    }).catch(err => console.error('[mirror] 监听 scrcpy-clipboard 失败:', err));
+  }
+
   textInput.addEventListener('keydown', e => {
     if (!focusedSerial) return;
     if (MODIFIER_KEYS.has(e.key)) return;
@@ -771,7 +871,11 @@ export function initMirror() {
     }
 
     if ((e.ctrlKey || e.metaKey) && e.key.length === 1) {
-      if (e.key === 'v' || e.key === 'V') return;
+      if (e.key === 'v' || e.key === 'V') {
+        e.preventDefault();
+        void forwardClipboardText(focusedSerial);
+        return;
+      }
       e.preventDefault();
       const keycode = charToKeycode(e.key);
       if (keycode === 0) return;
@@ -791,7 +895,10 @@ export function initMirror() {
     isComposing = false;
     const text = textInput.value;
     if (text && focusedSerial) {
-      invoke('scrcpy_inject_text', { serial: focusedSerial, text }).catch(console.error);
+      const serial = focusedSerial;
+      invoke('scrcpy_inject_text', { serial, text })
+        .catch(console.error)
+        .finally(() => scheduleMirrorVideoReset(serial, 'compositionend-input'));
     }
     textInput.value = '';
   });
@@ -800,8 +907,20 @@ export function initMirror() {
     if (isComposing) return;
     const text = textInput.value;
     if (text && focusedSerial) {
-      invoke('scrcpy_inject_text', { serial: focusedSerial, text }).catch(console.error);
+      const serial = focusedSerial;
+      invoke('scrcpy_inject_text', { serial, text })
+        .catch(console.error)
+        .finally(() => scheduleMirrorVideoReset(serial, 'input-event'));
     }
+    textInput.value = '';
+  });
+
+  textInput.addEventListener('paste', e => {
+    if (!focusedSerial) return;
+    const text = e.clipboardData?.getData('text/plain') ?? '';
+    if (!text) return;
+    e.preventDefault();
+    void forwardClipboardText(focusedSerial, text);
     textInput.value = '';
   });
 
@@ -827,9 +946,7 @@ function parseCodecFromSPS(configData: Uint8Array): string {
         const profile = configData[nalStart + 1];
         const constraints = configData[nalStart + 2];
         const level = configData[nalStart + 3];
-        const codec = `avc1.${hex(profile)}${hex(constraints)}${hex(level)}`;
-        console.log(`[mirror] 解析 codec: ${codec}`);
-        return codec;
+        return `avc1.${hex(profile)}${hex(constraints)}${hex(level)}`;
       }
     }
   }

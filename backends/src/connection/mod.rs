@@ -34,9 +34,9 @@ impl DeviceManager {
         })
     }
 
-    pub fn disconnect_wifi(serial: &str) {
+    pub async fn disconnect_wifi_async(serial: &str) {
         if serial.contains(':') {
-            let _ = adb_command().args(["disconnect", serial]).output();
+            let _ = adb::disconnect_wifi_via_adb_async(serial).await;
         }
     }
 

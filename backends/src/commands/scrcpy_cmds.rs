@@ -112,3 +112,12 @@ pub async fn scrcpy_press_back(
     validate_serial(&serial)?;
     state.scrcpy.press_back(&serial).await
 }
+
+#[tauri::command]
+pub async fn scrcpy_reset_video(
+    serial: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    validate_serial(&serial)?;
+    state.scrcpy.reset_video(&serial).await
+}

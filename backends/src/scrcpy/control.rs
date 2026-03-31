@@ -4,8 +4,7 @@
 //! 所有数字字段均使用 Big-Endian（网络字节序）。
 
 use byteorder::{BigEndian, ByteOrder, WriteBytesExt};
-use std::io::Write;
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 // ─── 消息类型常量 ─────────────────────────────────────────────
 
@@ -14,6 +13,10 @@ const MSG_INJECT_TEXT: u8 = 1;
 const MSG_INJECT_TOUCH: u8 = 2;
 const MSG_BACK_OR_SCREEN_ON: u8 = 4;
 const MSG_SET_CLIPBOARD: u8 = 9;
+const MSG_RESET_VIDEO: u8 = 17;
+const DEVICE_MSG_CLIPBOARD: u8 = 0;
+const DEVICE_MSG_ACK_CLIPBOARD: u8 = 1;
+const DEVICE_MSG_UHID_OUTPUT: u8 = 2;
 
 // 触控动作
 const ACTION_DOWN: u8 = 0;
@@ -31,26 +34,41 @@ const PRESSURE_NONE: u16 = 0;
 
 /// scrcpy 协议限制 inject_text 最大长度
 const INJECT_TEXT_MAX_LENGTH: usize = 300;
-
-/// Ctrl+V 模拟粘贴用
-const KEYCODE_V: u32 = 50;
-const META_CTRL_ON: u32 = 0x1000;
+/// scrcpy 协议限制 clipboard 消息最大长度
+pub const CLIPBOARD_TEXT_MAX_LENGTH: usize = (1 << 18) - 14;
 
 // ─── 异步发送辅助 ─────────────────────────────────────────────
 
-async fn send(stream: &mut TcpStream, buf: &[u8]) -> Result<(), String> {
-    use tokio::io::AsyncWriteExt;
+async fn send<W: AsyncWrite + Unpin>(stream: &mut W, buf: &[u8]) -> Result<(), String> {
     stream.write_all(buf).await.map_err(|e| format!("控制消息发送失败: {}", e))
+}
+
+pub(crate) fn utf8_truncation_index(raw: &[u8], limit: usize) -> usize {
+    if raw.len() <= limit {
+        return raw.len();
+    }
+
+    let mut end = limit;
+    while end > 0 && std::str::from_utf8(&raw[..end]).is_err() {
+        end -= 1;
+    }
+    end
 }
 
 // ─── 控制器 ─────────────────────────────────────────────────
 
 pub struct ScrcpyControl;
 
+pub enum DeviceMessage {
+    Clipboard(String),
+    AckClipboard(u64),
+    UhidOutput { id: u16, data: Vec<u8> },
+}
+
 impl ScrcpyControl {
     /// 注入触控事件（固定 32 字节消息）
-    pub async fn inject_touch(
-        stream: &mut TcpStream,
+    pub async fn inject_touch<W: AsyncWrite + Unpin>(
+        stream: &mut W,
         action: u8,
         x: u32,
         y: u32,
@@ -78,8 +96,8 @@ impl ScrcpyControl {
 
     /// 点按
     #[allow(dead_code)]
-    pub async fn tap(
-        stream: &mut TcpStream,
+    pub async fn tap<W: AsyncWrite + Unpin>(
+        stream: &mut W,
         x: u32,
         y: u32,
         screen_w: u32,
@@ -92,8 +110,8 @@ impl ScrcpyControl {
 
     /// 滑动
     #[allow(dead_code)]
-    pub async fn swipe(
-        stream: &mut TcpStream,
+    pub async fn swipe<W: AsyncWrite + Unpin>(
+        stream: &mut W,
         x1: u32,
         y1: u32,
         x2: u32,
@@ -120,8 +138,8 @@ impl ScrcpyControl {
     }
 
     /// 注入按键（固定 14 字节消息，KEY_DOWN + KEY_UP）
-    pub async fn inject_key(
-        stream: &mut TcpStream,
+    pub async fn inject_key<W: AsyncWrite + Unpin>(
+        stream: &mut W,
         keycode: u32,
         meta_state: u32,
     ) -> Result<(), String> {
@@ -130,46 +148,107 @@ impl ScrcpyControl {
         Self::send_keycode(stream, ACTION_KEY_UP, keycode, meta_state).await
     }
 
-    /// 注入文本（智能路由：ASCII 走 MSG_INJECT_TEXT，中文等非 ASCII 走剪贴板+Ctrl+V）
+    /// 注入文本（ASCII 直发）
     ///
-    /// scrcpy 的 MSG_INJECT_TEXT 内部使用 KeyCharacterMap.getEvents()，
-    /// 该 API 不支持 CJK 字符。非 ASCII 文本通过 SET_CLIPBOARD(paste=false)
-    /// 设置剪贴板内容，再通过 inject_key(KEYCODE_V + CTRL) 触发应用侧粘贴。
-    pub async fn inject_text(stream: &mut TcpStream, text: &str) -> Result<(), String> {
-        if text.is_ascii() {
-            // ASCII：直接用 MSG_INJECT_TEXT（快速，无剪贴板副作用）
-            let bytes = text.as_bytes();
-            if bytes.len() <= INJECT_TEXT_MAX_LENGTH {
-                return Self::inject_text_raw(stream, bytes).await;
-            }
-            // 分片
-            let mut start = 0;
-            while start < text.len() {
-                let end = (start + INJECT_TEXT_MAX_LENGTH).min(text.len());
-                Self::inject_text_raw(stream, text[start..end].as_bytes()).await?;
-                start = end;
-            }
-            Ok(())
-        } else {
-            // 非 ASCII（中文等）：SET_CLIPBOARD(paste=false) + Ctrl+V
-            Self::set_clipboard(stream, text).await?;
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            Self::inject_key(stream, KEYCODE_V, META_CTRL_ON).await
+    /// 非 ASCII 文本请改走 `set_clipboard(..., paste=true)`，这样更贴近 scrcpy 官方行为。
+    pub async fn inject_text<W: AsyncWrite + Unpin>(stream: &mut W, text: &str) -> Result<(), String> {
+        let bytes = text.as_bytes();
+        if bytes.len() <= INJECT_TEXT_MAX_LENGTH {
+            return Self::inject_text_raw(stream, bytes).await;
         }
+        // 分片时必须按 UTF-8 边界切割
+        let mut start = 0;
+        while start < bytes.len() {
+            let remaining = &bytes[start..];
+            let chunk_len = utf8_truncation_index(remaining, INJECT_TEXT_MAX_LENGTH);
+            if chunk_len == 0 {
+                return Err("文本分片失败：无法在 UTF-8 边界切割".into());
+            }
+            Self::inject_text_raw(stream, &remaining[..chunk_len]).await?;
+            start += chunk_len;
+        }
+        Ok(())
     }
 
     /// 返回键 / 亮屏（固定 2 字节消息）
-    pub async fn press_back(stream: &mut TcpStream) -> Result<(), String> {
+    pub async fn press_back<W: AsyncWrite + Unpin>(stream: &mut W) -> Result<(), String> {
         send(stream, &[MSG_BACK_OR_SCREEN_ON, ACTION_KEY_DOWN]).await?;
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         send(stream, &[MSG_BACK_OR_SCREEN_ON, ACTION_KEY_UP]).await
     }
 
+    pub async fn reset_video<W: AsyncWrite + Unpin>(stream: &mut W) -> Result<(), String> {
+        send(stream, &[MSG_RESET_VIDEO]).await
+    }
+
+    /// 粘贴文本到设备：设置设备剪贴板，并可请求设备侧执行粘贴。
+    pub async fn set_clipboard<W: AsyncWrite + Unpin>(
+        stream: &mut W,
+        text: &str,
+        paste: bool,
+        sequence: u64,
+    ) -> Result<(), String> {
+        let raw = text.as_bytes();
+        let len = utf8_truncation_index(raw, CLIPBOARD_TEXT_MAX_LENGTH);
+        let mut buf: Vec<u8> = Vec::with_capacity(14 + len);
+        buf.push(MSG_SET_CLIPBOARD);
+        WriteBytesExt::write_u64::<BigEndian>(&mut buf, sequence).map_err(|e| e.to_string())?;
+        buf.push(if paste { 1 } else { 0 });
+        WriteBytesExt::write_u32::<BigEndian>(&mut buf, len as u32).map_err(|e| e.to_string())?;
+        std::io::Write::write_all(&mut buf, &raw[..len]).map_err(|e| e.to_string())?;
+        send(stream, &buf).await
+    }
+
+    pub async fn read_device_message<R: AsyncRead + Unpin>(
+        stream: &mut R,
+    ) -> Result<DeviceMessage, String> {
+        let msg_type = stream.read_u8().await.map_err(|e| format!("读取设备消息类型失败: {}", e))?;
+        match msg_type {
+            DEVICE_MSG_CLIPBOARD => {
+                let len = stream
+                    .read_u32()
+                    .await
+                    .map_err(|e| format!("读取设备剪贴板长度失败: {}", e))? as usize;
+                let mut buf = vec![0u8; len];
+                stream
+                    .read_exact(&mut buf)
+                    .await
+                    .map_err(|e| format!("读取设备剪贴板内容失败: {}", e))?;
+                let text = String::from_utf8(buf).map_err(|e| format!("设备剪贴板内容不是合法 UTF-8: {}", e))?;
+                Ok(DeviceMessage::Clipboard(text))
+            },
+            DEVICE_MSG_ACK_CLIPBOARD => {
+                let sequence = stream
+                    .read_u64()
+                    .await
+                    .map_err(|e| format!("读取剪贴板 ACK 失败: {}", e))?;
+                Ok(DeviceMessage::AckClipboard(sequence))
+            },
+            DEVICE_MSG_UHID_OUTPUT => {
+                let id = stream
+                    .read_u16()
+                    .await
+                    .map_err(|e| format!("读取 UHID id 失败: {}", e))?;
+                let len = stream
+                    .read_u16()
+                    .await
+                    .map_err(|e| format!("读取 UHID 数据长度失败: {}", e))? as usize;
+                let mut data = vec![0u8; len];
+                stream
+                    .read_exact(&mut data)
+                    .await
+                    .map_err(|e| format!("读取 UHID 数据失败: {}", e))?;
+                Ok(DeviceMessage::UhidOutput { id, data })
+            },
+            other => Err(format!("未知设备消息类型: {}", other)),
+        }
+    }
+
     // ── 内部辅助 ──
 
     /// 发送单个按键事件（固定 14 字节）
-    async fn send_keycode(
-        stream: &mut TcpStream,
+    async fn send_keycode<W: AsyncWrite + Unpin>(
+        stream: &mut W,
         action: u8,
         keycode: u32,
         meta_state: u32,
@@ -184,29 +263,15 @@ impl ScrcpyControl {
     }
 
     /// 发送原始文本 inject 消息
-    async fn inject_text_raw(stream: &mut TcpStream, text_bytes: &[u8]) -> Result<(), String> {
+    async fn inject_text_raw<W: AsyncWrite + Unpin>(
+        stream: &mut W,
+        text_bytes: &[u8],
+    ) -> Result<(), String> {
         let mut buf: Vec<u8> = Vec::with_capacity(5 + text_bytes.len());
         buf.push(MSG_INJECT_TEXT);
         WriteBytesExt::write_u32::<BigEndian>(&mut buf, text_bytes.len() as u32)
             .map_err(|e| e.to_string())?;
-        buf.write_all(text_bytes).map_err(|e| e.to_string())?;
-        send(stream, &buf).await
-    }
-
-    /// 设置 Android 剪贴板内容（paste=false，仅设置不粘贴，不阻塞）
-    /// 格式: type(1) + sequence(8) + paste(1) + text_len(4) + text(N)
-    async fn set_clipboard(stream: &mut TcpStream, text: &str) -> Result<(), String> {
-        let text_bytes = text.as_bytes();
-        let mut buf: Vec<u8> = Vec::with_capacity(14 + text_bytes.len());
-        buf.push(MSG_SET_CLIPBOARD);
-        // sequence: 8 bytes (u64 = 0)
-        WriteBytesExt::write_u64::<BigEndian>(&mut buf, 0).map_err(|e| e.to_string())?;
-        // paste: false (0) — 仅设置剪贴板，不触发 commitText
-        buf.push(0);
-        // text length
-        WriteBytesExt::write_u32::<BigEndian>(&mut buf, text_bytes.len() as u32)
-            .map_err(|e| e.to_string())?;
-        buf.write_all(text_bytes).map_err(|e| e.to_string())?;
+        std::io::Write::write_all(&mut buf, text_bytes).map_err(|e| e.to_string())?;
         send(stream, &buf).await
     }
 }

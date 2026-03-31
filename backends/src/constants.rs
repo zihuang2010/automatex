@@ -103,6 +103,8 @@ pub mod timing {
     pub const ADB_COMMAND_TIMEOUT_SECS: u64 = 30;
     /// 设备列表缓存 TTL（毫秒）
     pub const DEVICE_CACHE_TTL_MS: u64 = 3000;
+    /// 设备变化事件去抖时间（毫秒）
+    pub const DEVICE_EVENT_DEBOUNCE_MS: u64 = 250;
     /// HTTP 连接超时
     pub const HTTP_CONNECT_TIMEOUT_SECS: u64 = 5;
     /// HTTP 请求总超时
@@ -111,6 +113,10 @@ pub mod timing {
     pub const STARTUP_DEVICE_READY_TIMEOUT_SECS: u64 = 12;
     /// 任务默认调度节拍
     pub const TASK_DISPATCH_INTERVAL_SECS: u64 = 10;
+    /// WiFi 设备重连初始退避（秒）
+    pub const WIFI_RECONNECT_BASE_DELAY_SECS: u64 = 30;
+    /// WiFi 设备重连最大退避（秒）
+    pub const WIFI_RECONNECT_MAX_DELAY_SECS: u64 = 300;
 }
 
 /// 并发限制
@@ -119,6 +125,8 @@ pub mod limits {
     pub const MAX_PROP_FETCH_THREADS: usize = 4;
     /// 电池刷新最大并发线程数
     pub const MAX_BATTERY_REFRESH_THREADS: usize = 8;
+    /// 单轮 WiFi 重连最大并发数
+    pub const MAX_WIFI_RECONNECT_PER_CYCLE: usize = 3;
 }
 
 /// Mock / 调试开关

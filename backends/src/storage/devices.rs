@@ -185,22 +185,6 @@ impl Database {
         .unwrap_or(false)
     }
 
-    pub async fn needs_prop_refresh(&self, serial: &str) -> bool {
-        let serial = serial.to_string();
-        let Ok(conn) = self.pool.get().await else { return true };
-        conn.interact(move |conn| {
-            conn.query_row(
-                "SELECT model FROM a_devices WHERE serial = ?1",
-                params![serial],
-                |row| row.get::<_, String>(0),
-            )
-            .map(|m| m == crate::constants::device_state::UNKNOWN)
-            .unwrap_or(true)
-        })
-        .await
-        .unwrap_or(true)
-    }
-
     pub async fn load_all_devices(&self) -> Vec<DeviceRow> {
         let Ok(conn) = self.pool.get().await else { return Vec::new() };
         conn.interact(|conn| {

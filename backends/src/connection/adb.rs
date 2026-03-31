@@ -370,6 +370,24 @@ pub async fn connect_wifi_via_adb_async(address: &str) -> Result<String, String>
     }
 }
 
+pub async fn disconnect_wifi_via_adb_async(serial: &str) -> Result<String, String> {
+    if !serial.contains(':') {
+        return Ok(format!("USB 设备无需断开 WiFi: {}", serial));
+    }
+
+    let stdout = run_adb_async_raw(
+        &["disconnect", serial],
+        crate::constants::timing::WIFI_CONNECT_TIMEOUT_SECS,
+    )
+    .await?;
+
+    Ok(if stdout.is_empty() {
+        format!("WiFi 设备已断开: {}", serial)
+    } else {
+        stdout
+    })
+}
+
 /// 通过 adb CLI 执行 shell 命令（带超时保护）
 pub(crate) fn adb_shell(serial: &str, command: &str) -> Result<String, String> {
     let output = run_adb_timed(
