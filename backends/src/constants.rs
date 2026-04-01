@@ -113,6 +113,8 @@ pub mod timing {
     pub const HTTP_CONNECT_TIMEOUT_SECS: u64 = 5;
     /// HTTP 请求总超时
     pub const HTTP_REQUEST_TIMEOUT_SECS: u64 = 15;
+    /// HTTP 基础重试退避（毫秒）
+    pub const HTTP_RETRY_BASE_DELAY_MS: u64 = 300;
     /// 启动期等待首轮设备就绪的最长时间
     pub const STARTUP_DEVICE_READY_TIMEOUT_SECS: u64 = 12;
     /// 任务默认调度节拍
@@ -131,6 +133,8 @@ pub mod limits {
     pub const MAX_BATTERY_REFRESH_THREADS: usize = 8;
     /// 单轮 WiFi 重连最大并发数
     pub const MAX_WIFI_RECONNECT_PER_CYCLE: usize = 3;
+    /// 单次 batchTasks 请求的 taskId 数量上限
+    pub const MAX_BATCH_TASK_IDS_PER_REQUEST: usize = 50;
 }
 
 /// Mock / 调试开关

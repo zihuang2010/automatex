@@ -889,8 +889,8 @@ Channel 推送的 payload：
 ```json
 {
   "status": "conflicts",
-  "bound": ["13800138000"],
-  "conflicts": [{ "phone": "13900139000", "current_client": "auto-xyz789" }]
+  "taskItems": ["550e8400-e29b-41d4-a716-446655440001"],
+  "conflicts": [{ "mobile": "13900139000", "clientId": "auto-xyz789" }]
 }
 ```
 

@@ -2,7 +2,8 @@ use crate::{constants, http, task_sync, utils, AppState};
 use tauri::Emitter;
 
 fn parse_synced_phones(raw: String) -> Vec<String> {
-    serde_json::from_str(&raw).unwrap_or_default()
+    let phones: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
+    task_sync::normalize_unique_strings(phones)
 }
 
 async fn resolve_client_id(state: &AppState) -> String {
@@ -22,6 +23,7 @@ pub async fn sync_tasks_by_phones(
 ) -> Result<serde_json::Value, String> {
     let engine = state.engine()?;
     let client_id = resolve_client_id(&state).await;
+    let phones = task_sync::normalize_unique_strings(phones);
     let old_phones = parse_synced_phones(
         state
             .db
@@ -53,8 +55,11 @@ pub async fn sync_tasks_by_phones(
     }
 
     let http = state.http()?;
-    let bind_req =
-        http::PhoneBindRequest { client_id: client_id.clone(), phones: phones.clone(), force };
+    let bind_req = http::PhoneBindRequest {
+        client_id: client_id.clone(),
+        mobiles: phones.clone(),
+        force_bind: force,
+    };
     let bind_resp = http.bind_phones(&bind_req).await?;
 
     if !bind_resp.conflicts.is_empty() && !force {
@@ -91,11 +96,11 @@ pub async fn sync_tasks_by_phones(
     engine.reload_tasks().await;
     engine.force_emit_update().await;
 
-    eprintln!("[sync] 同步完成: {} 个手机号, {} 个任务", bind_req.phones.len(), count);
+    eprintln!("[sync] 同步完成: {} 个手机号, {} 个任务", bind_req.mobiles.len(), count);
 
     Ok(serde_json::json!({
         "status": constants::response::OK,
-        "phones": bind_req.phones.len(),
+        "phones": bind_req.mobiles.len(),
         "tasks": count,
     }))
 }
@@ -115,6 +120,10 @@ pub async fn unbind_phone(
             .await
             .unwrap_or_default(),
     );
+    let phone = phone.trim().to_string();
+    if phone.is_empty() {
+        return Err("手机号不能为空".to_string());
+    }
 
     if !old_phones.iter().any(|saved| saved == &phone) {
         return Ok(serde_json::json!({
@@ -125,7 +134,7 @@ pub async fn unbind_phone(
     }
 
     let http = state.http()?;
-    http.unbind_phones(&http::UnbindPhonesRequest { client_id, phones: vec![phone.clone()] })
+    http.unbind_phones(&http::UnbindPhonesRequest { client_id, mobiles: vec![phone.clone()] })
         .await?;
 
     engine.handle_phones_unbind(vec![phone.clone()]).await;

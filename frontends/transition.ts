@@ -16,7 +16,7 @@ export interface PhoneBindFlowOptions {
   prefillPhones?: string[];
   forceSync?: boolean;
   emptyTasksMessage?: string;
-  conflictDetails?: Array<{ phone: string; clientId: string }>;
+  conflictDetails?: Array<{ mobile?: string; phone?: string; clientId: string }>;
 }
 
 let activePhoneBindPromise: Promise<void> | null = null;
@@ -31,10 +31,14 @@ function isValidPhone(phone: string): boolean {
 
 /** 从 textarea 内容解析有效手机号列表 */
 function parsePhones(raw: string): string[] {
-  return raw
-    .split(/[\n,;，；\s]+/)
-    .map(s => s.trim())
-    .filter(s => s.length > 0);
+  return [
+    ...new Set(
+      raw
+        .split(/[\n,;，；\s]+/)
+        .map(s => s.trim())
+        .filter(s => s.length > 0),
+    ),
+  ];
 }
 
 /* ===== 核心逻辑 ===== */
@@ -103,7 +107,7 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
     if (conflictDetails.length > 0) {
       showError(
         `检测到冲突手机号：${conflictDetails
-          .map(item => `${item.phone}（占用端：${item.clientId}）`)
+          .map(item => `${item.mobile ?? item.phone ?? ''}（占用端：${item.clientId}）`)
           .join('、')}。你可以直接确认是否强制绑定。`,
       );
     }
@@ -206,7 +210,7 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
           phones?: number;
           tasks?: number;
           taskItems?: string[];
-          conflicts?: Array<{ phone: string; clientId: string }>;
+          conflicts?: Array<{ mobile?: string; phone?: string; clientId: string }>;
         }>('sync_tasks_by_phones', {
           phones: valid,
           force: forceSync,
@@ -214,8 +218,9 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
 
         if (result.status === 'conflicts') {
           const message =
-            result.conflicts?.map(item => `${item.phone}（占用端：${item.clientId}）`).join('、') ||
-            '';
+            result.conflicts
+              ?.map(item => `${item.mobile ?? item.phone ?? ''}（占用端：${item.clientId}）`)
+              .join('、') || '';
           showError(`以下号码已在其他客户端绑定：${message}`);
           const confirmed = window.confirm(
             `以下号码已在其他客户端绑定：\n${message}\n\n是否强制绑定并继续同步？`,

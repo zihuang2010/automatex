@@ -95,15 +95,8 @@ pub(crate) enum EngineMsg {
 
 #[derive(Debug)]
 pub(crate) enum ExecutionOutcome {
-    Success {
-        next_delay_ms: u64,
-    },
+    Success { next_delay_ms: u64 },
     DeviceOffline,
-    Failed {
-        retryable: bool,
-        next_delay_ms: Option<u64>,
-        error_message: String,
-    },
     Cancelled,
 }
 

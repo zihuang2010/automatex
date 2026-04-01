@@ -59,8 +59,8 @@ impl MockApiClient {
 impl ApiClient for MockApiClient {
     async fn bind_phones(&self, req: &PhoneBindRequest) -> Result<PhoneBindResponse, String> {
         eprintln!(
-            "[http-mock] bind_phones: client={}, phones={:?}, force={}",
-            req.client_id, req.phones, req.force
+            "[http-mock] bind_phones: client={}, mobiles={:?}, force_bind={}",
+            req.client_id, req.mobiles, req.force_bind
         );
 
         if let Some(scenario) = self.load_mock_scenario() {
@@ -79,7 +79,7 @@ impl ApiClient for MockApiClient {
             }
         }
 
-        let items = self.batch_items_for_phones(&req.phones);
+        let items = self.batch_items_for_mobiles(&req.mobiles);
         let task_items = items.into_iter().map(|item| item.task_id).collect();
         Ok(PhoneBindResponse { task_items: Some(task_items), conflicts: Vec::new() })
     }
@@ -100,24 +100,24 @@ impl ApiClient for MockApiClient {
     async fn report_progress(&self, req: &ProgressReportRequest) -> Result<ApiResponse, String> {
         eprintln!(
             "[http-mock] report_progress: task={}, city={}, kw={}, round={}",
-            req.task_id, req.city_name, req.keyword_name, req.round_no
+            req.task_id, req.city_name, req.keyword, req.round_no
         );
         Ok(ApiResponse::default())
     }
 
     async fn unbind_phones(&self, req: &UnbindPhonesRequest) -> Result<ApiResponse, String> {
         eprintln!(
-            "[http-mock] unbind_phones: client={}, phones={}",
+            "[http-mock] unbind_phones: client={}, mobiles={}",
             req.client_id,
-            req.phones.len()
+            req.mobiles.len()
         );
         Ok(ApiResponse::default())
     }
 }
 
 impl MockApiClient {
-    fn batch_items_for_phones(&self, phones: &[String]) -> Vec<BatchTaskItem> {
-        if phones.is_empty() {
+    fn batch_items_for_mobiles(&self, mobiles: &[String]) -> Vec<BatchTaskItem> {
+        if mobiles.is_empty() {
             return Vec::new();
         }
 
@@ -129,10 +129,10 @@ impl MockApiClient {
                 {
                     return phone_tasks
                         .into_iter()
-                        .filter(|(phone, _)| phones.contains(phone))
-                        .flat_map(|(phone, defs)| {
+                        .filter(|(mobile, _)| mobiles.contains(mobile))
+                        .flat_map(|(mobile, defs)| {
                             defs.into_iter()
-                                .map(move |def| task_def_to_batch_item(def, phone.clone()))
+                                .map(move |def| task_def_to_batch_item(def, mobile.clone()))
                         })
                         .collect();
                 }
@@ -144,8 +144,8 @@ impl MockApiClient {
             .into_iter()
             .enumerate()
             .map(|(i, def)| {
-                let phone = phones[i % phones.len()].clone();
-                task_def_to_batch_item(def, phone)
+                let mobile = mobiles[i % mobiles.len()].clone();
+                task_def_to_batch_item(def, mobile)
             })
             .collect()
     }
@@ -159,9 +159,9 @@ impl MockApiClient {
                 {
                     return phone_tasks
                         .into_iter()
-                        .flat_map(|(phone, defs)| {
+                        .flat_map(|(mobile, defs)| {
                             defs.into_iter()
-                                .map(move |def| task_def_to_batch_item(def, phone.clone()))
+                                .map(move |def| task_def_to_batch_item(def, mobile.clone()))
                         })
                         .collect();
                 }
@@ -176,12 +176,12 @@ impl MockApiClient {
     }
 }
 
-fn task_def_to_batch_item(def: TaskDef, phone: String) -> BatchTaskItem {
+fn task_def_to_batch_item(def: TaskDef, mobile: String) -> BatchTaskItem {
     BatchTaskItem {
         task_id: def.id,
         task_name: def.name,
         interval_minute: def.interval_minute,
-        mobile: phone,
+        mobile,
         city_items: def
             .cities
             .into_iter()

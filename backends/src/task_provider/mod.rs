@@ -140,18 +140,6 @@ fn parse_task_def_payload(
     Ok(TaskDef { id: id.to_string(), name: name.to_string(), interval_minute: None, cities })
 }
 
-/// Mock 模式下按 ID 查找任务定义（供 TaskEngine 增量合并使用）
-pub fn load_mock_task_def_by_id(task_id: &str) -> Option<TaskDef> {
-    if !mock_enabled() {
-        return None;
-    }
-    if let Some(def) = load_override_task_def(task_id) {
-        eprintln!("[task_provider] 从外部 override 文件加载任务定义: {}", task_id);
-        return Some(def);
-    }
-    load_mock_definitions().into_iter().find(|d| d.id == task_id)
-}
-
 pub fn summarize_task(task: &Task) -> TaskSummary {
     let keyword_total: i32 = task.cities.iter().map(|city| city.total).sum();
     let keyword_done: i32 = task.cities.iter().map(|city| city.done).sum();
@@ -182,18 +170,6 @@ pub fn summarize_task(task: &Task) -> TaskSummary {
         current_keyword_name: task.current_keyword_name.clone(),
         round_no: task.round_no,
     }
-}
-
-/// 从 ~/.automatex/mock_tasks_override.json 读取指定 task 的定义
-fn load_override_task_def(task_id: &str) -> Option<TaskDef> {
-    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).ok()?;
-    let path = std::path::Path::new(&home).join(".automatex").join("mock_tasks_override.json");
-    if !path.exists() {
-        return None;
-    }
-    let content = std::fs::read_to_string(&path).ok()?;
-    let defs: Vec<TaskDef> = serde_json::from_str(&content).ok()?;
-    defs.into_iter().find(|d| d.id == task_id)
 }
 
 /// 内部：从 Mock 定义 + DB 进度 + DB 状态 构建单个 Task

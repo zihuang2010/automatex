@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use reqwest::Method;
+use std::time::Instant;
 
 use super::types::*;
 use super::ApiClient;
@@ -43,7 +44,7 @@ impl RealApiClient {
     where
         T: serde::de::DeserializeOwned + Default,
     {
-        const MAX_ATTEMPTS: usize = 2;
+        const MAX_ATTEMPTS: usize = 3;
 
         for attempt in 1..=MAX_ATTEMPTS {
             let url = format!("{}/{}", self.base_url, path.trim_start_matches('/'));
@@ -58,25 +59,44 @@ impl RealApiClient {
                 eprintln!("[http] {} 请求: method={}, url={}, body=<empty>", action, method, url);
             }
 
+            let started_at = Instant::now();
             match request.send().await {
                 Ok(resp) => {
                     let status = resp.status();
-                    if status.is_server_error() && attempt < MAX_ATTEMPTS {
+                    if (status.is_server_error() || status.as_u16() == 429)
+                        && attempt < MAX_ATTEMPTS
+                    {
+                        let backoff_ms = constants::timing::HTTP_RETRY_BASE_DELAY_MS
+                            * attempt as u64
+                            * attempt as u64;
                         eprintln!(
-                            "[http] {} 服务端错误，准备重试: status={}, attempt={}/{}",
-                            action, status, attempt, MAX_ATTEMPTS
+                            "[http] {} 服务端错误，准备重试: status={}, attempt={}/{}, elapsed_ms={}, backoff_ms={}",
+                            action,
+                            status,
+                            attempt,
+                            MAX_ATTEMPTS,
+                            started_at.elapsed().as_millis(),
+                            backoff_ms
                         );
-                        tokio::time::sleep(std::time::Duration::from_millis(300 * attempt as u64))
-                            .await;
+                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                         continue;
                     }
 
-                    let resp = resp.error_for_status().map_err(|e| {
-                        format!("{} 请求失败: status={}, err={}", action, status, e)
-                    })?;
                     let text =
                         resp.text().await.map_err(|e| format!("{} 读取响应失败: {}", action, e))?;
-                    eprintln!("[http] {} 响应: status={}, body={}", action, status, text);
+                    eprintln!(
+                        "[http] {} 响应: status={}, elapsed_ms={}, body={}",
+                        action,
+                        status,
+                        started_at.elapsed().as_millis(),
+                        text
+                    );
+                    if !status.is_success() {
+                        return Err(format!(
+                            "{} 请求失败: status={}, body={}",
+                            action, status, text
+                        ));
+                    }
                     let envelope = serde_json::from_str::<ApiEnvelope<T>>(&text)
                         .map_err(|e| format!("{} 解析失败: {}, raw={}", action, e, text))?;
                     let _ = envelope.service_code;
@@ -91,17 +111,32 @@ impl RealApiClient {
                 Err(err) => {
                     let retryable = err.is_timeout()
                         || err.is_connect()
-                        || err.status().map(|status| status.is_server_error()).unwrap_or(false);
+                        || err
+                            .status()
+                            .map(|status| status.is_server_error() || status.as_u16() == 429)
+                            .unwrap_or(false);
                     if retryable && attempt < MAX_ATTEMPTS {
+                        let backoff_ms = constants::timing::HTTP_RETRY_BASE_DELAY_MS
+                            * attempt as u64
+                            * attempt as u64;
                         eprintln!(
-                            "[http] {} 传输失败，准备重试: err={}, attempt={}/{}",
-                            action, err, attempt, MAX_ATTEMPTS
+                            "[http] {} 传输失败，准备重试: err={}, attempt={}/{}, elapsed_ms={}, backoff_ms={}",
+                            action,
+                            err,
+                            attempt,
+                            MAX_ATTEMPTS,
+                            started_at.elapsed().as_millis(),
+                            backoff_ms
                         );
-                        tokio::time::sleep(std::time::Duration::from_millis(300 * attempt as u64))
-                            .await;
+                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                         continue;
                     }
-                    return Err(format!("{} 请求失败: {}", action, err));
+                    return Err(format!(
+                        "{} 请求失败: {}, elapsed_ms={}",
+                        action,
+                        err,
+                        started_at.elapsed().as_millis()
+                    ));
                 },
             }
         }

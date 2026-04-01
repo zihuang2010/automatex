@@ -186,7 +186,7 @@ async function refreshAccountList(): Promise<string[]> {
 
 async function openPhoneBindPage(
   mode: 'startup' | 'rebind' | 'empty-tasks' = 'rebind',
-  conflictDetails: Array<{ phone: string; clientId: string }> = [],
+  conflictDetails: Array<{ mobile?: string; phone?: string; clientId: string }> = [],
 ) {
   if (isPhoneBindFlowVisible()) return;
 
@@ -397,10 +397,14 @@ function initAccountPanel() {
         .split(/[\n,;，；]+/)
         .map(s => s.trim())
         .filter(Boolean);
+      const uniquePhones = [...new Set(phones)];
+      if (uniquePhones.length < phones.length) {
+        showToast(`已自动去重 ${phones.length - uniquePhones.length} 个重复手机号`, 'info');
+      }
 
       // P2: 校验手机号格式（中国大陆 11 位手机号）
       const validPhoneRe = /^1\d{10}$/;
-      const invalidPhones = phones.filter(p => !validPhoneRe.test(p));
+      const invalidPhones = uniquePhones.filter(p => !validPhoneRe.test(p));
       if (invalidPhones.length > 0) {
         showToast(
           `以下号码格式无效：${invalidPhones.slice(0, 3).join('、')}${invalidPhones.length > 3 ? '…' : ''}`,
@@ -408,9 +412,6 @@ function initAccountPanel() {
         );
         return;
       }
-
-      // 去重
-      const uniquePhones = [...new Set(phones)];
 
       if (uniquePhones.length === 0) {
         showToast('请输入有效的手机号', 'error');
@@ -626,7 +627,7 @@ window.addEventListener('DOMContentLoaded', () => {
       await listen<{
         reason?: string;
         message?: string;
-        conflicts?: Array<{ phone: string; clientId: string }>;
+        conflicts?: Array<{ mobile?: string; phone?: string; clientId: string }>;
       }>('require-phone-bind', event => {
         const reason = event.payload?.reason;
         if (reason === 'no_phones') {

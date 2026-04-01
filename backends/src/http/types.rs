@@ -33,9 +33,9 @@ pub struct PhoneBindRequest {
     #[serde(rename = "clientId")]
     pub client_id: String,
     #[serde(rename = "mobiles")]
-    pub phones: Vec<String>,
+    pub mobiles: Vec<String>,
     #[serde(rename = "forceBind")]
-    pub force: bool,
+    pub force_bind: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, Default)]
@@ -49,7 +49,7 @@ pub struct PhoneBindResponse {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct PhoneConflict {
     #[serde(rename = "mobile")]
-    pub phone: String,
+    pub mobile: String,
     #[serde(rename = "clientId")]
     pub client_id: String,
 }
@@ -88,9 +88,10 @@ pub struct UnbindPhonesRequest {
     #[serde(rename = "clientId")]
     pub client_id: String,
     #[serde(rename = "mobiles")]
-    pub phones: Vec<String>,
+    pub mobiles: Vec<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 pub struct ProgressReportRequest {
     #[serde(rename = "clientId")]
@@ -102,13 +103,13 @@ pub struct ProgressReportRequest {
     #[serde(rename = "cityName")]
     pub city_name: String,
     #[serde(rename = "keyword")]
-    pub keyword_name: String,
+    pub keyword: String,
     #[serde(rename = "deviceNo")]
-    pub device_serial: String,
+    pub device_no: String,
     #[serde(rename = "roundNo")]
     pub round_no: i32,
     #[serde(rename = "storeList")]
     pub store_list: Vec<String>,
     #[serde(rename = "scanFinishedTime")]
-    pub completed_at: i64,
+    pub scan_finished_time: i64,
 }

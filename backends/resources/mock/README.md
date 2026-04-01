@@ -20,14 +20,13 @@
 ```json
 {
   "bind_phones": {          // mock bind_phones 响应
-    "bound": ["138..."],    // 绑定成功的手机号
+    "taskItems": ["task-1"], // 绑定成功后返回的任务 ID
     "conflicts": [          // 冲突列表
-      { "phone": "139...", "current_client": "atx-xxx" }
+      { "mobile": "139...", "clientId": "atx-xxx" }
     ]
   },
-  "fetch_tasks": {          // mock fetch_tasks_by_phones 响应
-    "use_mock_tasks": true, // 是否使用 mock_tasks.json
-    "extra_tasks": [...]    // 附加的额外任务
+  "phone_tasks": {          // mock batchTasks 数据源，key 为手机号
+    "138...": [...]
   }
 }
 ```

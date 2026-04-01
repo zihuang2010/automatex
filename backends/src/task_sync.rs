@@ -1,9 +1,29 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use crate::constants;
 use crate::http::{self, ApiClient, BatchTaskItem, BatchTasksRequest};
 use crate::storage::Database;
 use crate::task_provider::{CityDef, TaskDef};
+
+pub(crate) fn normalize_unique_strings<I, S>(values: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut seen = HashSet::new();
+    let mut normalized = Vec::new();
+    for value in values {
+        let value = value.as_ref().trim();
+        if value.is_empty() {
+            continue;
+        }
+        if seen.insert(value.to_string()) {
+            normalized.push(value.to_string());
+        }
+    }
+    normalized
+}
 
 pub(crate) fn batch_item_to_task_def(item: &BatchTaskItem) -> TaskDef {
     TaskDef {
@@ -26,10 +46,26 @@ pub(crate) async fn fetch_batch_task_items(
     http: &Arc<dyn ApiClient>,
     task_ids: &[String],
 ) -> Result<Vec<BatchTaskItem>, String> {
+    let task_ids = normalize_unique_strings(task_ids.iter().map(|id| id.as_str()));
     if task_ids.is_empty() {
         return Ok(Vec::new());
     }
-    http.batch_fetch_tasks(&BatchTasksRequest { task_ids: task_ids.to_vec() }).await
+    let mut items = Vec::new();
+    let total_chunks = task_ids.len().div_ceil(constants::limits::MAX_BATCH_TASK_IDS_PER_REQUEST);
+    for (index, chunk) in
+        task_ids.chunks(constants::limits::MAX_BATCH_TASK_IDS_PER_REQUEST).enumerate()
+    {
+        eprintln!(
+            "[task_sync] 拉取任务详情分片: chunk={}/{}, task_ids={}",
+            index + 1,
+            total_chunks,
+            chunk.len()
+        );
+        let chunk_items =
+            http.batch_fetch_tasks(&BatchTasksRequest { task_ids: chunk.to_vec() }).await?;
+        items.extend(chunk_items);
+    }
+    Ok(items)
 }
 
 pub(crate) async fn merge_batch_task_items(
@@ -74,5 +110,5 @@ pub(crate) async fn load_remote_tasks_by_ids(
 }
 
 pub(crate) fn bind_conflict_phones(bind_resp: &http::PhoneBindResponse) -> Vec<String> {
-    bind_resp.conflicts.iter().map(|c| c.phone.clone()).collect()
+    bind_resp.conflicts.iter().map(|c| c.mobile.clone()).collect()
 }

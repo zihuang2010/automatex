@@ -31,6 +31,7 @@ pub trait ApiClient: Send + Sync {
     ) -> Result<Vec<BatchTaskItem>, String>;
 
     /// 上报关键词完成进度
+    #[allow(dead_code)]
     async fn report_progress(&self, req: &ProgressReportRequest) -> Result<ApiResponse, String>;
 
     /// 解绑手机号

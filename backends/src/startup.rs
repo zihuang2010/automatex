@@ -7,6 +7,7 @@
 //! - `startup_sync_tasks` — 验证已绑定手机号并同步任务
 
 use std::sync::Arc;
+use std::time::Instant;
 use tauri::Emitter;
 
 use crate::{constants, engine::TaskEngine, http, storage, task_sync, utils};
@@ -90,10 +91,17 @@ pub(crate) async fn startup_sync_tasks(
     app_handle: &tauri::AppHandle,
 ) {
     use constants::{setting_key, tauri_event};
+    let started_at = Instant::now();
 
-    let synced_phones: Vec<String> =
-        serde_json::from_str(&db.get_setting(setting_key::SYNCED_PHONES).await.unwrap_or_default())
-            .unwrap_or_default();
+    let raw_synced_phones = db.get_setting(setting_key::SYNCED_PHONES).await.unwrap_or_default();
+    let synced_phones: Vec<String> = task_sync::normalize_unique_strings(
+        serde_json::from_str::<Vec<String>>(&raw_synced_phones).unwrap_or_default(),
+    );
+    let normalized_synced_phones_json = serde_json::to_string(&synced_phones).unwrap_or_default();
+    if normalized_synced_phones_json != raw_synced_phones {
+        db.set_setting(setting_key::SYNCED_PHONES, &normalized_synced_phones_json).await;
+        eprintln!("[startup] 已同步手机号已归一化去重: {:?}", synced_phones);
+    }
 
     if synced_phones.is_empty() {
         eprintln!("[startup] 无已绑定手机号，通知前端跳转绑定页面");
@@ -112,8 +120,8 @@ pub(crate) async fn startup_sync_tasks(
 
     let bind_req = http::PhoneBindRequest {
         client_id: client_id.to_string(),
-        phones: synced_phones.clone(),
-        force: false,
+        mobiles: synced_phones.clone(),
+        force_bind: false,
     };
 
     match http.bind_phones(&bind_req).await {
@@ -151,6 +159,10 @@ pub(crate) async fn startup_sync_tasks(
                     }),
                 );
                 eprintln!("[startup] 冲突态任务同步完成，保留 {} 个无冲突任务", count);
+                eprintln!(
+                    "[startup] 启动同步结束: elapsed_ms={}",
+                    started_at.elapsed().as_millis()
+                );
                 let _ = app_handle.emit(tauri_event::STARTUP_SYNC_STATUS, "done");
                 return;
             }
@@ -186,21 +198,30 @@ pub(crate) async fn startup_sync_tasks(
                         );
                         engine.reload_tasks().await;
                         eprintln!(
-                            "[startup] 同步完成: {} 个手机号, {} 个任务",
-                            bind_req.phones.len(),
-                            count
+                            "[startup] 同步完成: {} 个手机号, {} 个任务, elapsed_ms={}",
+                            bind_req.mobiles.len(),
+                            count,
+                            started_at.elapsed().as_millis()
                         );
                         let _ = app_handle.emit(tauri_event::STARTUP_SYNC_STATUS, "done");
                     },
                     Err(e) => {
-                        eprintln!("[startup] 拉取任务失败: {}, 使用本地缓存", e);
+                        eprintln!(
+                            "[startup] 拉取任务失败: {}, 使用本地缓存, elapsed_ms={}",
+                            e,
+                            started_at.elapsed().as_millis()
+                        );
                         let _ = app_handle.emit(tauri_event::STARTUP_SYNC_STATUS, "error");
                     },
                 }
             }
         },
         Err(e) => {
-            eprintln!("[startup] 验证绑定失败(网络?): {}, 使用本地缓存", e);
+            eprintln!(
+                "[startup] 验证绑定失败(网络?): {}, 使用本地缓存, elapsed_ms={}",
+                e,
+                started_at.elapsed().as_millis()
+            );
             let _ = app_handle.emit(tauri_event::STARTUP_SYNC_STATUS, "error");
         },
     }

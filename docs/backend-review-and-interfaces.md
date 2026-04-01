@@ -76,7 +76,7 @@ Backend flow:
 3. Non-empty phone list:
    - call HTTP `bind_phones`
    - resolve conflicts
-   - call HTTP `fetch_tasks_by_phones`
+   - call HTTP `batch_fetch_tasks`
    - batch upsert task defs into SQLite
    - delete stale local tasks
    - update `synced_phones`
@@ -225,72 +225,58 @@ Recommended before production rollout:
 
 Trait: `backends/src/http/mod.rs::ApiClient`
 
-### Device Sync
-
-- `POST /api/devices/sync`
-- request: `DeviceSyncRequest`
-  - `client_id`
-  - `online[]`
-    - `hw_serial`
-    - `serial`
-    - `state`
-  - `offline_local[]`
-- response: `DeviceSyncResponse`
-  - `to_remove[]`
-
 ### Phone Bind
 
-- `POST /api/phones/bind`
+- `POST /mttl_tools/v1/meituanTraffic/client/bind`
 - request: `PhoneBindRequest`
-  - `client_id`
-  - `phones[]`
-  - `force`
+  - `clientId`
+  - `mobiles[]`
+  - `forceBind`
 - response: `PhoneBindResponse`
-  - `bound[]`
   - `conflicts[]`
-    - `phone`
-    - `current_client`
+    - `mobile`
+    - `clientId`
+  - `taskItems[]`
 
-### Task Fetch By Phones
+### Batch Tasks
 
-- `POST /api/tasks/by-phones`
-- request:
-  - `client_id`
-  - `phones[]`
-- response: `PhoneTasksResponse`
-  - `phone_tasks`
-    - key: phone
-    - value: `TaskDef[]`
-
-### Single Task Fetch
-
-- `GET /api/tasks/{task_id}`
-- response: `TaskDef`
+- `POST /mttl_tools/v1/meituanTraffic/client/batchTasks`
+- request: `taskIds[]`
+- response: `data[]`
+  - `taskId`
+  - `taskName`
+  - `intervalMinute`
+  - `mobile`
+  - `cityItems[]`
+    - `cityName`
+    - `pointName`
+    - `keywords[]`
+- single task refresh reuses this endpoint with one `taskId`
 
 ### Progress Report
 
-- `POST /api/progress/report`
+- `POST /mttl_tools/v1/meituanTraffic/client/scan/upload`
 - request: `ProgressReportRequest`
-  - `client_id`
-  - `task_id`
-  - `city_name`
-  - `keyword_name`
-  - `device_serial`
-  - `status`
-  - `completed_at`
+  - `clientId`
+  - `taskId`
+  - `taskName`
+  - `cityName`
+  - `keyword`
+  - `deviceNo`
+  - `roundNo`
+  - `storeList[]`
+  - `scanFinishedTime`
 - response: `ApiResponse`
-  - `success`
-  - `message`
+  - `data` may be `null`
 
 ### Phone Unbind
 
-- `POST /api/phones/unbind`
-- request:
-  - `client_id`
-  - `phones[]`
+- `POST /mttl_tools/v1/meituanTraffic/client/unbind`
+- request: `UnbindPhonesRequest`
+  - `clientId`
+  - `mobiles[]`
 - response: `ApiResponse`
-  - `success`
-  - `message`
+  - `data` may be `null`
 
 ## MQTT Interface Summary
 

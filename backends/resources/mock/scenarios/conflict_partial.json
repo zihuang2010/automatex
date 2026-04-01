@@ -1,11 +1,15 @@
 {
   "bind_phones": {
-    "bound": ["13800138000"],
     "conflicts": [
       {
-        "phone": "13900139000",
-        "current_client": "atx-other-device"
+        "mobile": "13900139000",
+        "clientId": "atx-other-device"
       }
+    ],
+    "taskItems": [
+      "550e8400-e29b-41d4-a716-446655440001",
+      "550e8400-e29b-41d4-a716-446655440003",
+      "550e8400-e29b-41d4-a716-446655440005"
     ]
   },
   "phone_tasks": {

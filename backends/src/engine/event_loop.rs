@@ -850,22 +850,6 @@ async fn handle_worker_result(
             )
             .await;
         },
-        ExecutionOutcome::Failed { retryable, next_delay_ms, error_message } => {
-            if retryable {
-                if let Some(runtime) = s.running.get_mut(task_id) {
-                    runtime.attempt += 1;
-                    runtime.last_error = Some(error_message);
-                }
-                schedule_task(
-                    s,
-                    task_id,
-                    next_delay_ms.unwrap_or(constants::timing::TASK_DISPATCH_INTERVAL_SECS * 1000),
-                );
-                persist_runtime_state(s, task_id).await;
-            } else {
-                mark_task_error(s, task_id, error_message, false, run_status::STOPPED).await;
-            }
-        },
         ExecutionOutcome::Success { next_delay_ms } => {
             if handle_success_outcome(s, task_id, next_delay_ms).await.is_err() {
                 mark_task_error(
