@@ -512,19 +512,13 @@ pub fn vibrate_device_alert(serial: &str) {
 
         for i in 0..REPEAT {
             // 兼容 Android 8+：优先 cmd vibrator vibrate，回退 service call
-            let result = adb_shell_async(
-                &serial,
-                &format!("cmd vibrator vibrate {}", VIBRATE_MS),
-            )
-            .await;
+            let result =
+                adb_shell_async(&serial, &format!("cmd vibrator vibrate {}", VIBRATE_MS)).await;
 
             if let Err(ref e) = result {
                 // 首次失败时打印日志，后续静默
                 if i == 0 {
-                    eprintln!(
-                        "[adb] 设备 {} 震动命令失败（设备可能已离线）: {}",
-                        serial, e
-                    );
+                    eprintln!("[adb] 设备 {} 震动命令失败（设备可能已离线）: {}", serial, e);
                 }
                 return; // 设备不可达，提前退出避免无意义重试
             }
@@ -537,4 +531,3 @@ pub fn vibrate_device_alert(serial: &str) {
         eprintln!("[adb] 设备 {} 震动警告完成 ({}次)", serial, REPEAT);
     });
 }
-

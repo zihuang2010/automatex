@@ -258,9 +258,9 @@ fn build_summaries(tasks: &[Task]) -> Vec<TaskSummary> {
 
 /// interval_waiting 判断：task 处于 executing 且所有关键词都是 pending
 fn is_all_keywords_pending(task: &Task) -> bool {
-    task.cities.iter().all(|city| {
-        city.keywords.iter().all(|kw| kw.status == keyword_status::PENDING)
-    })
+    task.cities
+        .iter()
+        .all(|city| city.keywords.iter().all(|kw| kw.status == keyword_status::PENDING))
 }
 
 fn compute_summaries_hash(summaries: &[TaskSummary]) -> u64 {
@@ -537,9 +537,7 @@ async fn dispatch_due_wakeups(s: &mut EngineState) {
             .tasks
             .iter()
             .find(|t| t.id == wakeup.task_id)
-            .map(|t| {
-                t.status == task_status::EXECUTING && is_all_keywords_pending(t)
-            })
+            .map(|t| t.status == task_status::EXECUTING && is_all_keywords_pending(t))
             .unwrap_or(false);
 
         if is_interval_wakeup {
@@ -549,16 +547,12 @@ async fn dispatch_due_wakeups(s: &mut EngineState) {
             }
             // 创建新的 task_run 记录
             if let Some(runtime) = s.running.get(&wakeup.task_id) {
-                let _ = s.storage.start_task_run(
-                    &wakeup.task_id,
-                    &runtime.device_serial,
-                    runtime.round_id,
-                ).await;
+                let _ = s
+                    .storage
+                    .start_task_run(&wakeup.task_id, &runtime.device_serial, runtime.round_id)
+                    .await;
             }
-            eprintln!(
-                "[engine] interval_waiting 唤醒: task={}",
-                wakeup.task_id
-            );
+            eprintln!("[engine] interval_waiting 唤醒: task={}", wakeup.task_id);
         }
 
         spawn_task_worker(s, &wakeup.task_id);
@@ -1046,10 +1040,7 @@ async fn complete_round_with_interval(
     // 4. 创建新轮次
     let new_round_id = s.storage.create_round(task_id).await.unwrap_or(0);
     if new_round_id == 0 {
-        eprintln!(
-            "[engine] 创建新轮次失败: task={}, 标记为 error",
-            task_id
-        );
+        eprintln!("[engine] 创建新轮次失败: task={}, 标记为 error", task_id);
         mark_task_error(
             s,
             task_id,
