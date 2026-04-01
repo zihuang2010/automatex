@@ -4,6 +4,7 @@ import { type UnlistenFn, listen } from '@tauri-apps/api/event';
 import {
   activeTask,
   globalQueue,
+  setActiveCityIdx,
   setActiveTask,
   setActiveTaskDetail,
   setGlobalQueue,
@@ -29,11 +30,13 @@ function syncActiveTaskFromQueue() {
     }
     setActiveTask(null);
     setActiveTaskDetail(null);
-    return;
+    setActiveCityIdx(0);
   }
 
   if (globalQueue.length > 0) {
     setActiveTask(globalQueue[0]);
+    setActiveTaskDetail(null);
+    setActiveCityIdx(0);
   }
 }
 

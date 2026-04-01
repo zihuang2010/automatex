@@ -8,14 +8,6 @@ where
     Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
-fn deserialize_option_vec_or_null<'de, D, T>(deserializer: D) -> Result<Option<Vec<T>>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    Ok(Option::<Vec<T>>::deserialize(deserializer)?)
-}
-
 #[derive(Debug, Deserialize)]
 pub struct ApiEnvelope<T> {
     pub code: i32,
@@ -42,8 +34,8 @@ pub struct PhoneBindRequest {
 pub struct PhoneBindResponse {
     #[serde(default, deserialize_with = "deserialize_vec_or_null")]
     pub conflicts: Vec<PhoneConflict>,
-    #[serde(rename = "taskItems", default, deserialize_with = "deserialize_option_vec_or_null")]
-    pub task_items: Option<Vec<String>>,
+    #[serde(rename = "taskItems", default, deserialize_with = "deserialize_vec_or_null")]
+    pub task_items: OpVec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

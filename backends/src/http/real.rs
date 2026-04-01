@@ -9,8 +9,6 @@ use reqwest::Method;
 use super::types::*;
 use super::ApiClient;
 use crate::constants;
-use crate::task_provider::TaskDef;
-
 /// 真实 HTTP 实现
 pub struct RealApiClient {
     client: reqwest::Client,
@@ -43,7 +41,7 @@ impl RealApiClient {
         action: &str,
     ) -> Result<T, String>
     where
-        T: serde::de::DeserializeOwned,
+        T: serde::de::DeserializeOwned + Default,
     {
         const MAX_ATTEMPTS: usize = 2;
 
@@ -51,7 +49,13 @@ impl RealApiClient {
             let url = format!("{}/{}", self.base_url, path.trim_start_matches('/'));
             let mut request = self.client.request(method.clone(), &url);
             if let Some(ref payload) = body {
+                eprintln!(
+                    "[http] {} 请求: method={}, url={}, body={}",
+                    action, method, url, payload
+                );
                 request = request.json(payload);
+            } else {
+                eprintln!("[http] {} 请求: method={}, url={}, body=<empty>", action, method, url);
             }
 
             match request.send().await {
@@ -70,10 +74,24 @@ impl RealApiClient {
                     let resp = resp.error_for_status().map_err(|e| {
                         format!("{} 请求失败: status={}, err={}", action, status, e)
                     })?;
-                    return resp
-                        .json::<T>()
+                    let text = resp
+                        .text()
                         .await
-                        .map_err(|e| format!("{} 解析失败: {}", action, e));
+                        .map_err(|e| format!("{} 读取响应失败: {}", action, e))?;
+                    eprintln!(
+                        "[http] {} 响应: status={}, body={}",
+                        action, status, text
+                    );
+                    let envelope = serde_json::from_str::<ApiEnvelope<T>>(&text)
+                        .map_err(|e| format!("{} 解析失败: {}, raw={}", action, e, text))?;
+                    let _ = envelope.service_code;
+                    if envelope.code != 1 {
+                        return Err(format!("{} 失败: {}", action, envelope.msg));
+                    }
+                    if envelope.data.is_none() {
+                        eprintln!("[http] {} 响应 data 为 null，使用默认值兼容", action);
+                    }
+                    return Ok(envelope.data.unwrap_or_default());
                 },
                 Err(err) => {
                     let retryable = err.is_timeout()
@@ -99,52 +117,36 @@ impl RealApiClient {
 
 #[async_trait]
 impl ApiClient for RealApiClient {
-    async fn device_sync(&self, req: &DeviceSyncRequest) -> Result<DeviceSyncResponse, String> {
-        self.send_json(
-            Method::POST,
-            "/api/devices/sync",
-            Some(serde_json::to_value(req).map_err(|e| format!("device_sync 序列化失败: {}", e))?),
-            "device_sync",
-        )
-        .await
-    }
-
     async fn bind_phones(&self, req: &PhoneBindRequest) -> Result<PhoneBindResponse, String> {
         self.send_json(
             Method::POST,
-            "/api/phones/bind",
+            "/mttl_tools/v1/meituanTraffic/client/bind",
             Some(serde_json::to_value(req).map_err(|e| format!("bind_phones 序列化失败: {}", e))?),
             "bind_phones",
         )
         .await
     }
 
-    async fn fetch_tasks_by_phones(
+    async fn batch_fetch_tasks(
         &self,
-        client_id: &str,
-        phones: &[String],
-    ) -> Result<PhoneTasksResponse, String> {
+        req: &BatchTasksRequest,
+    ) -> Result<Vec<BatchTaskItem>, String> {
         self.send_json(
             Method::POST,
-            "/api/tasks/by-phones",
-            Some(serde_json::json!({
-                "client_id": client_id,
-                "phones": phones,
-            })),
-            "fetch_tasks_by_phones",
+            "/mttl_tools/v1/meituanTraffic/client/batchTasks",
+            Some(
+                serde_json::to_value(req)
+                    .map_err(|e| format!("batch_fetch_tasks 序列化失败: {}", e))?,
+            ),
+            "batch_fetch_tasks",
         )
         .await
-    }
-
-    async fn fetch_task(&self, task_id: &str) -> Result<TaskDef, String> {
-        self.send_json(Method::GET, &format!("/api/tasks/{}", task_id), None, "fetch_task")
-            .await
     }
 
     async fn report_progress(&self, req: &ProgressReportRequest) -> Result<ApiResponse, String> {
         self.send_json(
             Method::POST,
-            "/api/progress/report",
+            "/mttl_tools/v1/meituanTraffic/client/scan/upload",
             Some(
                 serde_json::to_value(req)
                     .map_err(|e| format!("report_progress 序列化失败: {}", e))?,
@@ -154,18 +156,14 @@ impl ApiClient for RealApiClient {
         .await
     }
 
-    async fn unbind_phones(
-        &self,
-        client_id: &str,
-        phones: &[String],
-    ) -> Result<ApiResponse, String> {
+    async fn unbind_phones(&self, req: &UnbindPhonesRequest) -> Result<ApiResponse, String> {
         self.send_json(
             Method::POST,
-            "/api/phones/unbind",
-            Some(serde_json::json!({
-                "client_id": client_id,
-                "phones": phones,
-            })),
+            "/mttl_tools/v1/meituanTraffic/client/unbind",
+            Some(
+                serde_json::to_value(req)
+                    .map_err(|e| format!("unbind_phones 序列化失败: {}", e))?,
+            ),
             "unbind_phones",
         )
         .await

@@ -20,51 +20,7 @@
 
 ---
 
-### 1.1 设备归属同步
-
-**`POST /api/devices/sync`**
-
-启动时执行，上报当前设备列表，服务端返回需要清理的设备（被其他客户端占用）。
-
-#### 请求参数
-
-| 字段            | 类型               | 必填 | 说明                               |
-| --------------- | ------------------ | ---- | ---------------------------------- |
-| `clientId`      | `string`           | ✅   | 客户端唯一标识（机器指纹 SHA-256） |
-| `online`        | `DeviceSyncItem[]` | ✅   | 当前在线的设备列表                 |
-| `offline_local` | `string[]`         | ✅   | 当前离线的设备 hw_serial 列表      |
-
-**DeviceSyncItem**:
-
-| 字段        | 类型     | 说明                                                  |
-| ----------- | -------- | ----------------------------------------------------- |
-| `hw_serial` | `string` | 硬件序列号                                            |
-| `serial`    | `string` | ADB 序列号                                            |
-| `state`     | `string` | 设备状态：`"Device"` / `"Offline"` / `"Unauthorized"` |
-
-```json
-{
-  "client_id": "auto-abc123def456",
-  "online": [{ "hw_serial": "HW123456", "serial": "192.168.1.100:5555", "state": "Device" }],
-  "offline_local": ["HW789012"]
-}
-```
-
-#### 响应参数
-
-| 字段        | 类型       | 说明                                |
-| ----------- | ---------- | ----------------------------------- |
-| `to_remove` | `string[]` | 需要从本地删除的设备 hw_serial 列表 |
-
-```json
-{
-  "to_remove": ["HW789012"]
-}
-```
-
----
-
-### 1.2 手机号绑定
+### 1.1 手机号绑定
 
 **`POST /mttl_tools/v1/meituanTraffic/client/bind`**
 
@@ -115,7 +71,7 @@
 
 ---
 
-### 1.3 手机号解绑
+### 1.2 手机号解绑
 
 **`POST /mttl_tools/v1/meituanTraffic/client/unbind`**
 
@@ -137,100 +93,82 @@
 
 #### 响应参数
 
-| 字段      | 类型     | 说明     |
-| --------- | -------- | -------- |
-| `success` | `bool`   | 是否成功 |
-| `message` | `string` | 消息     |
+- `data`：无特殊结构要求，按统一响应格式处理即可。
 
-```json
-{ "code": 1, "message": "" }
-```
+客户端行为：
+
+- 远端解绑成功后，直接删除本地该手机号对应任务。
+- 若删除后本地任务为空，直接弹出绑定手机号页面。
+- 不需要再额外调用任务拉取接口。
 
 ---
 
-### 1.4 按手机号拉取任务
+### 1.3 按 taskId 批量拉取任务
 
-**`POST /api/tasks/by-phones`**
+**`POST /mttl_tools/v1/meituanTraffic/client/batchTasks`**
 
-根据已绑定的手机号列表，拉取所有关联的任务定义。
+根据任务 ID 列表批量拉取任务定义。
 
 #### 请求参数
 
-| 字段        | 类型       | 必填 | 说明               |
-| ----------- | ---------- | ---- | ------------------ |
-| `client_id` | `string`   | ✅   | 客户端 ID          |
-| `phones`    | `string[]` | ✅   | 已绑定的手机号列表 |
+| 字段      | 类型       | 必填 | 说明         |
+| --------- | ---------- | ---- | ------------ |
+| `taskIds` | `string[]` | ✅   | 任务 ID 列表 |
 
 ```json
 {
-  "client_id": "auto-abc123def456",
-  "phones": ["13800138000", "13900139000"]
+  "taskIds": ["1231", "123123"]
 }
 ```
 
 #### 响应参数
 
-| 字段          | 类型                     | 说明                  |
-| ------------- | ------------------------ | --------------------- |
-| `phone_tasks` | `Map<string, TaskDef[]>` | 手机号 → 任务定义列表 |
+返回 `data[]`，每一项定义如下：
 
-**TaskDef**:
+| 字段             | 类型     | 说明             |
+| ---------------- | -------- | ---------------- |
+| `taskId`         | `string` | 任务 ID          |
+| `taskName`       | `string` | 任务名称         |
+| `intervalMinute` | `int`    | 任务间隔（分钟） |
+| `mobile`         | `string` | 任务归属手机号   |
+| `cityItems`      | `City[]` | 城市列表         |
 
-| 字段     | 类型        | 说明     |
-| -------- | ----------- | -------- |
-| `id`     | `string`    | 任务 ID  |
-| `name`   | `string`    | 任务名称 |
-| `cities` | `CityDef[]` | 城市列表 |
+**City**:
 
-**CityDef**:
-
-| 字段       | 类型       | 说明       |
-| ---------- | ---------- | ---------- |
-| `name`     | `string`   | 城市名称   |
-| `poi`      | `string`   | POI 地点   |
-| `keywords` | `string[]` | 关键词列表 |
+| 字段        | 类型       | 说明       |
+| ----------- | ---------- | ---------- |
+| `cityName`  | `string`   | 城市名称   |
+| `pointName` | `string`   | 点位名称   |
+| `keywords`  | `string[]` | 关键词列表 |
 
 ```json
 {
-  "phone_tasks": {
-    "13800138000": [
-      {
-        "id": "task-001",
-        "name": "北京任务",
-        "cities": [
-          {
-            "name": "北京",
-            "poi": "天安门",
-            "keywords": ["美食", "酒店", "景点"]
-          }
-        ]
-      }
-    ]
-  }
+  "data": [
+    {
+      "taskId": "task-001",
+      "taskName": "北京任务",
+      "intervalMinute": 20,
+      "mobile": "13800138000",
+      "cityItems": [
+        {
+          "cityName": "北京",
+          "pointName": "天安门",
+          "keywords": ["美食", "酒店", "景点"]
+        }
+      ]
+    }
+  ]
 }
 ```
 
----
+业务说明：
 
-### 1.5 拉取单个任务
-
-**`GET /api/tasks/{task_id}`**
-
-根据任务 ID 拉取单个任务定义。
-
-#### 路径参数
-
-| 参数      | 说明    |
-| --------- | ------- |
-| `task_id` | 任务 ID |
-
-#### 响应参数
-
-返回 `TaskDef` 对象（同 1.4 中定义）。
+- 客户端以 `mobile` 作为任务归属手机号的唯一来源。
+- 单任务刷新直接复用 `batchTasks`，只传一个 `taskId`。
 
 ---
 
-### 1.6 进度上报
+### 1.4 进度上报
 
 **`POST /mttl_tools/v1/meituanTraffic/client/scan/upload`**
 
@@ -238,16 +176,17 @@
 
 #### 请求参数
 
-| 字段               | 类型          | 必填 | 说明                   |
-| ------------------ | ------------- | ---- | ---------------------- |
-| `clientId`         | `string`      | ✅   | 客户端 ID              |
-| `taskId`           | `string`      | ✅   | 任务 ID                |
-| `storeId`          | `string`      | ✅   | 店铺ID                 |
-| `keyword`          | `string`      | ✅   | 关键词名称             |
-| `deviceNo`         | `string`      | ✅   | 执行设备的序列号       |
-| `roundNo`          | `int`         | ✅   | 轮次                   |
-| `storeList`        | `storeList[]` | ✅   | 识别店铺列表           |
-| `scanFinishedTime` | `int64`       | ✅   | 完成时间的 Unix 时间戳 |
+| 字段               | 类型       | 必填 | 说明                   |
+| ------------------ | ---------- | ---- | ---------------------- |
+| `clientId`         | `string`   | ✅   | 客户端 ID              |
+| `taskId`           | `string`   | ✅   | 任务 ID                |
+| `taskName`         | `string`   | ✅   | 任务名称               |
+| `cityName`         | `string`   | ✅   | 城市名称               |
+| `keyword`          | `string`   | ✅   | 关键词名称             |
+| `deviceNo`         | `string`   | ✅   | 执行设备的序列号       |
+| `roundNo`          | `int`      | ✅   | 轮次                   |
+| `storeList`        | `string[]` | ✅   | 识别店铺列表           |
+| `scanFinishedTime` | `int64`    | ✅   | 完成时间的 Unix 时间戳 |
 
 ```json
 {
@@ -258,38 +197,14 @@
   "keyword": "火锅",
   "deviceNo": "123123",
   "roundNo": 12,
-  "storeList": ["店铺名称1","店铺名称2"],
+  "storeList": ["店铺名称1", "店铺名称2"],
   "scanFinishedTime": "123123123"
 }
-
-[
-  {
-    "taskId": "12312",
-    "taskName": "123123123",
-    "intervalMinute": 20,
-    "cityItems": [
-      {
-        "cityName": "重庆",
-        "poiName": "朝天门",
-        "keywords": ["火锅","烧烤"]
-      }
-    ]
-  }
-]
-
-
 ```
 
 #### 响应参数
 
-| 字段      | 类型     | 说明     |
-| --------- | -------- | -------- |
-| `success` | `bool`   | 是否成功 |
-| `message` | `string` | 消息     |
-
-```json
-{ "success": true, "message": "ok" }
-```
+- `data`：无特殊结构要求，按统一响应格式处理即可。
 
 ---
 

@@ -1,5 +1,17 @@
-use crate::{constants, http, utils, AppState};
+use crate::{constants, http, task_sync, utils, AppState};
 use tauri::Emitter;
+
+fn parse_synced_phones(raw: String) -> Vec<String> {
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
+async fn resolve_client_id(state: &AppState) -> String {
+    let settings = state.db.get_all_settings().await;
+    settings
+        .get(constants::setting_key::MQTT_CLIENT_ID)
+        .cloned()
+        .unwrap_or_else(utils::generate_machine_client_id)
+}
 
 #[tauri::command]
 pub async fn sync_tasks_by_phones(
@@ -9,21 +21,14 @@ pub async fn sync_tasks_by_phones(
     app_handle: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
     let engine = state.engine()?;
-
-    let s = state.db.get_all_settings().await;
-    let client_id = s
-        .get(constants::setting_key::MQTT_CLIENT_ID)
-        .cloned()
-        .unwrap_or_else(|| utils::generate_machine_client_id());
-
-    let old_phones: Vec<String> = serde_json::from_str(
-        &state
+    let client_id = resolve_client_id(&state).await;
+    let old_phones = parse_synced_phones(
+        state
             .db
             .get_setting(constants::setting_key::SYNCED_PHONES)
             .await
             .unwrap_or_default(),
-    )
-    .unwrap_or_default();
+    );
 
     if phones.is_empty() {
         if !old_phones.is_empty() {
@@ -48,79 +53,114 @@ pub async fn sync_tasks_by_phones(
     }
 
     let http = state.http()?;
-
-    let bind_req =
-        http::PhoneBindRequest { client_id: client_id.clone(), phones: phones.clone(), force };
+    let bind_req = http::PhoneBindRequest { client_id: client_id.clone(), phones: phones.clone(), force };
     let bind_resp = http.bind_phones(&bind_req).await?;
 
     if !bind_resp.conflicts.is_empty() && !force {
         return Ok(serde_json::json!({
             "status": "conflicts",
-            "bound": bind_resp.bound,
             "conflicts": bind_resp.conflicts,
+            "taskItems": bind_resp.task_items,
         }));
     }
 
-    let bound_phones = if force { phones.clone() } else { bind_resp.bound };
-
-    // 清理被移除的手机号
-    let removed_phones: Vec<String> =
-        old_phones.into_iter().filter(|p| !bound_phones.contains(p)).collect();
+    let removed_phones: Vec<String> = old_phones
+        .into_iter()
+        .filter(|phone| !phones.contains(phone))
+        .collect();
     if !removed_phones.is_empty() {
         eprintln!("[sync] 检测到被移除的手机号: {:?}，清理旧任务数据", removed_phones);
         engine.handle_phones_unbind(removed_phones).await;
     }
 
-    let resp = http.fetch_tasks_by_phones(&client_id, &bound_phones).await?;
-
-    // FIX #11: 收集所有任务定义，使用批量 upsert
-    let mut upsert_items: Vec<(String, String, String, i64, String)> = Vec::new();
-    let mut count = 0usize;
-    for (phone, defs) in &resp.phone_tasks {
-        for def in defs {
-            let payload = serde_json::to_string(&def.cities).unwrap_or_default();
-            upsert_items.push((def.id.clone(), def.name.clone(), payload, 1, phone.clone()));
-            count += 1;
-        }
-    }
-    state.db.batch_upsert_task_defs(upsert_items).await;
-
-    // 清理本地残留的过期任务定义（服务端已不返回的 task_id）
-    let server_ids: std::collections::HashSet<String> =
-        resp.phone_tasks.values().flatten().map(|d| d.id.clone()).collect();
-    let local_defs = state.db.load_all_task_defs().await;
-    let stale_ids: Vec<String> = local_defs
-        .iter()
-        .filter(|(id, _, _, _)| !server_ids.contains(id))
-        .map(|(id, _, _, _)| id.clone())
-        .collect();
-    if !stale_ids.is_empty() {
-        eprintln!("[sync] 清理 {} 个本地过期任务: {:?}", stale_ids.len(), stale_ids);
-        state.db.batch_cleanup_tasks(&stale_ids).await;
-    }
+    let task_ids = bind_resp.task_items.clone().unwrap_or_default();
+    let count = task_sync::load_remote_tasks_by_ids(http, &state.db, &task_ids).await?;
 
     state
         .db
         .set_setting(
             constants::setting_key::SYNCED_PHONES,
-            &serde_json::to_string(&bound_phones).unwrap_or_default(),
+            &serde_json::to_string(&phones).unwrap_or_default(),
         )
         .await;
 
-    // 推送账号变更事件到前端
     let _ = app_handle.emit(
         constants::tauri_event::ACCOUNT_SYNC_CHANGED,
-        serde_json::json!({ "phones": bound_phones }),
+        serde_json::json!({ "phones": phones }),
     );
 
     engine.reload_tasks().await;
     engine.force_emit_update().await;
 
-    eprintln!("[sync] 同步完成: {} 个手机号, {} 个任务", bound_phones.len(), count);
+    eprintln!("[sync] 同步完成: {} 个手机号, {} 个任务", bind_req.phones.len(), count);
 
     Ok(serde_json::json!({
         "status": constants::response::OK,
-        "phones": bound_phones.len(),
+        "phones": bind_req.phones.len(),
         "tasks": count,
+    }))
+}
+
+#[tauri::command]
+pub async fn unbind_phone(
+    phone: String,
+    state: tauri::State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<serde_json::Value, String> {
+    let engine = state.engine()?;
+    let client_id = resolve_client_id(&state).await;
+    let old_phones = parse_synced_phones(
+        state
+            .db
+            .get_setting(constants::setting_key::SYNCED_PHONES)
+            .await
+            .unwrap_or_default(),
+    );
+
+    if !old_phones.iter().any(|saved| saved == &phone) {
+        return Ok(serde_json::json!({
+            "status": constants::response::OK,
+            "phones": old_phones.len(),
+            "tasks": state.db.load_all_task_defs().await.len(),
+        }));
+    }
+
+    let http = state.http()?;
+    http.unbind_phones(&http::UnbindPhonesRequest {
+        client_id,
+        phones: vec![phone.clone()],
+    })
+    .await?;
+
+    engine.handle_phones_unbind(vec![phone.clone()]).await;
+
+    let remaining_phones: Vec<String> = old_phones.into_iter().filter(|saved| saved != &phone).collect();
+    state
+        .db
+        .set_setting(
+            constants::setting_key::SYNCED_PHONES,
+            &serde_json::to_string(&remaining_phones).unwrap_or_default(),
+        )
+        .await;
+
+    let _ = app_handle.emit(
+        constants::tauri_event::ACCOUNT_SYNC_CHANGED,
+        serde_json::json!({ "phones": remaining_phones }),
+    );
+
+    engine.reload_tasks().await;
+    engine.force_emit_update().await;
+
+    let task_count = state.db.load_all_task_defs().await.len();
+    Ok(serde_json::json!({
+        "status": constants::response::OK,
+        "phones": parse_synced_phones(
+            state
+                .db
+                .get_setting(constants::setting_key::SYNCED_PHONES)
+                .await
+                .unwrap_or_default()
+        ).len(),
+        "tasks": task_count,
     }))
 }

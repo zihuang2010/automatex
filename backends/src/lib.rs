@@ -9,6 +9,7 @@ pub(crate) mod scrcpy;
 mod startup;
 mod storage;
 mod task_provider;
+mod task_sync;
 pub mod utils;
 
 use commands::*;
@@ -17,7 +18,7 @@ use mqtt::MqttManager;
 use startup::{check_daily_reset, ensure_client_id, ensure_mqtt_defaults, startup_sync_tasks};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{Emitter, Listener, Manager};
+use tauri::{Listener, Manager};
 
 // ─── State ─────────────────────────────────────────────────────
 
@@ -131,72 +132,6 @@ pub fn run() {
                         Arc::clone(&device_ready_clone),
                         rt.clone(),
                     );
-
-                    // ── 设备归属同步 ──
-                    {
-                        let db_sync = Arc::clone(&db_init);
-                        let eng_sync = Arc::clone(&eng);
-                        let http_sync = Arc::clone(&http_client);
-                        let app_sync = app_handle.clone();
-                        let client_id_sync = client_id.clone();
-                        let ready_sync = Arc::clone(&device_ready_clone);
-                        tokio::spawn(async move {
-                            eprintln!("[startup] 等待设备就绪...");
-                            match tokio::time::timeout(
-                                Duration::from_secs(
-                                    constants::timing::STARTUP_DEVICE_READY_TIMEOUT_SECS,
-                                ),
-                                ready_sync.notified(),
-                            )
-                            .await
-                            {
-                                Ok(_) => eprintln!("[startup] 设备就绪，开始归属同步"),
-                                Err(_) => eprintln!(
-                                    "[startup] 设备就绪等待超时，使用当前设备快照继续归属同步"
-                                ),
-                            }
-
-                            let devices = db_sync.load_all_devices().await;
-                            let online: Vec<http::DeviceSyncItem> = devices
-                                .iter()
-                                .filter(|d| d.state == constants::device_state::DEVICE)
-                                .map(|d| http::DeviceSyncItem {
-                                    hw_serial: d.hw_serial.clone(),
-                                    serial: d.serial.clone(),
-                                    state: d.state.clone(),
-                                })
-                                .collect();
-                            let offline_local: Vec<String> = devices
-                                .iter()
-                                .filter(|d| d.state != constants::device_state::DEVICE)
-                                .map(|d| d.hw_serial.clone())
-                                .collect();
-
-                            let req = http::DeviceSyncRequest {
-                                client_id: client_id_sync,
-                                online,
-                                offline_local,
-                            };
-
-                            match http_sync.device_sync(&req).await {
-                                Ok(resp) => {
-                                    if !resp.to_remove.is_empty() {
-                                        eprintln!(
-                                            "[startup] 清理被其他客户端占用的设备: {:?}",
-                                            resp.to_remove
-                                        );
-                                        let n = eng_sync.handle_device_kick(resp.to_remove).await;
-                                        eprintln!("[startup] 已清理 {} 台设备", n);
-                                        let _ = app_sync
-                                            .emit(constants::tauri_event::DEVICES_CHANGED, ());
-                                    }
-                                },
-                                Err(e) => {
-                                    eprintln!("[startup] 设备归属同步失败: {}", e);
-                                },
-                            }
-                        });
-                    }
 
                     let db_mqtt = Arc::clone(&db_init);
                     let app_mqtt = app_handle.clone();
@@ -398,6 +333,7 @@ pub fn run() {
             flag_device,
             unflag_device,
             sync_tasks_by_phones,
+            unbind_phone,
             scrcpy_start_mirror,
             scrcpy_stop_mirror,
             scrcpy_inject_touch,

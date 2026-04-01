@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use tauri::Emitter;
 
-use crate::{constants, engine::TaskEngine, http, storage, utils};
+use crate::{constants, engine::TaskEngine, http, storage, task_sync, utils};
 
 /// 确保 DB 中存在 mqtt_client_id，不存在则基于机器指纹生成并持久化
 pub(crate) async fn ensure_client_id(db: &storage::Database) -> String {
@@ -81,7 +81,7 @@ pub(crate) async fn check_daily_reset(db: &storage::Database) {
     eprintln!("[startup] 跨日重置完成, last_active_date={}", today);
 }
 
-/// 启动时自动同步：验证已绑定手机号 → 清理冲突 → 拉取最新任务
+/// 启动时自动同步：验证已绑定手机号 → 拉取最新任务 / 处理冲突
 pub(crate) async fn startup_sync_tasks(
     db: &Arc<storage::Database>,
     http: &Arc<dyn http::ApiClient>,
@@ -110,30 +110,52 @@ pub(crate) async fn startup_sync_tasks(
     eprintln!("[startup] 检测到已绑定手机号: {:?}, 验证有效性...", synced_phones);
     let _ = app_handle.emit(tauri_event::STARTUP_SYNC_STATUS, "syncing");
 
-    let bind_req = http::PhoneBindRequest {
-        client_id: client_id.to_string(),
-        phones: synced_phones.clone(),
-        force: false,
-    };
+    let bind_req = http::PhoneBindRequest { client_id: client_id.to_string(), phones: synced_phones.clone(), force: false };
 
     match http.bind_phones(&bind_req).await {
         Ok(bind_resp) => {
             if !bind_resp.conflicts.is_empty() {
-                let conflict_phones: Vec<String> =
-                    bind_resp.conflicts.iter().map(|c| c.phone.clone()).collect();
-                eprintln!("[startup] 检测到异地登录冲突: {:?}, 清理关联任务", conflict_phones);
+                let conflict_phones = task_sync::bind_conflict_phones(&bind_resp);
+                eprintln!("[startup] 检测到异地登录冲突: {:?}, 清理冲突任务并保留无冲突任务", conflict_phones);
                 engine.handle_phones_unbind(conflict_phones).await;
+                let count =
+                    match task_sync::load_remote_tasks_by_ids(
+                        http,
+                        db,
+                        &bind_resp.task_items.clone().unwrap_or_default(),
+                    )
+                    .await
+                    {
+                        Ok(count) => count,
+                        Err(e) => {
+                            eprintln!("[startup] 冲突态任务拉取失败: {}", e);
+                            let _ = app_handle.emit(tauri_event::STARTUP_SYNC_STATUS, "error");
+                            return;
+                        },
+                    };
+
+                engine.reload_tasks().await;
+                engine.force_emit_update().await;
+                let _ = app_handle.emit(
+                    tauri_event::REQUIRE_PHONE_BIND,
+                    serde_json::json!({
+                        "reason": "conflicts",
+                        "message": "部分手机号已在其他客户端绑定，请确认是否强制绑定",
+                        "conflicts": bind_resp.conflicts,
+                    }),
+                );
+                eprintln!("[startup] 冲突态任务同步完成，保留 {} 个无冲突任务", count);
+                let _ = app_handle.emit(tauri_event::STARTUP_SYNC_STATUS, "done");
+                return;
             }
 
-            let valid_phones = bind_resp.bound;
-
-            if valid_phones.is_empty() {
+            if bind_resp
+                .task_items
+                .as_ref()
+                .map(|task_items| task_items.is_empty())
+                .unwrap_or(true)
+            {
                 eprintln!("[startup] 所有手机号已失效，通知前端跳转绑定页面");
-                db.set_setting(setting_key::SYNCED_PHONES, "[]").await;
-                let _ = app_handle.emit(
-                    tauri_event::ACCOUNT_SYNC_CHANGED,
-                    serde_json::json!({ "phones": Vec::<String>::new() }),
-                );
                 let _ = app_handle.emit(
                     tauri_event::REQUIRE_PHONE_BIND,
                     serde_json::json!({
@@ -142,63 +164,28 @@ pub(crate) async fn startup_sync_tasks(
                     }),
                 );
             } else {
-                eprintln!("[startup] 有效手机号: {:?}, 拉取最新任务...", valid_phones);
+                eprintln!("[startup] 有效手机号: {:?}, 拉取最新任务...", synced_phones);
 
-                match http.fetch_tasks_by_phones(client_id, &valid_phones).await {
-                    Ok(resp) => {
-                        let mut server_task_ids: Vec<String> = Vec::new();
-                        let mut upsert_items: Vec<(String, String, String, i64, String)> =
-                            Vec::new();
-                        for (phone, defs) in &resp.phone_tasks {
-                            for def in defs {
-                                let payload =
-                                    serde_json::to_string(&def.cities).unwrap_or_default();
-                                upsert_items.push((
-                                    def.id.clone(),
-                                    def.name.clone(),
-                                    payload,
-                                    1,
-                                    phone.clone(),
-                                ));
-                                server_task_ids.push(def.id.clone());
-                            }
-                        }
-                        db.batch_upsert_task_defs(upsert_items).await;
-
-                        let server_task_ids: std::collections::HashSet<String> =
-                            server_task_ids.into_iter().collect();
-                        let local_defs = db.load_all_task_defs().await;
-                        let stale_ids: Vec<String> = local_defs
-                            .iter()
-                            .filter(|(id, _, _, _)| !server_task_ids.contains(id))
-                            .map(|(id, _, _, _)| id.clone())
-                            .collect();
-                        if !stale_ids.is_empty() {
-                            eprintln!(
-                                "[startup] 清理 {} 个本地过期任务: {:?}",
-                                stale_ids.len(),
-                                stale_ids
-                            );
-                            db.batch_cleanup_tasks(&stale_ids).await;
-                        }
-
-                        db.set_setting(
-                            setting_key::SYNCED_PHONES,
-                            &serde_json::to_string(&valid_phones).unwrap_or_default(),
-                        )
-                        .await;
+                match task_sync::load_remote_tasks_by_ids(
+                    http,
+                    db,
+                    &bind_resp.task_items.clone().unwrap_or_default(),
+                )
+                .await
+                {
+                    Ok(count) => {
                         let _ = app_handle.emit(
                             tauri_event::ACCOUNT_SYNC_CHANGED,
-                            serde_json::json!({ "phones": valid_phones }),
+                            serde_json::json!({ "phones": synced_phones }),
                         );
                         engine.reload_tasks().await;
                         eprintln!(
                             "[startup] 同步完成: {} 个手机号, {} 个任务",
-                            valid_phones.len(),
-                            server_task_ids.len()
+                            bind_req.phones.len(),
+                            count
                         );
                         let _ = app_handle.emit(tauri_event::STARTUP_SYNC_STATUS, "done");
-                    },
+                    }
                     Err(e) => {
                         eprintln!("[startup] 拉取任务失败: {}, 使用本地缓存", e);
                         let _ = app_handle.emit(tauri_event::STARTUP_SYNC_STATUS, "error");

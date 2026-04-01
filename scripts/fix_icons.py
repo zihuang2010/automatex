@@ -1,43 +1,40 @@
 #!/usr/bin/env python3
 """
-从原始银杏叶图标生成符合 macOS HIG 规范的 squircle 图标。
-squircle 填满整个画布，银杏叶居中带适当内边距。
+生成图标 v5 — 纯白背景 + 银杏叶
+
+策略：
+  1. 纯白色 (#FFFFFF) 不透明正方形背景
+  2. 银杏叶居中，占 60% 画布
+  3. 四角 Alpha=255，完全不透明
+  4. 让 macOS 自动裁剪 squircle
 """
 
 import os
 import subprocess
 import shutil
-from PIL import Image, ImageDraw
+from PIL import Image
 import numpy as np
 
 ICONS_DIR = os.path.join(os.path.dirname(__file__), '..', 'backends', 'icons')
-
-# 原始银杏叶图标（从 git 恢复到 /tmp）
 ORIGINAL_ICON = '/tmp/icon_1b34586.png'
 
 
 def extract_leaf(img: Image.Image, tolerance: int = 35) -> Image.Image:
-    """
-    从原始图标中提取银杏叶（移除米色背景）。
-    使用 flood fill 从边缘开始移除连通的背景区域。
-    """
+    """从原始图标中提取银杏叶（移除米色背景）"""
     img = img.convert('RGBA')
     data = np.array(img)
     h, w = data.shape[:2]
-    
-    # 从四个角采样背景色
+
     corners = [data[0, 0, :3], data[0, w-1, :3], data[h-1, 0, :3], data[h-1, w-1, :3]]
     bg_color = np.mean(corners, axis=0).astype(np.uint8)
-    
-    # 计算每个像素与背景色的距离
+
     diff = np.sqrt(np.sum((data[:, :, :3].astype(float) - bg_color.astype(float)) ** 2, axis=2))
     is_bg_like = diff < tolerance
-    
-    # BFS flood fill 从边缘开始
+
     from collections import deque
     mask = np.zeros((h, w), dtype=bool)
     queue = deque()
-    
+
     for x in range(w):
         if is_bg_like[0, x]:
             queue.append((0, x)); mask[0, x] = True
@@ -48,7 +45,7 @@ def extract_leaf(img: Image.Image, tolerance: int = 35) -> Image.Image:
             queue.append((y, 0)); mask[y, 0] = True
         if is_bg_like[y, w-1]:
             queue.append((y, w-1)); mask[y, w-1] = True
-    
+
     while queue:
         cy, cx = queue.popleft()
         for dy, dx in [(-1,0),(1,0),(0,-1),(0,1)]:
@@ -56,100 +53,54 @@ def extract_leaf(img: Image.Image, tolerance: int = 35) -> Image.Image:
             if 0 <= ny < h and 0 <= nx < w and not mask[ny, nx] and is_bg_like[ny, nx]:
                 mask[ny, nx] = True
                 queue.append((ny, nx))
-    
-    # 设置背景为透明
+
     data[mask, 3] = 0
-    
-    # 边缘羽化 2px
+
     from scipy.ndimage import distance_transform_edt
     inner = ~mask
     dist = distance_transform_edt(~inner)
     feather_width = 2
     feather_zone = (dist > 0) & (dist <= feather_width) & mask
     data[feather_zone, 3] = ((1.0 - dist[feather_zone] / feather_width) * 255).astype(np.uint8)
-    
+
     return Image.fromarray(data)
 
 
-def create_squircle_icon(leaf: Image.Image, size: int = 1024) -> Image.Image:
-    """
-    创建填满整个画布的 squircle 图标。
-    """
-    # 1. 创建 squircle mask - 填满整个画布
-    print("  创建 squircle mask（填满画布）...")
-    ss = 2  # 2x 超采样
-    ss_size = size * ss
-    
-    y_coords, x_coords = np.mgrid[0:ss_size, 0:ss_size]
-    center = ss_size / 2.0
-    # scale = half size，让 squircle 正好触及画布边缘
-    scale = ss_size / 2.0
-    
-    nx = (x_coords - center) / scale
-    ny = (y_coords - center) / scale
-    
-    # 超椭圆 n=5 ≈ macOS continuous corner
-    n = 5.0
-    dist = np.abs(nx) ** n + np.abs(ny) ** n
-    
-    mask_data = np.zeros((ss_size, ss_size), dtype=np.uint8)
-    mask_data[dist <= 1.0] = 255
-    
-    # 边缘抗锯齿
-    aa = 0.02
-    edge = (dist > 1.0 - aa) & (dist < 1.0 + aa)
-    mask_data[edge] = ((1.0 - (dist[edge] - (1.0 - aa)) / (2 * aa)) * 255).clip(0, 255).astype(np.uint8)
-    
-    mask = Image.fromarray(mask_data).resize((size, size), Image.LANCZOS)
-    
-    # 2. 创建渐变背景
-    print("  创建渐变背景...")
+def create_icon(leaf: Image.Image, size: int = 1024) -> Image.Image:
+    """深棕渐变背景 + 银杏叶居中（Full Bleed 不透明正方形）"""
+    # 1. 深棕→琥珀渐变背景 — 四角完全不透明
     bg_data = np.zeros((size, size, 4), dtype=np.uint8)
     for y in range(size):
         t = y / (size - 1)
-        # 深棕到深琥珀渐变
         bg_data[y, :, 0] = int(42 + t * 28)   # R: 42→70
         bg_data[y, :, 1] = int(28 + t * 18)   # G: 28→46
         bg_data[y, :, 2] = int(18 + t * 14)   # B: 18→32
-        bg_data[y, :, 3] = 255
-    bg = Image.fromarray(bg_data)
-    bg.putalpha(mask)
-    
-    # 3. 处理银杏叶 - 裁剪掉透明区域后居中放置
-    print("  合成银杏叶...")
+        bg_data[y, :, 3] = 255                 # 完全不透明
+    result = Image.fromarray(bg_data)
+
+    # 2. 处理银杏叶
     bbox = leaf.getbbox()
-    if bbox:
-        leaf_cropped = leaf.crop(bbox)
-    else:
-        leaf_cropped = leaf
-    
-    # 银杏叶占画布 65% 的区域（留适当内边距，让叶子看起来大而自然）
-    content_ratio = 0.65
+    leaf_cropped = leaf.crop(bbox) if bbox else leaf
+
+    content_ratio = 0.60
     content_area = int(size * content_ratio)
-    
+
     lw, lh = leaf_cropped.size
     ratio = min(content_area / lw, content_area / lh)
     new_w, new_h = int(lw * ratio), int(lh * ratio)
     leaf_resized = leaf_cropped.resize((new_w, new_h), Image.LANCZOS)
-    
-    # 居中
+
     ox = (size - new_w) // 2
     oy = (size - new_h) // 2
-    
-    # 4. 合成
-    result = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-    result.paste(bg, (0, 0))
+
+    # 3. 合成
     result.paste(leaf_resized, (ox, oy), leaf_resized)
-    
-    # 重新应用 mask 确保 squircle 形状
-    final_alpha = np.minimum(np.array(result.split()[3]), np.array(mask))
-    result.putalpha(Image.fromarray(final_alpha))
-    
+
     return result
 
 
 def generate_all(src: Image.Image):
-    """生成所有尺寸的图标文件"""
+    """生成所有尺寸"""
     sizes = {
         '32x32.png': 32, '64x64.png': 64, '128x128.png': 128,
         '128x128@2x.png': 256, 'icon.png': 512,
@@ -163,7 +114,7 @@ def generate_all(src: Image.Image):
         path = os.path.join(ICONS_DIR, name)
         src.resize((s, s), Image.LANCZOS).save(path, 'PNG')
         print(f"  ✓ {name}")
-    
+
     # .icns
     iconset = os.path.join(ICONS_DIR, 'icon.iconset')
     os.makedirs(iconset, exist_ok=True)
@@ -176,7 +127,7 @@ def generate_all(src: Image.Image):
                        capture_output=True, text=True)
     print(f"  ✓ icon.icns" if r.returncode == 0 else f"  ✗ icon.icns: {r.stderr}")
     shutil.rmtree(iconset)
-    
+
     # .ico
     ico_sizes = [16, 24, 32, 48, 64, 128, 256]
     imgs = [src.resize((s, s), Image.LANCZOS) for s in ico_sizes]
@@ -185,8 +136,8 @@ def generate_all(src: Image.Image):
     print(f"  ✓ icon.ico")
 
 
-def deploy_to_app():
-    """替换 /Applications/AutomateX.app 和构建缓存中的图标"""
+def deploy_and_nuke_cache():
+    """替换图标 + 暴力清理所有缓存"""
     icns = os.path.join(ICONS_DIR, 'icon.icns')
     targets = [
         '/Applications/AutomateX.app/Contents/Resources/icon.icns',
@@ -200,41 +151,107 @@ def deploy_to_app():
         if os.path.exists(os.path.dirname(t)):
             shutil.copy2(icns, t)
             print(f"  ✓ 已替换 {t}")
-    
-    # touch .app 强制刷新
+
+    # touch 应用
     app_path = '/Applications/AutomateX.app'
     if os.path.exists(app_path):
         os.utime(app_path, None)
-        os.utime(os.path.join(app_path, 'Contents', 'Info.plist'), None)
-        os.utime(os.path.join(app_path, 'Contents', 'Resources', 'icon.icns'), None)
+        for sub in ['Contents/Info.plist', 'Contents/Resources/icon.icns']:
+            p = os.path.join(app_path, sub)
+            if os.path.exists(p):
+                os.utime(p, None)
+
+    # 暴力清理图标缓存
+    print("  暴力清除所有图标缓存...")
+
+    # 1. lsregister 重建
+    lsregister = ('/System/Library/Frameworks/CoreServices.framework/Versions/A/'
+                  'Frameworks/LaunchServices.framework/Versions/A/Support/lsregister')
+    subprocess.run([lsregister, '-kill', '-r', '-domain', 'local',
+                    '-domain', 'system', '-domain', 'user'], capture_output=True)
+
+    # 2. 删除 IconServices 缓存
+    import glob
+    home = os.path.expanduser('~')
+    cache_dirs = glob.glob(os.path.join(home, 'Library/Caches/com.apple.iconservices*'))
+    for d in cache_dirs:
+        try:
+            shutil.rmtree(d)
+            print(f"  ✓ 删除: {d}")
+        except Exception as e:
+            print(f"  ⚠ 无法删除 {d}: {e}")
+
+    # 3. 删除 Dock 缓存
+    dock_caches = glob.glob(os.path.join(home, 'Library/Caches/com.apple.dock*'))
+    for d in dock_caches:
+        try:
+            shutil.rmtree(d)
+            print(f"  ✓ 删除: {d}")
+        except Exception as e:
+            print(f"  ⚠ 无法删除 {d}: {e}")
+
+    # 4. 删除 IconServicesAgent 的 plist 缓存
+    is_plist = os.path.join(home, 'Library/Preferences/com.apple.iconservices.store')
+    if os.path.exists(is_plist):
+        try:
+            os.remove(is_plist)
+            print(f"  ✓ 删除: {is_plist}")
+        except:
+            pass
 
 
 def main():
     print("=" * 50)
-    print("AutomateX 图标修复 v3")
+    print("AutomateX 图标修复 v5 — 白色背景")
     print("=" * 50)
-    
-    # 1. 从原始图标提取银杏叶
+
+    # 0. 先恢复原始图标
+    if not os.path.exists(ORIGINAL_ICON):
+        print(f"\n[0/4] 从 git 恢复原始图标...")
+        repo_root = os.path.join(os.path.dirname(__file__), '..')
+        for commit in ['67450e7', '1b34586', 'HEAD~10']:
+            r = subprocess.run(
+                ['git', 'show', f'{commit}:backends/icons/icon.png'],
+                capture_output=True, cwd=repo_root)
+            if r.returncode == 0:
+                with open(ORIGINAL_ICON, 'wb') as f:
+                    f.write(r.stdout)
+                print(f"  ✓ 已恢复 ({commit})")
+                break
+        else:
+            print("  ✗ git 恢复失败")
+            return
+
+    # 1. 提取银杏叶
     print(f"\n[1/4] 提取银杏叶...")
     original = Image.open(ORIGINAL_ICON)
     leaf = extract_leaf(original)
     print(f"  ✓ 银杏叶已提取")
-    
-    # 2. 创建 squircle 图标
-    print(f"\n[2/4] 创建 squircle 图标 (1024x1024)...")
-    icon = create_squircle_icon(leaf, 1024)
+
+    # 2. 创建图标
+    print(f"\n[2/4] 创建白色背景图标 (1024x1024)...")
+    icon = create_icon(leaf, 1024)
     icon.save(os.path.join(ICONS_DIR, 'icon_1024.png'), 'PNG')
-    
+
+    # 验证四角
+    pixels = np.array(icon)
+    c = [pixels[0,0], pixels[0,-1], pixels[-1,0], pixels[-1,-1]]
+    print(f"  左上角: RGBA={tuple(c[0])}")
+    print(f"  右下角: RGBA={tuple(c[3])}")
+
     # 3. 生成所有尺寸
     print(f"\n[3/4] 生成所有尺寸...")
     generate_all(icon)
-    
-    # 4. 部署到应用
-    print(f"\n[4/4] 部署到应用...")
-    deploy_to_app()
-    
+
+    # 4. 部署 + 清理缓存
+    print(f"\n[4/4] 部署 + 清理缓存...")
+    deploy_and_nuke_cache()
+
     print(f"\n{'=' * 50}")
-    print("✅ 完成！请执行: killall Dock")
+    print("✅ 完成！")
+    print("   1. 请执行: killall Dock")
+    print("   2. 如果仍不生效，需要重新编译:")
+    print("      cd backends && cargo tauri build")
     print(f"{'=' * 50}")
 
 

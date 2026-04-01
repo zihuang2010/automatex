@@ -57,16 +57,6 @@ impl MockApiClient {
 
 #[async_trait]
 impl ApiClient for MockApiClient {
-    async fn device_sync(&self, req: &DeviceSyncRequest) -> Result<DeviceSyncResponse, String> {
-        eprintln!(
-            "[http-mock] device_sync: client={}, online={}, offline={}",
-            req.client_id,
-            req.online.len(),
-            req.offline_local.len()
-        );
-        Ok(DeviceSyncResponse { to_remove: Vec::new() })
-    }
-
     async fn bind_phones(&self, req: &PhoneBindRequest) -> Result<PhoneBindResponse, String> {
         eprintln!(
             "[http-mock] bind_phones: client={}, phones={:?}, force={}",
@@ -78,83 +68,120 @@ impl ApiClient for MockApiClient {
                 let resp: PhoneBindResponse = serde_json::from_value(bind_data.clone())
                     .unwrap_or_else(|e| {
                         eprintln!("[http-mock] 解析 bind_phones 场景失败: {}", e);
-                        PhoneBindResponse { bound: req.phones.clone(), conflicts: Vec::new() }
+                        PhoneBindResponse { task_items: Some(Vec::new()), conflicts: Vec::new() }
                     });
                 eprintln!(
-                    "[http-mock] bind_phones 场景响应: bound={}, conflicts={}",
-                    resp.bound.len(),
+                    "[http-mock] bind_phones 场景响应: task_items={}, conflicts={}",
+                    resp.task_items.as_ref().map(|items| items.len()).unwrap_or(0),
                     resp.conflicts.len()
                 );
                 return Ok(resp);
             }
         }
 
-        Ok(PhoneBindResponse { bound: req.phones.clone(), conflicts: Vec::new() })
+        let items = self.batch_items_for_phones(&req.phones);
+        let task_items = items.into_iter().map(|item| item.task_id).collect();
+        Ok(PhoneBindResponse { task_items: Some(task_items), conflicts: Vec::new() })
     }
 
-    async fn fetch_tasks_by_phones(
+    async fn batch_fetch_tasks(
         &self,
-        client_id: &str,
-        phones: &[String],
-    ) -> Result<PhoneTasksResponse, String> {
-        eprintln!("[http-mock] fetch_tasks_by_phones: client={}, phones={:?}", client_id, phones);
+        req: &BatchTasksRequest,
+    ) -> Result<Vec<BatchTaskItem>, String> {
+        eprintln!("[http-mock] batch_fetch_tasks: task_ids={:?}", req.task_ids);
 
-        // 优先从场景 JSON 的 phone_tasks 字段读取
-        if let Some(scenario) = self.load_mock_scenario() {
-            if let Some(pt) = scenario.get("phone_tasks") {
-                if let Ok(phone_tasks) = serde_json::from_value::<
-                    std::collections::HashMap<String, Vec<TaskDef>>,
-                >(pt.clone())
-                {
-                    let filtered: std::collections::HashMap<String, Vec<TaskDef>> = phone_tasks
-                        .into_iter()
-                        .filter(|(phone, _)| phones.contains(phone))
-                        .collect();
-                    let total: usize = filtered.values().map(|v| v.len()).sum();
-                    eprintln!(
-                        "[http-mock] 场景返回: {} 个手机号, {} 个任务",
-                        filtered.len(),
-                        total
-                    );
-                    return Ok(PhoneTasksResponse { phone_tasks: filtered });
-                }
-            }
+        let mut items = self.batch_items_for_all();
+        if !req.task_ids.is_empty() {
+            items.retain(|item| req.task_ids.iter().any(|id| id == &item.task_id));
         }
-
-        // fallback: 从 mock_tasks.json 加载，round-robin 分配
-        use crate::task_provider::load_mock_definitions;
-        let all_defs = load_mock_definitions();
-        let mut phone_tasks: std::collections::HashMap<String, Vec<TaskDef>> =
-            std::collections::HashMap::new();
-        for (i, def) in all_defs.into_iter().enumerate() {
-            if !phones.is_empty() {
-                let phone = &phones[i % phones.len()];
-                phone_tasks.entry(phone.clone()).or_default().push(def);
-            }
-        }
-        Ok(PhoneTasksResponse { phone_tasks })
-    }
-
-    async fn fetch_task(&self, task_id: &str) -> Result<TaskDef, String> {
-        use crate::task_provider::load_mock_task_def_by_id;
-        eprintln!("[http-mock] fetch_task: task_id={}", task_id);
-        load_mock_task_def_by_id(task_id).ok_or_else(|| format!("任务不存在: {}", task_id))
+        Ok(items)
     }
 
     async fn report_progress(&self, req: &ProgressReportRequest) -> Result<ApiResponse, String> {
         eprintln!(
-            "[http-mock] report_progress: task={}, city={}, kw={}, status={}",
-            req.task_id, req.city_name, req.keyword_name, req.status
+            "[http-mock] report_progress: task={}, city={}, kw={}, round={}",
+            req.task_id, req.city_name, req.keyword_name, req.round_no
         );
-        Ok(ApiResponse { success: true, message: "mock: ok".to_string() })
+        Ok(ApiResponse::default())
     }
 
-    async fn unbind_phones(
-        &self,
-        client_id: &str,
-        phones: &[String],
-    ) -> Result<ApiResponse, String> {
-        eprintln!("[http-mock] unbind_phones: client={}, phones={}", client_id, phones.len());
-        Ok(ApiResponse { success: true, message: "mock: ok".to_string() })
+    async fn unbind_phones(&self, req: &UnbindPhonesRequest) -> Result<ApiResponse, String> {
+        eprintln!("[http-mock] unbind_phones: client={}, phones={}", req.client_id, req.phones.len());
+        Ok(ApiResponse::default())
+    }
+}
+
+impl MockApiClient {
+    fn batch_items_for_phones(&self, phones: &[String]) -> Vec<BatchTaskItem> {
+        if phones.is_empty() {
+            return Vec::new();
+        }
+
+        if let Some(scenario) = self.load_mock_scenario() {
+            if let Some(pt) = scenario.get("phone_tasks") {
+                if let Ok(phone_tasks) =
+                    serde_json::from_value::<std::collections::HashMap<String, Vec<TaskDef>>>(
+                        pt.clone(),
+                    )
+                {
+                    return phone_tasks
+                        .into_iter()
+                        .filter(|(phone, _)| phones.contains(phone))
+                        .flat_map(|(phone, defs)| defs.into_iter().map(move |def| task_def_to_batch_item(def, phone.clone())))
+                        .collect();
+                }
+            }
+        }
+
+        use crate::task_provider::load_mock_definitions;
+        load_mock_definitions()
+            .into_iter()
+            .enumerate()
+            .map(|(i, def)| {
+                let phone = phones[i % phones.len()].clone();
+                task_def_to_batch_item(def, phone)
+            })
+            .collect()
+    }
+
+    fn batch_items_for_all(&self) -> Vec<BatchTaskItem> {
+        if let Some(scenario) = self.load_mock_scenario() {
+            if let Some(pt) = scenario.get("phone_tasks") {
+                if let Ok(phone_tasks) =
+                    serde_json::from_value::<std::collections::HashMap<String, Vec<TaskDef>>>(
+                        pt.clone(),
+                    )
+                {
+                    return phone_tasks
+                        .into_iter()
+                        .flat_map(|(phone, defs)| defs.into_iter().map(move |def| task_def_to_batch_item(def, phone.clone())))
+                        .collect();
+                }
+            }
+        }
+
+        use crate::task_provider::load_mock_definitions;
+        load_mock_definitions()
+            .into_iter()
+            .map(|def| task_def_to_batch_item(def, String::new()))
+            .collect()
+    }
+}
+
+fn task_def_to_batch_item(def: TaskDef, phone: String) -> BatchTaskItem {
+    BatchTaskItem {
+        task_id: def.id,
+        task_name: def.name,
+        interval_minute: def.interval_minute,
+        mobile: phone,
+        city_items: def
+            .cities
+            .into_iter()
+            .map(|city| BatchTaskCityItem {
+                city_name: city.name,
+                point_name: city.poi,
+                keywords: city.keywords,
+            })
+            .collect(),
     }
 }

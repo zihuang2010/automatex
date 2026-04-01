@@ -27,3 +27,5 @@ dist-ssr
 backends/binaries/*
 backends/target/*
 
+# Mock Server
+mock_server/

@@ -65,7 +65,7 @@ pub async fn load_tasks(db: &Database) -> Vec<Task> {
             let mut defs = Vec::new();
             let mut orders = std::collections::HashMap::new();
             for (id, name, payload, city_order) in cached {
-                let cities: Vec<CityDef> = match serde_json::from_str(&payload) {
+                let def = match parse_task_def_payload(&id, &name, &payload) {
                     Ok(c) => c,
                     Err(_) => continue,
                 };
@@ -74,7 +74,7 @@ pub async fn load_tasks(db: &Database) -> Vec<Task> {
                         orders.insert(id.clone(), order);
                     }
                 }
-                defs.push(TaskDef { id, name, cities });
+                defs.push(def);
             }
             (defs, orders)
         };
@@ -108,8 +108,8 @@ pub async fn load_tasks(db: &Database) -> Vec<Task> {
 /// 加载单个任务（优先 DB 缓存，fallback mock）
 pub async fn load_task_by_id(db: &Database, target_id: &str) -> Option<Task> {
     if let Some((id, name, payload)) = db.load_task_def_by_id(target_id).await {
-        if let Ok(cities) = serde_json::from_str::<Vec<CityDef>>(&payload) {
-            return Some(build_task(db, TaskDef { id, name, cities }).await);
+        if let Ok(def) = parse_task_def_payload(&id, &name, &payload) {
+            return Some(build_task(db, def).await);
         }
     }
     if !mock_enabled() {
@@ -120,6 +120,20 @@ pub async fn load_task_by_id(db: &Database, target_id: &str) -> Option<Task> {
         Some(def) => Some(build_task(db, def).await),
         None => None,
     }
+}
+
+fn parse_task_def_payload(id: &str, name: &str, payload: &str) -> Result<TaskDef, serde_json::Error> {
+    if let Ok(def) = serde_json::from_str::<TaskDef>(payload) {
+        return Ok(TaskDef {
+            id: if def.id.is_empty() { id.to_string() } else { def.id },
+            name: if def.name.is_empty() { name.to_string() } else { def.name },
+            interval_minute: def.interval_minute,
+            cities: def.cities,
+        });
+    }
+
+    let cities = serde_json::from_str::<Vec<CityDef>>(payload)?;
+    Ok(TaskDef { id: id.to_string(), name: name.to_string(), interval_minute: None, cities })
 }
 
 /// Mock 模式下按 ID 查找任务定义（供 TaskEngine 增量合并使用）

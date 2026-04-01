@@ -16,6 +16,7 @@ export interface PhoneBindFlowOptions {
   prefillPhones?: string[];
   forceSync?: boolean;
   emptyTasksMessage?: string;
+  conflictDetails?: Array<{ phone: string; clientId: string }>;
 }
 
 let activePhoneBindPromise: Promise<void> | null = null;
@@ -86,6 +87,7 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
     const submitBtn = el.querySelector('#btn-sync-start') as HTMLButtonElement | null;
     const initialPhones = options.prefillPhones ?? [];
     const forceSync = options.forceSync ?? false;
+    const conflictDetails = options.conflictDetails ?? [];
     const emptyTasksMessage =
       options.emptyTasksMessage || '当前绑定手机号暂无任务，请修改手机号后重新同步。';
 
@@ -98,6 +100,13 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
     if (submitTextEl) submitTextEl.textContent = options.submitLabel || '开始同步';
     textarea.value = initialPhones.join('\n');
     hideError();
+    if (conflictDetails.length > 0) {
+      showError(
+        `检测到冲突手机号：${conflictDetails
+          .map(item => `${item.phone}（占用端：${item.clientId}）`)
+          .join('、')}。你可以直接确认是否强制绑定。`,
+      );
+    }
 
     // 显示过渡页
     el.style.display = 'flex';
@@ -196,15 +205,32 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
           status: string;
           phones?: number;
           tasks?: number;
-          conflicts?: Array<{ phone: string; current_client: string }>;
+          taskItems?: string[];
+          conflicts?: Array<{ phone: string; clientId: string }>;
         }>('sync_tasks_by_phones', {
           phones: valid,
           force: forceSync,
         });
 
         if (result.status === 'conflicts') {
-          const conflictPhones = result.conflicts?.map(c => c.phone).join('、') || '';
-          showError(`以下号码已在其他客户端绑定：${conflictPhones}。如需强制抢占，请重新提交。`);
+          const message =
+            result.conflicts?.map(item => `${item.phone}（占用端：${item.clientId}）`).join('、') ||
+            '';
+          showError(`以下号码已在其他客户端绑定：${message}`);
+          const confirmed = window.confirm(
+            `以下号码已在其他客户端绑定：\n${message}\n\n是否强制绑定并继续同步？`,
+          );
+          if (confirmed) {
+            const forcedResult = await invoke<{ tasks?: number }>('sync_tasks_by_phones', {
+              phones: valid,
+              force: true,
+            });
+            if ((forcedResult.tasks ?? 0) === 0) {
+              showError(emptyTasksMessage);
+              return;
+            }
+            exit();
+          }
           return;
         }
 

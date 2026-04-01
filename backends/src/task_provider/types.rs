@@ -58,6 +58,8 @@ pub struct TaskSummary {
 pub struct TaskDef {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub interval_minute: Option<i32>,
     pub cities: Vec<CityDef>,
 }
 

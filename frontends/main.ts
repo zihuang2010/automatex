@@ -184,7 +184,10 @@ async function refreshAccountList(): Promise<string[]> {
   }
 }
 
-async function openPhoneBindPage(mode: 'startup' | 'rebind' | 'empty-tasks' = 'rebind') {
+async function openPhoneBindPage(
+  mode: 'startup' | 'rebind' | 'empty-tasks' = 'rebind',
+  conflictDetails: Array<{ phone: string; clientId: string }> = [],
+) {
   if (isPhoneBindFlowVisible()) return;
 
   const phones = await getSyncedPhones();
@@ -219,6 +222,7 @@ async function openPhoneBindPage(mode: 'startup' | 'rebind' | 'empty-tasks' = 'r
             forceSync: hasBoundPhones,
             prefillPhones: phones,
             emptyTasksMessage: '当前绑定手机号暂无任务，请修改手机号后重新同步。',
+            conflictDetails,
           };
 
   await showPhoneBindFlow(config);
@@ -341,26 +345,15 @@ function initAccountPanel() {
         if (p && p !== phoneToRemove) remaining.push(p);
       });
 
-      if (remaining.length === 0) {
-        await invoke('sync_tasks_by_phones', { phones: [], force: true });
-        showToast(`已移除账号 ${masked}`, 'info');
-        await Promise.all([refreshAccountList(), fullRefresh()]);
-        openPhoneBindPage('startup').catch(console.error);
-        return;
-      }
-
-      // 用剩余号码重新同步（后端会自动清理被移除的号码，空列表也能正确处理）
-      const syncResult = await invoke<{ tasks?: number }>('sync_tasks_by_phones', {
-        phones: remaining,
-        force: true,
+      const syncResult = await invoke<{ tasks?: number; phones?: number }>('unbind_phone', {
+        phone: phoneToRemove,
       });
 
       showToast(`已移除账号 ${masked}`, 'info');
-      // P4 优化：并行刷新账号列表和任务视图
       await Promise.all([refreshAccountList(), fullRefresh()]);
 
       if ((syncResult.tasks ?? 0) === 0) {
-        openPhoneBindPage('empty-tasks').catch(console.error);
+        openPhoneBindPage(syncResult.phones === 0 ? 'startup' : 'empty-tasks').catch(console.error);
       }
     } catch (err) {
       showToast(`移除失败: ${err}`, 'error');
@@ -630,7 +623,11 @@ window.addEventListener('DOMContentLoaded', () => {
     );
 
     appUnlisteners.push(
-      await listen<{ reason?: string; message?: string }>('require-phone-bind', event => {
+      await listen<{
+        reason?: string;
+        message?: string;
+        conflicts?: Array<{ phone: string; clientId: string }>;
+      }>('require-phone-bind', event => {
         const reason = event.payload?.reason;
         if (reason === 'no_phones') {
           openPhoneBindPage('startup').catch(console.error);
@@ -638,6 +635,10 @@ window.addEventListener('DOMContentLoaded', () => {
         }
         if (reason === 'all_expired') {
           openPhoneBindPage('rebind').catch(console.error);
+          return;
+        }
+        if (reason === 'conflicts') {
+          openPhoneBindPage('rebind', event.payload?.conflicts ?? []).catch(console.error);
           return;
         }
         openPhoneBindPage('rebind').catch(console.error);

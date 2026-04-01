@@ -17,6 +17,7 @@ use crate::constants::{self, city_status, keyword_status, round_status, run_stat
 use crate::http;
 use crate::storage::{Database, DeviceRow};
 use crate::task_provider::{self, summarize_task, Task, TaskSummary};
+use crate::task_sync;
 
 use super::worker::spawn_worker;
 use super::{EngineMsg, ExecutionOutcome, TaskSummarySnapshotRef};
@@ -1119,17 +1120,25 @@ async fn handle_task_reload_msg(s: &mut EngineState, action: &str, task_id: Opti
 }
 
 async fn merge_single_task(s: &mut EngineState, task_id: &str) {
-    let new_def = match s.http.fetch_task(task_id).await {
-        Ok(def) => def,
-        Err(_) => return,
+    let batch_items =
+        match s.http.batch_fetch_tasks(&crate::http::BatchTasksRequest {
+            task_ids: vec![task_id.to_string()],
+        })
+        .await
+        {
+            Ok(items) => items,
+            Err(_) => return,
+        };
+    let Some(item) = batch_items.into_iter().find(|item| item.task_id == task_id) else {
+        return;
     };
+    let new_def = task_sync::batch_item_to_task_def(&item);
 
-    let payload = match serde_json::to_string(&new_def.cities) {
+    let payload = match serde_json::to_string(&new_def) {
         Ok(payload) => payload,
         Err(_) => return,
     };
-
-    s.storage.upsert_task_def(task_id, &new_def.name, &payload, 1, "").await;
+    s.storage.upsert_task_def(task_id, &new_def.name, &payload, 1, &item.mobile).await;
 
     let was_success = s
         .tasks

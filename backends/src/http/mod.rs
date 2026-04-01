@@ -16,35 +16,20 @@ pub use mock::MockApiClient;
 pub use real::RealApiClient;
 pub use types::*;
 
-use crate::task_provider::TaskDef;
 use async_trait::async_trait;
 
 /// HTTP API 客户端 trait —— 所有业务代码依赖此 trait
 #[async_trait]
 pub trait ApiClient: Send + Sync {
-    /// 设备归属同步
-    async fn device_sync(&self, req: &DeviceSyncRequest) -> Result<DeviceSyncResponse, String>;
-
     /// 手机号绑定（互斥策略）
     async fn bind_phones(&self, req: &PhoneBindRequest) -> Result<PhoneBindResponse, String>;
 
-    /// 按手机号拉取任务列表
-    async fn fetch_tasks_by_phones(
-        &self,
-        client_id: &str,
-        phones: &[String],
-    ) -> Result<PhoneTasksResponse, String>;
-
-    /// 拉取单个任务定义
-    async fn fetch_task(&self, task_id: &str) -> Result<TaskDef, String>;
+    /// 按 taskId 批量拉取任务详情
+    async fn batch_fetch_tasks(&self, req: &BatchTasksRequest) -> Result<Vec<BatchTaskItem>, String>;
 
     /// 上报关键词完成进度
     async fn report_progress(&self, req: &ProgressReportRequest) -> Result<ApiResponse, String>;
 
     /// 解绑手机号
-    async fn unbind_phones(
-        &self,
-        client_id: &str,
-        phones: &[String],
-    ) -> Result<ApiResponse, String>;
+    async fn unbind_phones(&self, req: &UnbindPhonesRequest) -> Result<ApiResponse, String>;
 }
