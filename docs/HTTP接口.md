@@ -1,0 +1,142 @@
+# HTTP 客户端接口对接
+
+## 全局响应格式约定
+
+- 所有接口统一返回 JSON：
+  - `code`: 业务状态码（成功=1，失败!=1）
+  - `msg`: 提示信息（成功时一般为“成功”）
+  - `data`: 业务数据（具体接口返回的数据都放在这里）
+  - `serviceCode`: 服务标识（固定为 320000000）
+
+示例：
+
+```json
+{
+  "code": 1,
+  "msg": "成功",
+  "data": {},
+  "serviceCode": 320000000
+}
+```
+
+- 错误处理建议：
+  - 当 `code != 1` 时，直接使用 `msg` 展示错误并终止后续流程。
+  - 以下各接口的“响应参数”章节仅描述 `data` 字段内部结构。
+
+---
+
+## 1. 手机号绑定
+
+- Method: POST
+- Path: /mttl_tools/v1/meituanTraffic/client/bind
+
+请求参数（Request Body）：
+
+```json
+{
+  "clientId": "auto-abc123def456",
+  "mobiles": ["13800138000", "13900139000"],
+  "forceBind": false
+}
+```
+
+响应参数（Response `data`）：
+
+```json
+{
+  "conflicts": [{ "mobile": "13900139000", "clientId": "auto-xyz789" }],
+  "taskItems": ["1231", "123123"]
+}
+```
+
+业务流程说明：
+
+- 先判断 `data.conflicts` 是否为空：
+  - 不为空：表示存在手机号已绑定到其他 `clientId` 的冲突，需要在页面提示用户是否强制绑定。
+  - 为空：无冲突，直接读取 `data.taskItems` 获取任务 ID 列表。
+- 强制绑定：将请求参数 `forceBind` 置为 `true` 重新调用，成功后 `data.conflicts` 应为空。
+
+---
+
+## 2. 手机号解绑
+
+- Method: POST
+- Path: /mttl_tools/v1/meituanTraffic/client/unbind
+
+请求参数（Request Body）：
+
+```json
+{
+  "clientId": "auto-abc123def456",
+  "mobiles": ["13800138000"]
+}
+```
+
+响应参数：
+
+- `data`：无特殊结构要求（按统一响应格式处理即可）。
+
+---
+
+## 3. 按 taskId 批量拉取任务
+
+- Method: POST
+- Path: /mttl_tools/v1/meituanTraffic/client/batchTasks
+
+请求参数（Request Body）：
+
+```json
+{
+  "taskIds": ["1231", "123123"]
+}
+```
+
+响应参数（Response `data`）：
+
+```json
+[
+  {
+    "taskId": "12312",
+    "taskName": "123123123",
+    "intervalMinute": 20,
+    "cityItems": [
+      {
+        "cityName": "重庆",
+        "pointName": "朝天门",
+        "keywords": ["火锅", "烧烤"]
+      }
+    ]
+  }
+]
+```
+
+---
+
+## 4. 进度上报（建议幂等）
+
+- Method: POST
+- Path: /mttl_tools/v1/meituanTraffic/client/scan/upload
+
+请求参数（Request Body）：
+
+```json
+{
+  "clientId": 1231231,
+  "taskId": 12,
+  "taskName": "1231",
+  "cityName": "重庆",
+  "keyword": "火锅",
+  "deviceNo": "123123",
+  "roundNo": 12,
+  "storeList": ["店铺名称1", "店铺名称2"],
+  "scanFinishedTime": "123123123"
+}
+```
+
+响应参数：
+
+- `data`：无特殊结构要求（按统一响应格式处理即可）。
+
+幂等建议：
+
+- 客户端建议用（`clientId`, `taskId`, `cityName`, `keyword`, `deviceNo`, `roundNo`）作为幂等键，服务端重复上报应返回成功且不产生重复记录。
