@@ -106,7 +106,11 @@ impl ApiClient for MockApiClient {
     }
 
     async fn unbind_phones(&self, req: &UnbindPhonesRequest) -> Result<ApiResponse, String> {
-        eprintln!("[http-mock] unbind_phones: client={}, phones={}", req.client_id, req.phones.len());
+        eprintln!(
+            "[http-mock] unbind_phones: client={}, phones={}",
+            req.client_id,
+            req.phones.len()
+        );
         Ok(ApiResponse::default())
     }
 }
@@ -119,15 +123,17 @@ impl MockApiClient {
 
         if let Some(scenario) = self.load_mock_scenario() {
             if let Some(pt) = scenario.get("phone_tasks") {
-                if let Ok(phone_tasks) =
-                    serde_json::from_value::<std::collections::HashMap<String, Vec<TaskDef>>>(
-                        pt.clone(),
-                    )
+                if let Ok(phone_tasks) = serde_json::from_value::<
+                    std::collections::HashMap<String, Vec<TaskDef>>,
+                >(pt.clone())
                 {
                     return phone_tasks
                         .into_iter()
                         .filter(|(phone, _)| phones.contains(phone))
-                        .flat_map(|(phone, defs)| defs.into_iter().map(move |def| task_def_to_batch_item(def, phone.clone())))
+                        .flat_map(|(phone, defs)| {
+                            defs.into_iter()
+                                .map(move |def| task_def_to_batch_item(def, phone.clone()))
+                        })
                         .collect();
                 }
             }
@@ -147,14 +153,16 @@ impl MockApiClient {
     fn batch_items_for_all(&self) -> Vec<BatchTaskItem> {
         if let Some(scenario) = self.load_mock_scenario() {
             if let Some(pt) = scenario.get("phone_tasks") {
-                if let Ok(phone_tasks) =
-                    serde_json::from_value::<std::collections::HashMap<String, Vec<TaskDef>>>(
-                        pt.clone(),
-                    )
+                if let Ok(phone_tasks) = serde_json::from_value::<
+                    std::collections::HashMap<String, Vec<TaskDef>>,
+                >(pt.clone())
                 {
                     return phone_tasks
                         .into_iter()
-                        .flat_map(|(phone, defs)| defs.into_iter().map(move |def| task_def_to_batch_item(def, phone.clone())))
+                        .flat_map(|(phone, defs)| {
+                            defs.into_iter()
+                                .map(move |def| task_def_to_batch_item(def, phone.clone()))
+                        })
                         .collect();
                 }
             }

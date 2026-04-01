@@ -110,29 +110,35 @@ pub(crate) async fn startup_sync_tasks(
     eprintln!("[startup] 检测到已绑定手机号: {:?}, 验证有效性...", synced_phones);
     let _ = app_handle.emit(tauri_event::STARTUP_SYNC_STATUS, "syncing");
 
-    let bind_req = http::PhoneBindRequest { client_id: client_id.to_string(), phones: synced_phones.clone(), force: false };
+    let bind_req = http::PhoneBindRequest {
+        client_id: client_id.to_string(),
+        phones: synced_phones.clone(),
+        force: false,
+    };
 
     match http.bind_phones(&bind_req).await {
         Ok(bind_resp) => {
             if !bind_resp.conflicts.is_empty() {
                 let conflict_phones = task_sync::bind_conflict_phones(&bind_resp);
-                eprintln!("[startup] 检测到异地登录冲突: {:?}, 清理冲突任务并保留无冲突任务", conflict_phones);
+                eprintln!(
+                    "[startup] 检测到异地登录冲突: {:?}, 清理冲突任务并保留无冲突任务",
+                    conflict_phones
+                );
                 engine.handle_phones_unbind(conflict_phones).await;
-                let count =
-                    match task_sync::load_remote_tasks_by_ids(
-                        http,
-                        db,
-                        &bind_resp.task_items.clone().unwrap_or_default(),
-                    )
-                    .await
-                    {
-                        Ok(count) => count,
-                        Err(e) => {
-                            eprintln!("[startup] 冲突态任务拉取失败: {}", e);
-                            let _ = app_handle.emit(tauri_event::STARTUP_SYNC_STATUS, "error");
-                            return;
-                        },
-                    };
+                let count = match task_sync::load_remote_tasks_by_ids(
+                    http,
+                    db,
+                    &bind_resp.task_items.clone().unwrap_or_default(),
+                )
+                .await
+                {
+                    Ok(count) => count,
+                    Err(e) => {
+                        eprintln!("[startup] 冲突态任务拉取失败: {}", e);
+                        let _ = app_handle.emit(tauri_event::STARTUP_SYNC_STATUS, "error");
+                        return;
+                    },
+                };
 
                 engine.reload_tasks().await;
                 engine.force_emit_update().await;
@@ -185,7 +191,7 @@ pub(crate) async fn startup_sync_tasks(
                             count
                         );
                         let _ = app_handle.emit(tauri_event::STARTUP_SYNC_STATUS, "done");
-                    }
+                    },
                     Err(e) => {
                         eprintln!("[startup] 拉取任务失败: {}, 使用本地缓存", e);
                         let _ = app_handle.emit(tauri_event::STARTUP_SYNC_STATUS, "error");

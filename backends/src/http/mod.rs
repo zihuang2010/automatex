@@ -25,7 +25,10 @@ pub trait ApiClient: Send + Sync {
     async fn bind_phones(&self, req: &PhoneBindRequest) -> Result<PhoneBindResponse, String>;
 
     /// 按 taskId 批量拉取任务详情
-    async fn batch_fetch_tasks(&self, req: &BatchTasksRequest) -> Result<Vec<BatchTaskItem>, String>;
+    async fn batch_fetch_tasks(
+        &self,
+        req: &BatchTasksRequest,
+    ) -> Result<Vec<BatchTaskItem>, String>;
 
     /// 上报关键词完成进度
     async fn report_progress(&self, req: &ProgressReportRequest) -> Result<ApiResponse, String>;

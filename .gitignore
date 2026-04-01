@@ -29,3 +29,6 @@ backends/target/*
 
 # Mock Server
 mock_server/
+
+# history
+.history

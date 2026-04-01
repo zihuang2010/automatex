@@ -53,7 +53,8 @@ pub async fn sync_tasks_by_phones(
     }
 
     let http = state.http()?;
-    let bind_req = http::PhoneBindRequest { client_id: client_id.clone(), phones: phones.clone(), force };
+    let bind_req =
+        http::PhoneBindRequest { client_id: client_id.clone(), phones: phones.clone(), force };
     let bind_resp = http.bind_phones(&bind_req).await?;
 
     if !bind_resp.conflicts.is_empty() && !force {
@@ -64,10 +65,8 @@ pub async fn sync_tasks_by_phones(
         }));
     }
 
-    let removed_phones: Vec<String> = old_phones
-        .into_iter()
-        .filter(|phone| !phones.contains(phone))
-        .collect();
+    let removed_phones: Vec<String> =
+        old_phones.into_iter().filter(|phone| !phones.contains(phone)).collect();
     if !removed_phones.is_empty() {
         eprintln!("[sync] 检测到被移除的手机号: {:?}，清理旧任务数据", removed_phones);
         engine.handle_phones_unbind(removed_phones).await;
@@ -126,15 +125,13 @@ pub async fn unbind_phone(
     }
 
     let http = state.http()?;
-    http.unbind_phones(&http::UnbindPhonesRequest {
-        client_id,
-        phones: vec![phone.clone()],
-    })
-    .await?;
+    http.unbind_phones(&http::UnbindPhonesRequest { client_id, phones: vec![phone.clone()] })
+        .await?;
 
     engine.handle_phones_unbind(vec![phone.clone()]).await;
 
-    let remaining_phones: Vec<String> = old_phones.into_iter().filter(|saved| saved != &phone).collect();
+    let remaining_phones: Vec<String> =
+        old_phones.into_iter().filter(|saved| saved != &phone).collect();
     state
         .db
         .set_setting(

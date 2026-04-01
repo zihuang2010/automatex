@@ -1120,15 +1120,14 @@ async fn handle_task_reload_msg(s: &mut EngineState, action: &str, task_id: Opti
 }
 
 async fn merge_single_task(s: &mut EngineState, task_id: &str) {
-    let batch_items =
-        match s.http.batch_fetch_tasks(&crate::http::BatchTasksRequest {
-            task_ids: vec![task_id.to_string()],
-        })
+    let batch_items = match s
+        .http
+        .batch_fetch_tasks(&crate::http::BatchTasksRequest { task_ids: vec![task_id.to_string()] })
         .await
-        {
-            Ok(items) => items,
-            Err(_) => return,
-        };
+    {
+        Ok(items) => items,
+        Err(_) => return,
+    };
     let Some(item) = batch_items.into_iter().find(|item| item.task_id == task_id) else {
         return;
     };
@@ -1138,7 +1137,9 @@ async fn merge_single_task(s: &mut EngineState, task_id: &str) {
         Ok(payload) => payload,
         Err(_) => return,
     };
-    s.storage.upsert_task_def(task_id, &new_def.name, &payload, 1, &item.mobile).await;
+    s.storage
+        .upsert_task_def(task_id, &new_def.name, &payload, 1, &item.mobile)
+        .await;
 
     let was_success = s
         .tasks

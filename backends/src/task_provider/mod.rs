@@ -122,7 +122,11 @@ pub async fn load_task_by_id(db: &Database, target_id: &str) -> Option<Task> {
     }
 }
 
-fn parse_task_def_payload(id: &str, name: &str, payload: &str) -> Result<TaskDef, serde_json::Error> {
+fn parse_task_def_payload(
+    id: &str,
+    name: &str,
+    payload: &str,
+) -> Result<TaskDef, serde_json::Error> {
     if let Ok(def) = serde_json::from_str::<TaskDef>(payload) {
         return Ok(TaskDef {
             id: if def.id.is_empty() { id.to_string() } else { def.id },

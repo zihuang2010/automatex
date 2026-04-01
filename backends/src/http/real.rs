@@ -74,14 +74,9 @@ impl RealApiClient {
                     let resp = resp.error_for_status().map_err(|e| {
                         format!("{} 请求失败: status={}, err={}", action, status, e)
                     })?;
-                    let text = resp
-                        .text()
-                        .await
-                        .map_err(|e| format!("{} 读取响应失败: {}", action, e))?;
-                    eprintln!(
-                        "[http] {} 响应: status={}, body={}",
-                        action, status, text
-                    );
+                    let text =
+                        resp.text().await.map_err(|e| format!("{} 读取响应失败: {}", action, e))?;
+                    eprintln!("[http] {} 响应: status={}, body={}", action, status, text);
                     let envelope = serde_json::from_str::<ApiEnvelope<T>>(&text)
                         .map_err(|e| format!("{} 解析失败: {}, raw={}", action, e, text))?;
                     let _ = envelope.service_code;
