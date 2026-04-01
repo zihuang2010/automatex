@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use reqwest::Method;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use super::types::*;
@@ -16,6 +17,8 @@ pub struct RealApiClient {
     base_url: String,
 }
 
+static NEXT_HTTP_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+
 impl RealApiClient {
     pub fn new(base_url: &str) -> Self {
         eprintln!("[http] 真实模式启用: {}", base_url);
@@ -26,6 +29,8 @@ impl RealApiClient {
             .timeout(std::time::Duration::from_secs(constants::timing::HTTP_REQUEST_TIMEOUT_SECS))
             .tcp_keepalive(Some(std::time::Duration::from_secs(30)))
             .pool_idle_timeout(Some(std::time::Duration::from_secs(90)))
+            .pool_max_idle_per_host(8)
+            .user_agent(format!("automatex/{}", env!("CARGO_PKG_VERSION")))
             .build()
             .unwrap_or_else(|e| {
                 eprintln!("[http] 构建 reqwest client 失败，退回默认配置: {}", e);
@@ -45,18 +50,22 @@ impl RealApiClient {
         T: serde::de::DeserializeOwned + Default,
     {
         const MAX_ATTEMPTS: usize = 3;
+        let request_id = NEXT_HTTP_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
 
         for attempt in 1..=MAX_ATTEMPTS {
             let url = format!("{}/{}", self.base_url, path.trim_start_matches('/'));
             let mut request = self.client.request(method.clone(), &url);
             if let Some(ref payload) = body {
                 eprintln!(
-                    "[http] {} 请求: method={}, url={}, body={}",
-                    action, method, url, payload
+                    "[http][{}] {} 请求: method={}, url={}, body={}",
+                    request_id, action, method, url, payload
                 );
                 request = request.json(payload);
             } else {
-                eprintln!("[http] {} 请求: method={}, url={}, body=<empty>", action, method, url);
+                eprintln!(
+                    "[http][{}] {} 请求: method={}, url={}, body=<empty>",
+                    request_id, action, method, url
+                );
             }
 
             let started_at = Instant::now();
@@ -70,7 +79,8 @@ impl RealApiClient {
                             * attempt as u64
                             * attempt as u64;
                         eprintln!(
-                            "[http] {} 服务端错误，准备重试: status={}, attempt={}/{}, elapsed_ms={}, backoff_ms={}",
+                            "[http][{}] {} 服务端错误，准备重试: status={}, attempt={}/{}, elapsed_ms={}, backoff_ms={}",
+                            request_id,
                             action,
                             status,
                             attempt,
@@ -85,7 +95,8 @@ impl RealApiClient {
                     let text =
                         resp.text().await.map_err(|e| format!("{} 读取响应失败: {}", action, e))?;
                     eprintln!(
-                        "[http] {} 响应: status={}, elapsed_ms={}, body={}",
+                        "[http][{}] {} 响应: status={}, elapsed_ms={}, body={}",
+                        request_id,
                         action,
                         status,
                         started_at.elapsed().as_millis(),
@@ -120,7 +131,8 @@ impl RealApiClient {
                             * attempt as u64
                             * attempt as u64;
                         eprintln!(
-                            "[http] {} 传输失败，准备重试: err={}, attempt={}/{}, elapsed_ms={}, backoff_ms={}",
+                            "[http][{}] {} 传输失败，准备重试: err={}, attempt={}/{}, elapsed_ms={}, backoff_ms={}",
+                            request_id,
                             action,
                             err,
                             attempt,

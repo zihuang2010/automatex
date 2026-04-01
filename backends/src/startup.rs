@@ -12,6 +12,18 @@ use tauri::Emitter;
 
 use crate::{constants, engine::TaskEngine, http, storage, task_sync, utils};
 
+fn emit_startup_status(
+    app_handle: &tauri::AppHandle,
+    phase: &str,
+    detail: Option<&str>,
+) {
+    let status = match detail {
+        Some(detail) if !detail.is_empty() => format!("{}:{}", phase, detail),
+        _ => phase.to_string(),
+    };
+    let _ = app_handle.emit(constants::tauri_event::STARTUP_SYNC_STATUS, status);
+}
+
 /// 确保 DB 中存在 mqtt_client_id，不存在则基于机器指纹生成并持久化
 pub(crate) async fn ensure_client_id(db: &storage::Database) -> String {
     use constants::setting_key;
@@ -105,6 +117,7 @@ pub(crate) async fn startup_sync_tasks(
 
     if synced_phones.is_empty() {
         eprintln!("[startup] 无已绑定手机号，通知前端跳转绑定页面");
+        emit_startup_status(app_handle, "ready", Some("no-phones"));
         let _ = app_handle.emit(
             tauri_event::REQUIRE_PHONE_BIND,
             serde_json::json!({
@@ -116,7 +129,7 @@ pub(crate) async fn startup_sync_tasks(
     }
 
     eprintln!("[startup] 检测到已绑定手机号: {:?}, 验证有效性...", synced_phones);
-    let _ = app_handle.emit(tauri_event::STARTUP_SYNC_STATUS, "syncing");
+    emit_startup_status(app_handle, "syncing", Some("binding"));
 
     let bind_req = http::PhoneBindRequest {
         client_id: client_id.to_string(),
@@ -127,6 +140,7 @@ pub(crate) async fn startup_sync_tasks(
     match http.bind_phones(&bind_req).await {
         Ok(bind_resp) => {
             if !bind_resp.conflicts.is_empty() {
+                emit_startup_status(app_handle, "syncing", Some("conflicts"));
                 let conflict_phones = task_sync::bind_conflict_phones(&bind_resp);
                 eprintln!(
                     "[startup] 检测到异地登录冲突: {:?}, 清理冲突任务并保留无冲突任务",
@@ -143,7 +157,7 @@ pub(crate) async fn startup_sync_tasks(
                     Ok(count) => count,
                     Err(e) => {
                         eprintln!("[startup] 冲突态任务拉取失败: {}", e);
-                        let _ = app_handle.emit(tauri_event::STARTUP_SYNC_STATUS, "error");
+                        emit_startup_status(app_handle, "error", Some("conflict-fetch"));
                         return;
                     },
                 };
@@ -163,7 +177,7 @@ pub(crate) async fn startup_sync_tasks(
                     "[startup] 启动同步结束: elapsed_ms={}",
                     started_at.elapsed().as_millis()
                 );
-                let _ = app_handle.emit(tauri_event::STARTUP_SYNC_STATUS, "done");
+                emit_startup_status(app_handle, "done", Some("conflicts"));
                 return;
             }
 
@@ -174,6 +188,7 @@ pub(crate) async fn startup_sync_tasks(
                 .unwrap_or(true)
             {
                 eprintln!("[startup] 所有手机号已失效，通知前端跳转绑定页面");
+                emit_startup_status(app_handle, "ready", Some("all-expired"));
                 let _ = app_handle.emit(
                     tauri_event::REQUIRE_PHONE_BIND,
                     serde_json::json!({
@@ -183,6 +198,7 @@ pub(crate) async fn startup_sync_tasks(
                 );
             } else {
                 eprintln!("[startup] 有效手机号: {:?}, 拉取最新任务...", synced_phones);
+                emit_startup_status(app_handle, "syncing", Some("fetching"));
 
                 match task_sync::load_remote_tasks_by_ids(
                     http,
@@ -203,7 +219,7 @@ pub(crate) async fn startup_sync_tasks(
                             count,
                             started_at.elapsed().as_millis()
                         );
-                        let _ = app_handle.emit(tauri_event::STARTUP_SYNC_STATUS, "done");
+                        emit_startup_status(app_handle, "done", Some("synced"));
                     },
                     Err(e) => {
                         eprintln!(
@@ -211,7 +227,7 @@ pub(crate) async fn startup_sync_tasks(
                             e,
                             started_at.elapsed().as_millis()
                         );
-                        let _ = app_handle.emit(tauri_event::STARTUP_SYNC_STATUS, "error");
+                        emit_startup_status(app_handle, "error", Some("fetch"));
                     },
                 }
             }
@@ -222,7 +238,7 @@ pub(crate) async fn startup_sync_tasks(
                 e,
                 started_at.elapsed().as_millis()
             );
-            let _ = app_handle.emit(tauri_event::STARTUP_SYNC_STATUS, "error");
+            emit_startup_status(app_handle, "error", Some("bind"));
         },
     }
 }

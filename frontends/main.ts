@@ -33,6 +33,7 @@ import {
   needsTransition,
   showPhoneBindFlow,
   showTransition,
+  updateStartupStatusUI,
 } from './transition';
 import { $, showToast } from './utils';
 
@@ -84,6 +85,7 @@ function initTheme() {
 function splash() {
   const el = $('#splash')!;
   const app = $('#app')!;
+  updateStartupStatusUI('booting:prepare');
   const timeEl = el.querySelector('.splash-time');
   if (timeEl) {
     const now = new Date();
@@ -620,6 +622,12 @@ window.addEventListener('DOMContentLoaded', () => {
         if (phones.length > 0) {
           openPhoneBindPage('empty-tasks').catch(console.error);
         }
+      }),
+    );
+
+    appUnlisteners.push(
+      await listen<string>('startup-sync-status', event => {
+        updateStartupStatusUI(event.payload);
       }),
     );
 

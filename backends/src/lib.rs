@@ -18,7 +18,7 @@ use mqtt::MqttManager;
 use startup::{check_daily_reset, ensure_client_id, ensure_mqtt_defaults, startup_sync_tasks};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{Listener, Manager};
+use tauri::{Emitter, Listener, Manager};
 
 // ─── State ─────────────────────────────────────────────────────
 
@@ -73,6 +73,7 @@ pub fn run() {
                 let device_ready_clone = Arc::clone(&device_ready);
                 tauri::async_runtime::spawn(async move {
                     let rt = tokio::runtime::Handle::current();
+                    let _ = app_handle.emit(constants::tauri_event::STARTUP_SYNC_STATUS, "booting:prepare");
 
                     // 二进制完整性校验（启动时执行一次）
                     connection::adb::verify_sidecar_integrity();
@@ -81,24 +82,30 @@ pub fn run() {
                     connection::adb::resolve_adb_port();
 
                     check_daily_reset(&db_init).await;
+                    let _ =
+                        app_handle.emit(constants::tauri_event::STARTUP_SYNC_STATUS, "booting:database");
 
-                    task_provider::sync_task_cache(&db_init).await;
-                    db_init.cleanup_orphan_runs().await;
-                    db_init.mark_offline_except(Vec::new()).await;
-                    db_init.cleanup_stale_assignments().await;
+                    tokio::join!(
+                        db_init.cleanup_orphan_runs(),
+                        db_init.mark_offline_except(Vec::new()),
+                        db_init.cleanup_stale_assignments(),
+                    );
 
                     let client_id = ensure_client_id(&db_init).await;
                     ensure_mqtt_defaults(&db_init).await;
+                    let startup_settings = db_init.get_all_settings().await;
+                    let _ = app_handle
+                        .emit(constants::tauri_event::STARTUP_SYNC_STATUS, "booting:http-client");
 
-                    let http_base_url = db_init
-                        .get_setting(constants::setting_key::API_BASE_URL)
-                        .await
+                    let http_base_url = startup_settings
+                        .get(constants::setting_key::API_BASE_URL)
+                        .cloned()
                         .unwrap_or_default();
                     let http_client: Arc<dyn http::ApiClient> = if http_base_url.is_empty() {
                         if task_provider::mock_enabled() {
                             let mock = http::MockApiClient::new();
                             if let Some(scenario) =
-                                db_init.get_setting(constants::setting_key::MOCK_SCENARIO).await
+                                startup_settings.get(constants::setting_key::MOCK_SCENARIO)
                             {
                                 if !scenario.is_empty() {
                                     mock.set_mock_scenario(&scenario);
@@ -115,6 +122,18 @@ pub fn run() {
                     };
                     let _ = http_cell.set(Arc::clone(&http_client));
 
+                    // 设备监控尽早启动，与引擎构建和任务同步并行。
+                    monitor::spawn_device_monitor(
+                        app_handle.clone(),
+                        Arc::clone(&db_init),
+                        Arc::clone(&device_ready_clone),
+                        rt.clone(),
+                    );
+                    let _ =
+                        app_handle.emit(constants::tauri_event::STARTUP_SYNC_STATUS, "booting:monitor");
+
+                    let _ =
+                        app_handle.emit(constants::tauri_event::STARTUP_SYNC_STATUS, "booting:engine");
                     let eng = TaskEngine::new(
                         Arc::clone(&db_init),
                         Arc::clone(&http_client),
@@ -124,28 +143,41 @@ pub fn run() {
                     let _ = engine_cell.set(Arc::clone(&eng));
 
                     eprintln!("[startup] 异步初始化完成，引擎已就绪");
+                    let _ =
+                        app_handle.emit(constants::tauri_event::STARTUP_SYNC_STATUS, "booting:engine-ready");
 
-                    // 启动设备监控
-                    monitor::spawn_device_monitor(
-                        app_handle.clone(),
-                        Arc::clone(&db_init),
-                        Arc::clone(&device_ready_clone),
-                        rt.clone(),
-                    );
+                    // mock 任务缓存仅用于开发/演示，不阻塞生产启动主链。
+                    {
+                        let db_cache = Arc::clone(&db_init);
+                        let eng_cache = Arc::clone(&eng);
+                        tauri::async_runtime::spawn(async move {
+                            let before = db_cache.load_all_task_defs().await.len();
+                            task_provider::sync_task_cache(&db_cache).await;
+                            let after = db_cache.load_all_task_defs().await.len();
+                            if after > before {
+                                eprintln!(
+                                    "[startup] 后台 mock 任务缓存写入完成: before={}, after={}",
+                                    before, after
+                                );
+                                eng_cache.reload_tasks().await;
+                                eng_cache.force_emit_update().await;
+                            }
+                        });
+                    }
 
-                    let db_mqtt = Arc::clone(&db_init);
+                    let startup_settings_for_mqtt = startup_settings.clone();
                     let app_mqtt = app_handle.clone();
                     let mqtt_connect = async move {
-                        let startup_settings = db_mqtt.get_all_settings().await;
                         let has_host =
-                            startup_settings.contains_key(constants::setting_key::MQTT_HOST);
-                        let auto_off = startup_settings
+                            startup_settings_for_mqtt.contains_key(constants::setting_key::MQTT_HOST);
+                        let auto_off = startup_settings_for_mqtt
                             .get(constants::setting_key::MQTT_AUTO_CONNECT)
                             .map(|v| v == "false")
                             .unwrap_or(false);
 
                         if has_host && !auto_off {
-                            let config = crate::commands::build_mqtt_config_from(&startup_settings);
+                            let config =
+                                crate::commands::build_mqtt_config_from(&startup_settings_for_mqtt);
                             tokio::time::sleep(Duration::from_millis(500)).await;
                             eprintln!(
                                 "[startup] MQTT 自动连接: {}:{}",
@@ -165,6 +197,7 @@ pub fn run() {
                         startup_sync_tasks(&db_init, &http_client, &eng, &client_id, &app_handle),
                         mqtt_connect
                     );
+                    let _ = app_handle.emit(constants::tauri_event::STARTUP_SYNC_STATUS, "ready");
                 });
             }
 
