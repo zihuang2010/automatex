@@ -168,7 +168,10 @@ pub fn summarize_task(task: &Task) -> TaskSummary {
         active_city_name,
         current_city_name: task.current_city_name.clone(),
         current_keyword_name: task.current_keyword_name.clone(),
+        interval_minute: task.interval_minute,
         round_no: task.round_no,
+        // next_round_at 由引擎 event_loop 在 emit 时注入，这里默认 None
+        next_round_at: None,
     }
 }
 
@@ -333,6 +336,7 @@ fn build_task_batched(
         status: final_status,
         assigned_device,
         cities,
+        interval_minute: def.interval_minute,
         round_no,
         current_round_id,
         current_city_name,

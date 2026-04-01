@@ -26,6 +26,8 @@ pub struct Task {
     pub status: String, // "waiting" | "executing" | "paused" | "success" | "error"
     pub assigned_device: Option<String>,
     pub cities: Vec<TaskCity>,
+    /// 轮次间隔（分钟），>0 表示一轮完成后等待 N 分钟再开始下一轮
+    pub interval_minute: Option<i32>,
     /// 当天第几轮（0 = 尚未启动过）
     pub round_no: i32,
     /// 当前轮次 ID（用于内部关联，前端可忽略）
@@ -49,7 +51,11 @@ pub struct TaskSummary {
     pub active_city_name: Option<String>,
     pub current_city_name: Option<String>,
     pub current_keyword_name: Option<String>,
+    /// 轮次间隔（分钟）
+    pub interval_minute: Option<i32>,
     pub round_no: i32,
+    /// 下一轮预计开始时间（Unix 时间戳），前端展示倒计时
+    pub next_round_at: Option<i64>,
 }
 
 // ─── 任务定义格式（Mock / HTTP 共用）───────────────────────────────

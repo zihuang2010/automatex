@@ -496,3 +496,45 @@ pub(crate) fn adb_cmd(serial: &str, args: &[&str]) -> Result<String, String> {
         Err(format!("执行失败: {}", stderr.trim()))
     }
 }
+
+/// 设备震动警告（10次短震）
+///
+/// 异步 fire-and-forget：spawn 独立 task 执行，不阻塞引擎事件循环。
+/// 震动失败静默忽略（设备可能已离线）。
+///
+/// 模式：200ms 震 → 150ms 停 × 10 次 ≈ 3.5 秒
+pub fn vibrate_device_alert(serial: &str) {
+    let serial = serial.to_string();
+    tokio::spawn(async move {
+        const VIBRATE_MS: u64 = 200;
+        const PAUSE_MS: u64 = 150;
+        const REPEAT: usize = 10;
+
+        for i in 0..REPEAT {
+            // 兼容 Android 8+：优先 cmd vibrator vibrate，回退 service call
+            let result = adb_shell_async(
+                &serial,
+                &format!("cmd vibrator vibrate {}", VIBRATE_MS),
+            )
+            .await;
+
+            if let Err(ref e) = result {
+                // 首次失败时打印日志，后续静默
+                if i == 0 {
+                    eprintln!(
+                        "[adb] 设备 {} 震动命令失败（设备可能已离线）: {}",
+                        serial, e
+                    );
+                }
+                return; // 设备不可达，提前退出避免无意义重试
+            }
+
+            if i < REPEAT - 1 {
+                tokio::time::sleep(std::time::Duration::from_millis(PAUSE_MS + VIBRATE_MS)).await;
+            }
+        }
+
+        eprintln!("[adb] 设备 {} 震动警告完成 ({}次)", serial, REPEAT);
+    });
+}
+

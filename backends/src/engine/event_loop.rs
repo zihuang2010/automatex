@@ -256,6 +256,13 @@ fn build_summaries(tasks: &[Task]) -> Vec<TaskSummary> {
     tasks.iter().map(summarize_task).collect()
 }
 
+/// interval_waiting 判断：task 处于 executing 且所有关键词都是 pending
+fn is_all_keywords_pending(task: &Task) -> bool {
+    task.cities.iter().all(|city| {
+        city.keywords.iter().all(|kw| kw.status == keyword_status::PENDING)
+    })
+}
+
 fn compute_summaries_hash(summaries: &[TaskSummary]) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     summaries.len().hash(&mut hasher);
@@ -268,6 +275,8 @@ fn compute_summaries_hash(summaries: &[TaskSummary]) -> u64 {
         summary.progress.hash(&mut hasher);
         summary.current_city_name.hash(&mut hasher);
         summary.current_keyword_name.hash(&mut hasher);
+        summary.round_no.hash(&mut hasher);
+        summary.next_round_at.hash(&mut hasher);
     }
     hasher.finish()
 }
@@ -303,6 +312,9 @@ async fn persist_runtime_state(s: &EngineState, task_id: &str) {
             .map(|run| {
                 if run.active_worker.is_some() {
                     "executing"
+                } else if run.next_wakeup_at.is_some() && is_all_keywords_pending(task) {
+                    // 所有关键词都是 pending + 有 wakeup = 轮次间隔等待
+                    "interval_waiting"
                 } else if run.next_wakeup_at.is_some() {
                     "scheduled"
                 } else {
@@ -520,6 +532,35 @@ async fn dispatch_due_wakeups(s: &mut EngineState) {
             continue;
         }
 
+        // interval_waiting 唤醒：恢复执行游标并创建新 run 记录
+        let is_interval_wakeup = s
+            .tasks
+            .iter()
+            .find(|t| t.id == wakeup.task_id)
+            .map(|t| {
+                t.status == task_status::EXECUTING && is_all_keywords_pending(t)
+            })
+            .unwrap_or(false);
+
+        if is_interval_wakeup {
+            // 恢复执行游标
+            if let Some(task) = s.tasks.iter_mut().find(|t| t.id == wakeup.task_id) {
+                let _ = ensure_execution_cursor(task, true);
+            }
+            // 创建新的 task_run 记录
+            if let Some(runtime) = s.running.get(&wakeup.task_id) {
+                let _ = s.storage.start_task_run(
+                    &wakeup.task_id,
+                    &runtime.device_serial,
+                    runtime.round_id,
+                ).await;
+            }
+            eprintln!(
+                "[engine] interval_waiting 唤醒: task={}",
+                wakeup.task_id
+            );
+        }
+
         spawn_task_worker(s, &wakeup.task_id);
         persist_runtime_state(s, &wakeup.task_id).await;
     }
@@ -531,7 +572,8 @@ async fn emit_update(s: &mut EngineState) {
         return;
     }
 
-    let summaries = build_summaries(&s.tasks);
+    let mut summaries = build_summaries(&s.tasks);
+    inject_next_round_at(s, &mut summaries);
     let hash = compute_summaries_hash(&summaries);
     if hash == s.last_hash {
         return;
@@ -546,11 +588,21 @@ async fn emit_update(s: &mut EngineState) {
 
 async fn force_emit(s: &mut EngineState) {
     s.last_emit = StdInstant::now();
-    let summaries = build_summaries(&s.tasks);
+    let mut summaries = build_summaries(&s.tasks);
+    inject_next_round_at(s, &mut summaries);
     s.last_hash = compute_summaries_hash(&summaries);
     let _ = s.snapshot_tx.send(summaries.clone());
     let snapshot = TaskSummarySnapshotRef { tasks: summaries.as_slice() };
     let _ = s.app_handle.emit(constants::tauri_event::TASK_UPDATE, &snapshot);
+}
+
+/// 将 interval_waiting 的 next_wakeup_at 注入到 TaskSummary.next_round_at
+fn inject_next_round_at(s: &EngineState, summaries: &mut [TaskSummary]) {
+    for summary in summaries.iter_mut() {
+        if let Some(runtime) = s.running.get(&summary.id) {
+            summary.next_round_at = wakeup_unix(runtime.next_wakeup_at);
+        }
+    }
 }
 
 async fn handle_start(s: &mut EngineState, task_id: &str) -> Result<(), String> {
@@ -927,7 +979,19 @@ async fn handle_success_outcome(
         schedule_task(s, task_id, next_delay_ms);
         persist_runtime_state(s, task_id).await;
     } else {
-        complete_task_success(s, task_id, round_id, started_at).await;
+        // 所有关键词执行完毕 — 检查是否需要循环
+        let interval = s
+            .tasks
+            .iter()
+            .find(|t| t.id == task_id)
+            .and_then(|t| t.interval_minute)
+            .unwrap_or(0);
+
+        if interval > 0 {
+            complete_round_with_interval(s, task_id, round_id, started_at, interval).await;
+        } else {
+            complete_task_success(s, task_id, round_id, started_at).await;
+        }
     }
 
     Ok(())
@@ -945,6 +1009,82 @@ async fn complete_task_success(s: &mut EngineState, task_id: &str, round_id: i64
     s.storage
         .save_task_state(task_id, task_status::SUCCESS, None, None, None, None, 0, None, None, None)
         .await;
+}
+
+/// 一轮完成 + interval_minute > 0：重置进度、创建新轮次、注册延时唤醒
+///
+/// 内存安全：仅修改 task.cities 内的字段（原地覆写），不扩容 Vec
+/// 性能：单次 DB 写入 clear_task_progress + create_round，无 N+1
+async fn complete_round_with_interval(
+    s: &mut EngineState,
+    task_id: &str,
+    round_id: i64,
+    started_at: i64,
+    interval_minutes: i32,
+) {
+    // 1. 结束当前轮次和 run
+    s.storage.finish_round(round_id, round_status::COMPLETED).await;
+    s.storage.finish_task_run(task_id, started_at, run_status::COMPLETED).await;
+
+    // 2. 原地重置所有城市/关键词进度为 pending（零分配）
+    if let Some(task) = s.tasks.iter_mut().find(|t| t.id == task_id) {
+        for city in &mut task.cities {
+            city.status = city_status::PENDING.to_string();
+            city.progress = 0;
+            city.done = 0;
+            for keyword in &mut city.keywords {
+                keyword.status = keyword_status::PENDING.to_string();
+            }
+        }
+        clear_execution_cursor(task);
+        // status 保持 EXECUTING — 设备不释放
+    }
+
+    // 3. 清除 DB 中本轮的关键词进度（新轮次从零开始）
+    s.storage.clear_task_progress(task_id).await;
+
+    // 4. 创建新轮次
+    let new_round_id = s.storage.create_round(task_id).await.unwrap_or(0);
+    if new_round_id == 0 {
+        eprintln!(
+            "[engine] 创建新轮次失败: task={}, 标记为 error",
+            task_id
+        );
+        mark_task_error(
+            s,
+            task_id,
+            "创建新轮次失败（数据库错误）".to_string(),
+            false,
+            run_status::STOPPED,
+        )
+        .await;
+        return;
+    }
+
+    // 5. 更新 runtime：新轮次 round_id，重置 attempt
+    if let Some(runtime) = s.running.get_mut(task_id) {
+        runtime.round_id = new_round_id;
+        runtime.attempt = 0;
+        runtime.last_error = None;
+        // started_at 保留原值（设备连续占用），下次唤醒时 start_task_run 会更新
+    }
+
+    // 6. 注册延时 wakeup — interval_minutes 转毫秒
+    // 防御性上限：最大 24 小时，避免整数溢出
+    let clamped_minutes = interval_minutes.max(1).min(1440) as u64;
+    let delay_ms = clamped_minutes * 60 * 1000;
+    schedule_task(s, task_id, delay_ms);
+
+    // 7. 持久化 — runtime_status 将被 persist_runtime_state 推断为 "interval_waiting"
+    persist_runtime_state(s, task_id).await;
+
+    eprintln!(
+        "[engine] task={} 第 {} 轮完成，等待 {} 分钟后开始下一轮 (round_id={})",
+        task_id,
+        s.tasks.iter().find(|t| t.id == task_id).map(|t| t.round_no).unwrap_or(0),
+        interval_minutes,
+        new_round_id,
+    );
 }
 
 async fn mark_task_error(
@@ -995,6 +1135,8 @@ async fn mark_task_error(
     if flag_device {
         if let Some(serial) = device_serial.as_deref() {
             s.storage.flag_device(serial).await;
+            // 风控震动警告：10次短震（异步 fire-and-forget，不阻塞引擎）
+            crate::connection::adb::vibrate_device_alert(serial);
             let _ = s.app_handle.emit(
                 constants::tauri_event::RISK_CONTROL,
                 serde_json::json!({
@@ -1257,6 +1399,7 @@ mod tests {
                     }],
                 },
             ],
+            interval_minute: None,
             round_no: 0,
             current_round_id: None,
             current_city_name: None,
@@ -1286,5 +1429,36 @@ mod tests {
         assert_eq!(cursor, Some((0, 1)));
         assert_eq!(task.current_keyword_name.as_deref(), Some("k2"));
         assert_eq!(task.cities[0].keywords[1].status, keyword_status::RUN);
+    }
+
+    #[test]
+    fn is_all_keywords_pending_fresh_task() {
+        let task = make_task();
+        assert!(is_all_keywords_pending(&task));
+    }
+
+    #[test]
+    fn is_all_keywords_pending_with_done() {
+        let mut task = make_task();
+        task.cities[0].keywords[0].status = keyword_status::OK.to_string();
+        assert!(!is_all_keywords_pending(&task));
+    }
+
+    #[test]
+    fn is_all_keywords_pending_after_reset() {
+        let mut task = make_task();
+        // 模拟一轮完成后重置
+        task.cities[0].keywords[0].status = keyword_status::OK.to_string();
+        task.cities[0].keywords[1].status = keyword_status::OK.to_string();
+        task.cities[1].keywords[0].status = keyword_status::OK.to_string();
+        assert!(!is_all_keywords_pending(&task));
+
+        // 重置所有关键词
+        for city in &mut task.cities {
+            for keyword in &mut city.keywords {
+                keyword.status = keyword_status::PENDING.to_string();
+            }
+        }
+        assert!(is_all_keywords_pending(&task));
     }
 }
