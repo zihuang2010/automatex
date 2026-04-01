@@ -73,7 +73,8 @@ pub fn run() {
                 let device_ready_clone = Arc::clone(&device_ready);
                 tauri::async_runtime::spawn(async move {
                     let rt = tokio::runtime::Handle::current();
-                    let _ = app_handle.emit(constants::tauri_event::STARTUP_SYNC_STATUS, "booting:prepare");
+                    let _ = app_handle
+                        .emit(constants::tauri_event::STARTUP_SYNC_STATUS, "booting:prepare");
 
                     // 二进制完整性校验（启动时执行一次）
                     connection::adb::verify_sidecar_integrity();
@@ -82,8 +83,8 @@ pub fn run() {
                     connection::adb::resolve_adb_port();
 
                     check_daily_reset(&db_init).await;
-                    let _ =
-                        app_handle.emit(constants::tauri_event::STARTUP_SYNC_STATUS, "booting:database");
+                    let _ = app_handle
+                        .emit(constants::tauri_event::STARTUP_SYNC_STATUS, "booting:database");
 
                     tokio::join!(
                         db_init.cleanup_orphan_runs(),
@@ -129,11 +130,11 @@ pub fn run() {
                         Arc::clone(&device_ready_clone),
                         rt.clone(),
                     );
-                    let _ =
-                        app_handle.emit(constants::tauri_event::STARTUP_SYNC_STATUS, "booting:monitor");
+                    let _ = app_handle
+                        .emit(constants::tauri_event::STARTUP_SYNC_STATUS, "booting:monitor");
 
-                    let _ =
-                        app_handle.emit(constants::tauri_event::STARTUP_SYNC_STATUS, "booting:engine");
+                    let _ = app_handle
+                        .emit(constants::tauri_event::STARTUP_SYNC_STATUS, "booting:engine");
                     let eng = TaskEngine::new(
                         Arc::clone(&db_init),
                         Arc::clone(&http_client),
@@ -143,8 +144,8 @@ pub fn run() {
                     let _ = engine_cell.set(Arc::clone(&eng));
 
                     eprintln!("[startup] 异步初始化完成，引擎已就绪");
-                    let _ =
-                        app_handle.emit(constants::tauri_event::STARTUP_SYNC_STATUS, "booting:engine-ready");
+                    let _ = app_handle
+                        .emit(constants::tauri_event::STARTUP_SYNC_STATUS, "booting:engine-ready");
 
                     // mock 任务缓存仅用于开发/演示，不阻塞生产启动主链。
                     {
@@ -168,8 +169,8 @@ pub fn run() {
                     let startup_settings_for_mqtt = startup_settings.clone();
                     let app_mqtt = app_handle.clone();
                     let mqtt_connect = async move {
-                        let has_host =
-                            startup_settings_for_mqtt.contains_key(constants::setting_key::MQTT_HOST);
+                        let has_host = startup_settings_for_mqtt
+                            .contains_key(constants::setting_key::MQTT_HOST);
                         let auto_off = startup_settings_for_mqtt
                             .get(constants::setting_key::MQTT_AUTO_CONNECT)
                             .map(|v| v == "false")

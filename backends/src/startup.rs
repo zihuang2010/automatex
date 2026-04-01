@@ -12,11 +12,7 @@ use tauri::Emitter;
 
 use crate::{constants, engine::TaskEngine, http, storage, task_sync, utils};
 
-fn emit_startup_status(
-    app_handle: &tauri::AppHandle,
-    phase: &str,
-    detail: Option<&str>,
-) {
+fn emit_startup_status(app_handle: &tauri::AppHandle, phase: &str, detail: Option<&str>) {
     let status = match detail {
         Some(detail) if !detail.is_empty() => format!("{}:{}", phase, detail),
         _ => phase.to_string(),
