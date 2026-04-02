@@ -168,7 +168,6 @@ export function loadChainForDevice(_serial: string) {
             <div class="flex-1 h-[3px] bg-violet-100 rounded-full overflow-hidden">
               <div class="interval-countdown-bar-fill h-full bg-violet-400 rounded-full" style="width:${remainPct}%"></div>
             </div>
-            <span class="text-[10px] font-semibold text-violet-400">第${q.round_no + 1}轮</span>
           </div>
         </div>
       </div>`;

@@ -21,153 +21,9 @@ export interface PhoneBindFlowOptions {
 
 let activePhoneBindPromise: Promise<void> | null = null;
 let activePhoneBindCleanup: (() => void) | null = null;
-let lastStartupStatus = 'booting:prepare';
-
-type StartupStatusView = {
-  splash: string;
-  transition: string;
-  transitionTone: string;
-};
-
-function resolveStartupStatusView(status: string): StartupStatusView {
-  const [phase, detail = ''] = status.split(':', 2);
-  switch (`${phase}:${detail}`) {
-    case 'booting:prepare':
-      return {
-        splash: '启动准备中',
-        transition: '正在准备运行环境',
-        transitionTone: 'info',
-      };
-    case 'booting:database':
-      return {
-        splash: '正在加载本地数据库',
-        transition: '正在校验本地数据与运行状态',
-        transitionTone: 'info',
-      };
-    case 'booting:http-client':
-      return {
-        splash: '正在初始化 HTTP 通道',
-        transition: '正在建立远端接口连接能力',
-        transitionTone: 'info',
-      };
-    case 'booting:monitor':
-      return {
-        splash: '正在启动设备监控',
-        transition: '正在接入设备状态与投屏能力',
-        transitionTone: 'info',
-      };
-    case 'booting:engine':
-      return {
-        splash: '正在初始化任务引擎',
-        transition: '正在加载任务调度内核',
-        transitionTone: 'info',
-      };
-    case 'booting:engine-ready':
-      return {
-        splash: '任务引擎已就绪',
-        transition: '任务引擎已就绪，正在进入同步阶段',
-        transitionTone: 'info',
-      };
-    case 'syncing:binding':
-      return {
-        splash: '正在校验已绑定手机号',
-        transition: '正在校验已绑定手机号的有效性',
-        transitionTone: 'info',
-      };
-    case 'syncing:fetching':
-      return {
-        splash: '正在拉取最新任务',
-        transition: '正在拉取最新任务并合并本地缓存',
-        transitionTone: 'info',
-      };
-    case 'syncing:conflicts':
-      return {
-        splash: '检测到账号冲突',
-        transition: '检测到部分手机号被其他客户端占用，正在整理可用任务',
-        transitionTone: 'warning',
-      };
-    case 'done:synced':
-      return {
-        splash: '启动同步完成',
-        transition: '任务与账号同步完成',
-        transitionTone: 'success',
-      };
-    case 'done:conflicts':
-      return {
-        splash: '存在绑定冲突',
-        transition: '可用任务已保留，请确认是否强制绑定冲突手机号',
-        transitionTone: 'warning',
-      };
-    case 'ready:no-phones':
-      return {
-        splash: '等待绑定手机号',
-        transition: '当前未绑定手机号，请先绑定后开始使用',
-        transitionTone: 'warning',
-      };
-    case 'ready:all-expired':
-      return {
-        splash: '绑定已失效',
-        transition: '已绑定手机号已失效，请重新绑定',
-        transitionTone: 'warning',
-      };
-    case 'ready:':
-    case 'ready':
-      return {
-        splash: '系统已就绪',
-        transition: '系统已完成初始化',
-        transitionTone: 'success',
-      };
-    case 'error:bind':
-      return {
-        splash: '手机号校验失败',
-        transition: '手机号校验失败，当前已回退到本地缓存',
-        transitionTone: 'error',
-      };
-    case 'error:fetch':
-      return {
-        splash: '任务拉取失败',
-        transition: '任务拉取失败，当前已回退到本地缓存',
-        transitionTone: 'error',
-      };
-    case 'error:conflict-fetch':
-      return {
-        splash: '冲突任务整理失败',
-        transition: '冲突任务整理失败，请稍后重试',
-        transitionTone: 'error',
-      };
-    default:
-      return {
-        splash: status,
-        transition: status,
-        transitionTone:
-          phase === 'error' ? 'error' : phase === 'done' || phase === 'ready' ? 'success' : 'info',
-      };
-  }
-}
-
-function applyStartupStatusToDom(view: StartupStatusView) {
-  const splashStatusEl = $('#splash-startup-status');
-  if (splashStatusEl) {
-    splashStatusEl.textContent = view.splash;
-  }
-
-  const transitionStatusEl = $('#transition-startup-status');
-  if (transitionStatusEl) {
-    transitionStatusEl.textContent = view.transition;
-    transitionStatusEl.className =
-      view.transitionTone === 'success'
-        ? 'mt-1 inline-flex items-center rounded-full border border-emerald-100 bg-emerald-50 px-2.5 py-1 font-mono text-[11px] font-semibold tracking-wide text-emerald-700'
-        : view.transitionTone === 'warning'
-          ? 'mt-1 inline-flex items-center rounded-full border border-amber-100 bg-amber-50 px-2.5 py-1 font-mono text-[11px] font-semibold tracking-wide text-amber-700'
-          : view.transitionTone === 'error'
-            ? 'mt-1 inline-flex items-center rounded-full border border-rose-100 bg-rose-50 px-2.5 py-1 font-mono text-[11px] font-semibold tracking-wide text-rose-700'
-            : 'text-blue mt-1 inline-flex items-center rounded-full border border-blue-100 bg-blue-50 px-2.5 py-1 font-mono text-[11px] font-semibold tracking-wide';
-  }
-}
 
 export function updateStartupStatusUI(status: string): void {
-  lastStartupStatus = status || 'booting:prepare';
-  applyStartupStatusToDom(resolveStartupStatusView(lastStartupStatus));
+  void status;
 }
 
 /* ===== 手机号验证 ===== */
@@ -210,7 +66,6 @@ export async function getSyncedPhones(): Promise<string[]> {
 
 /** 显示过渡页，返回 Promise 在用户完成操作后 resolve */
 export function showTransition(): Promise<void> {
-  updateStartupStatusUI(lastStartupStatus);
   return showPhoneBindFlow();
 }
 
@@ -252,7 +107,6 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
         '系统将根据填写的号码自动匹配当前任务队列，请确保设备均已登录并处于在线状态。';
     if (submitTextEl) submitTextEl.textContent = options.submitLabel || '开始同步';
     textarea.value = initialPhones.join('\n');
-    applyStartupStatusToDom(resolveStartupStatusView(lastStartupStatus));
     hideError();
     if (conflictDetails.length > 0) {
       showError(

@@ -319,9 +319,7 @@ function buildHeader(
     const waitingExpired = countdown?.expired ?? true;
     const isPausedState = intervalPaused;
     const title = isPausedState ? '等待已暂停' : '等待执行下一轮';
-    const subtitle = waitingExpired
-      ? `第 <span class="font-mono font-bold">${summary.round_no + 1}</span> 轮 · 已到执行时间`
-      : `第 <span class="font-mono font-bold">${summary.round_no + 1}</span> 轮 · 间隔 ${summary.interval_minute} 分钟`;
+    const subtitle = waitingExpired ? '已到执行时间' : `间隔 ${summary.interval_minute} 分钟`;
     const bannerCls = isPausedState
       ? 'bg-gradient-to-r from-amber-50 to-orange-50 border-amber-200/60'
       : 'bg-gradient-to-r from-violet-50 to-indigo-50 border-violet-200/60';

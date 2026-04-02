@@ -359,6 +359,14 @@ fn wakeup_unix(next_wakeup_at: Option<TokioInstant>) -> Option<i64> {
     })
 }
 
+async fn sync_task_round_no(s: &mut EngineState, task_id: &str, round_id: i64) {
+    let round_no = s.storage.get_round_no(round_id).await.unwrap_or(0);
+    if let Some(task) = s.tasks.iter_mut().find(|task| task.id == task_id) {
+        task.round_no = round_no;
+        task.current_round_id = Some(round_id);
+    }
+}
+
 async fn persist_runtime_state(s: &EngineState, task_id: &str) {
     let Some(task) = s.tasks.iter().find(|task| task.id == task_id) else {
         return;
@@ -677,6 +685,8 @@ async fn handle_start(s: &mut EngineState, task_id: &str) -> Result<(), String> 
 
     let task = s.tasks.iter_mut().find(|task| task.id == task_id).unwrap();
     task.status = task_status::EXECUTING.to_string();
+    task.runtime_status = Some("executing".to_string());
+    task.next_round_at = None;
     task.assigned_device = Some(serial.clone());
     let _ = ensure_execution_cursor(task, true);
 
@@ -690,6 +700,7 @@ async fn handle_start(s: &mut EngineState, task_id: &str) -> Result<(), String> 
             return Err("创建轮次失败（数据库错误），无法启动任务".into());
         },
     };
+    sync_task_round_no(s, task_id, round_id).await;
 
     let started_at = s.storage.start_task_run(task_id, &serial, round_id).await;
     s.running.insert(
@@ -754,20 +765,22 @@ async fn handle_pause(s: &mut EngineState, task_id: &str) -> Result<(), String> 
         s.storage.finish_task_run(task_id, run.started_at, run_status::PAUSED).await;
     }
 
+    let runtime_status_label = if was_interval_waiting {
+        "interval_paused" // 标记是从 interval_waiting 暂停的
+    } else {
+        "paused"
+    };
     if let Some(task) = s.tasks.iter_mut().find(|task| task.id == task_id) {
         rollback_running_keywords(task);
         task.status = task_status::PAUSED.to_string();
+        task.runtime_status = Some(runtime_status_label.to_string());
+        task.next_round_at = saved_wakeup;
         task.assigned_device = None;
         let _ = ensure_execution_cursor(task, false);
     }
 
     let task = s.tasks.iter().find(|task| task.id == task_id).unwrap();
     let cursor = task_state_cursor(task);
-    let runtime_status_label = if was_interval_waiting {
-        "interval_paused" // 标记是从 interval_waiting 暂停的
-    } else {
-        "paused"
-    };
     s.storage
         .save_task_state(
             task_id,
@@ -814,6 +827,9 @@ async fn handle_resume(s: &mut EngineState, task_id: &str) -> Result<(), String>
     let task = s.tasks.iter_mut().find(|task| task.id == task_id).unwrap();
     rollback_running_keywords(task);
     task.status = task_status::EXECUTING.to_string();
+    task.runtime_status =
+        Some(if still_waiting { "interval_waiting" } else { "executing" }.to_string());
+    task.next_round_at = if still_waiting { saved_wakeup_at } else { None };
     task.assigned_device = Some(serial.clone());
     // 关键：还在等待期内时不标记关键词为 RUN
     // 否则 is_all_keywords_pending 返回 false → inject_next_round_at 不注入 → 前端不显示倒计时
@@ -832,6 +848,7 @@ async fn handle_resume(s: &mut EngineState, task_id: &str) -> Result<(), String>
             .await
             .ok_or_else(|| "创建轮次失败，无法继续任务".to_string())?,
     };
+    sync_task_round_no(s, task_id, round_id).await;
 
     let started_at = s.storage.start_task_run(task_id, &serial, round_id).await;
     s.running.insert(
@@ -882,6 +899,8 @@ async fn handle_retry(s: &mut EngineState, task_id: &str) -> Result<(), String> 
 
     if let Some(mut fresh) = fresh {
         fresh.status = task_status::EXECUTING.to_string();
+        fresh.runtime_status = Some("executing".to_string());
+        fresh.next_round_at = None;
         fresh.assigned_device = Some(serial.clone());
         let _ = ensure_execution_cursor(&mut fresh, true);
         if let Some(pos) = s.tasks.iter().position(|task| task.id == task_id) {
@@ -896,6 +915,7 @@ async fn handle_retry(s: &mut EngineState, task_id: &str) -> Result<(), String> 
         .create_round(task_id)
         .await
         .ok_or_else(|| "创建轮次失败（数据库错误），无法重试任务".to_string())?;
+    sync_task_round_no(s, task_id, round_id).await;
     let started_at = s.storage.start_task_run(task_id, &serial, round_id).await;
 
     s.running.insert(
@@ -1112,6 +1132,8 @@ async fn handle_success_outcome(
 async fn complete_task_success(s: &mut EngineState, task_id: &str, round_id: i64, started_at: i64) {
     if let Some(task) = s.tasks.iter_mut().find(|task| task.id == task_id) {
         task.status = task_status::SUCCESS.to_string();
+        task.runtime_status = None;
+        task.next_round_at = None;
         task.assigned_device = None;
         clear_execution_cursor(task);
     }
@@ -1169,6 +1191,7 @@ async fn complete_round_with_interval(
         .await;
         return;
     }
+    sync_task_round_no(s, task_id, new_round_id).await;
 
     // 5. 更新 runtime：新轮次 round_id，重置 attempt
     if let Some(runtime) = s.running.get_mut(task_id) {
@@ -1183,6 +1206,11 @@ async fn complete_round_with_interval(
     let clamped_minutes = interval_minutes.max(1).min(1440) as u64;
     let delay_ms = clamped_minutes * 60 * 1000;
     schedule_task(s, task_id, delay_ms);
+    if let Some(task) = s.tasks.iter_mut().find(|t| t.id == task_id) {
+        task.runtime_status = Some("interval_waiting".to_string());
+        task.next_round_at =
+            s.running.get(task_id).and_then(|runtime| wakeup_unix(runtime.next_wakeup_at));
+    }
 
     // 7. 持久化 — runtime_status 将被 persist_runtime_state 推断为 "interval_waiting"
     persist_runtime_state(s, task_id).await;
@@ -1190,7 +1218,11 @@ async fn complete_round_with_interval(
     eprintln!(
         "[engine] task={} 第 {} 轮完成，等待 {} 分钟后开始下一轮 (round_id={})",
         task_id,
-        s.tasks.iter().find(|t| t.id == task_id).map(|t| t.round_no).unwrap_or(0),
+        s.tasks
+            .iter()
+            .find(|t| t.id == task_id)
+            .map(|t| t.round_no.saturating_sub(1))
+            .unwrap_or(0),
         interval_minutes,
         new_round_id,
     );
@@ -1222,6 +1254,8 @@ async fn mark_task_error(
     if let Some(task) = s.tasks.iter_mut().find(|task| task.id == task_id) {
         rollback_running_keywords(task);
         task.status = task_status::ERROR.to_string();
+        task.runtime_status = Some("error".to_string());
+        task.next_round_at = None;
         task.assigned_device = None;
         let _ = ensure_execution_cursor(task, false);
         let cursor = task_state_cursor(task);

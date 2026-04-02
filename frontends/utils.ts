@@ -112,6 +112,7 @@ type TaskPresentationLike = {
   status: string;
   runtime_status?: string | null;
   presentation_status?: string | null;
+  round_no?: number | null;
   next_round_at?: number | null;
   interval_minute?: number | null;
 };
