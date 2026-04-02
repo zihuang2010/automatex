@@ -1,3 +1,4 @@
+import { TaskPresentationStatus, TaskStatus } from './constants';
 import { DeviceRow } from './types';
 
 /* ===== Utility Functions ===== */
@@ -80,4 +81,82 @@ export function showToast(msg: string, type: 'info' | 'warning' | 'error' = 'war
     toast.classList.add('opacity-0', '-translate-y-4');
     setTimeout(() => toast.remove(), 300);
   }, 3000);
+}
+
+/**
+ * 将 Unix 时间戳（秒）格式化为剩余倒计时
+ * 返回 null 表示已过期，否则返回 { text, totalSeconds, percent }
+ */
+export function formatCountdown(
+  targetUnix: number,
+  intervalMinute: number,
+): { text: string; totalSeconds: number; percent: number } | null {
+  const remaining = targetUnix - Math.floor(Date.now() / 1000);
+  if (remaining <= 0) return null;
+
+  const totalInterval = intervalMinute * 60;
+  const percent =
+    totalInterval > 0 ? Math.max(0, Math.min(100, (remaining / totalInterval) * 100)) : 0;
+
+  const h = Math.floor(remaining / 3600);
+  const m = Math.floor((remaining % 3600) / 60);
+  const s = remaining % 60;
+  const mm = String(m).padStart(2, '0');
+  const ss = String(s).padStart(2, '0');
+  const text = h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+
+  return { text, totalSeconds: remaining, percent };
+}
+
+type TaskPresentationLike = {
+  status: string;
+  runtime_status?: string | null;
+  presentation_status?: string | null;
+  next_round_at?: number | null;
+  interval_minute?: number | null;
+};
+
+export function getPresentationState(task: TaskPresentationLike | null | undefined): string {
+  if (!task) return TaskPresentationStatus.READY;
+  if (task.presentation_status) return task.presentation_status;
+
+  if (task.status === TaskStatus.EXECUTING) {
+    if (task.runtime_status === 'interval_waiting') {
+      return TaskPresentationStatus.WAITING_NEXT_ROUND;
+    }
+    return TaskPresentationStatus.RUNNING;
+  }
+  if (task.status === TaskStatus.PAUSED) {
+    if (task.runtime_status === 'interval_paused') {
+      return TaskPresentationStatus.PAUSED_WAITING;
+    }
+    return TaskPresentationStatus.PAUSED_MANUAL;
+  }
+  if (task.status === TaskStatus.ERROR) return TaskPresentationStatus.ERROR_PAUSED;
+  if (task.status === TaskStatus.SUCCESS) return TaskPresentationStatus.COMPLETED;
+  return TaskPresentationStatus.READY;
+}
+
+export function getCountdownState(task: TaskPresentationLike | null | undefined): {
+  text: string;
+  percent: number;
+  expired: boolean;
+  isPausedWaiting: boolean;
+} | null {
+  const presentation = getPresentationState(task);
+  const isPausedWaiting = presentation === TaskPresentationStatus.PAUSED_WAITING;
+  const isWaiting = presentation === TaskPresentationStatus.WAITING_NEXT_ROUND;
+  if (!isPausedWaiting && !isWaiting) return null;
+
+  const target = task?.next_round_at;
+  const intervalMinute = task?.interval_minute;
+  if (!target || !intervalMinute || intervalMinute <= 0) return null;
+
+  const countdown = formatCountdown(target, intervalMinute);
+  return {
+    text: countdown ? countdown.text : isPausedWaiting ? '可继续' : '即将开始',
+    percent: countdown ? countdown.percent : 0,
+    expired: !countdown,
+    isPausedWaiting,
+  };
 }

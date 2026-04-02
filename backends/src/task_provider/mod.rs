@@ -155,23 +155,51 @@ pub fn summarize_task(task: &Task) -> TaskSummary {
         .find(|city| city.status == city_status::ACTIVE)
         .map(|city| city.name.clone())
         .or_else(|| task.current_city_name.clone());
+    let active_city = active_city_name
+        .as_ref()
+        .and_then(|name| task.cities.iter().find(|city| city.name == *name));
+    let presentation_status =
+        derive_presentation_status(&task.status, task.runtime_status.as_deref());
 
     TaskSummary {
         id: task.id.clone(),
         name: task.name.clone(),
         status: task.status.clone(),
+        runtime_status: task.runtime_status.clone(),
+        presentation_status,
         assigned_device: task.assigned_device.clone(),
         city_count: task.cities.len() as i32,
         keyword_total,
         keyword_done,
         progress,
         active_city_name,
+        active_city_progress: active_city.map(|city| city.progress),
+        active_city_done: active_city.map(|city| city.done),
+        active_city_total: active_city.map(|city| city.total),
         current_city_name: task.current_city_name.clone(),
         current_keyword_name: task.current_keyword_name.clone(),
         interval_minute: task.interval_minute,
         round_no: task.round_no,
-        // next_round_at 由引擎 event_loop 在 emit 时注入，这里默认 None
-        next_round_at: None,
+        next_round_at: task.next_round_at,
+    }
+}
+
+pub fn derive_presentation_status(status: &str, runtime_status: Option<&str>) -> String {
+    use crate::constants::task_presentation_status as presentation;
+
+    match status {
+        task_status::WAITING => presentation::READY.to_string(),
+        task_status::EXECUTING => match runtime_status {
+            Some("interval_waiting") => presentation::WAITING_NEXT_ROUND.to_string(),
+            _ => presentation::RUNNING.to_string(),
+        },
+        task_status::PAUSED => match runtime_status {
+            Some("interval_paused") => presentation::PAUSED_WAITING.to_string(),
+            _ => presentation::PAUSED_MANUAL.to_string(),
+        },
+        task_status::ERROR => presentation::ERROR_PAUSED.to_string(),
+        task_status::SUCCESS => presentation::COMPLETED.to_string(),
+        _ => presentation::READY.to_string(),
     }
 }
 
@@ -295,6 +323,8 @@ fn build_task_batched(
     let current_city_name = saved_state.as_ref().and_then(|s| s.current_city_name.clone());
     let current_keyword_name = saved_state.as_ref().and_then(|s| s.current_keyword_name.clone());
     let saved_status = saved_state.as_ref().map(|s| s.status.as_str());
+    let saved_runtime_status = saved_state.as_ref().and_then(|s| s.runtime_status.clone());
+    let saved_next_round_at = saved_state.as_ref().and_then(|s| s.next_wakeup_at);
 
     // 只有任务在 EXECUTING 或 PAUSED 时，才激活当前或第一个 pending 城市
     if final_status != task_status::WAITING && final_status != task_status::SUCCESS {
@@ -329,11 +359,20 @@ fn build_task_batched(
     }
 
     let current_round_id = saved_state.as_ref().and_then(|s| s.current_round_id);
+    let runtime_status = match (saved_status, saved_runtime_status.as_deref()) {
+        (Some(task_status::EXECUTING), Some("interval_waiting")) => {
+            Some("interval_paused".to_string())
+        },
+        (_, runtime_status) => runtime_status.map(str::to_string),
+    };
+    let presentation_status = derive_presentation_status(&final_status, runtime_status.as_deref());
 
     Task {
         id: def.id,
         name: def.name,
         status: final_status,
+        runtime_status,
+        presentation_status,
         assigned_device,
         cities,
         interval_minute: def.interval_minute,
@@ -341,6 +380,7 @@ fn build_task_batched(
         current_round_id,
         current_city_name,
         current_keyword_name,
+        next_round_at: saved_next_round_at,
     }
 }
 

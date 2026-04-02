@@ -8,6 +8,16 @@ export const TaskStatus = {
   ERROR: 'error',
 } as const;
 
+export const TaskPresentationStatus = {
+  READY: 'ready',
+  RUNNING: 'running',
+  WAITING_NEXT_ROUND: 'waiting_next_round',
+  PAUSED_MANUAL: 'paused_manual',
+  PAUSED_WAITING: 'paused_waiting',
+  ERROR_PAUSED: 'error_paused',
+  COMPLETED: 'completed',
+} as const;
+
 export const CityStatus = {
   PENDING: 'pending',
   ACTIVE: 'active',

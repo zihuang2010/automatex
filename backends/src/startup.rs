@@ -35,18 +35,21 @@ pub(crate) async fn ensure_client_id(db: &storage::Database) -> String {
     id
 }
 
-/// 确保 MQTT 默认配置存在（首次启动时写入）
+/// 确保 MQTT 默认配置和 API 地址存在（首次启动时写入）
 pub(crate) async fn ensure_mqtt_defaults(db: &storage::Database) {
     use constants::{mqtt_default, setting_key};
     let host = mqtt_default::host();
     let port = mqtt_default::port();
     let username = mqtt_default::username();
     let password = mqtt_default::password();
+    let api_base = std::env::var("AUTOMATEX_API_BASE_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
     let defaults: &[(&str, &str)] = &[
         (setting_key::MQTT_HOST, host),
         (setting_key::MQTT_PORT, port),
         (setting_key::MQTT_USERNAME, username),
         (setting_key::MQTT_PASSWORD, password),
+        (setting_key::API_BASE_URL, &api_base),
     ];
     let existing = db.get_all_settings().await;
     for (key, default_val) in defaults {
@@ -54,7 +57,7 @@ pub(crate) async fn ensure_mqtt_defaults(db: &storage::Database) {
         if !has_value {
             db.set_setting(key, default_val).await;
             eprintln!(
-                "[startup] MQTT 默认配置写入: {}={}",
+                "[startup] 默认配置写入: {}={}",
                 key,
                 if *key == setting_key::MQTT_PASSWORD { "***" } else { default_val }
             );

@@ -2098,3 +2098,15 @@ body.mirror-resizing * {
   padding: 0;
   outline: none;
 }
+
+/* ── Interval Waiting 等待下一轮 ── */
+
+.interval-waiting-icon .material-symbols-outlined,
+.interval-waiting-dot,
+.interval-waiting-banner {
+  animation: none;
+}
+
+.interval-countdown-ring svg circle:last-child {
+  filter: drop-shadow(0 0 3px rgba(139, 92, 246, 0.18));
+}

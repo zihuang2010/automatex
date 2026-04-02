@@ -19,8 +19,8 @@ import {
 import { initMirror, startMirror, stopAllMirrors } from './mirror';
 import { loadChainForDevice } from './queue';
 import { initSettings, updateMqttStatusUI } from './settings';
-import { activeTask, globalQueue, selectedDevice, setActiveCityIdx, setActiveTask } from './state';
-import { initEngine, registerTaskActions, setRefreshCallbacks } from './task-engine';
+import { selectedDevice } from './state';
+import { initEngine, registerTaskActions } from './task-engine';
 import {
   loadTasksForDevice,
   registerViewActions,
@@ -514,7 +514,6 @@ window.addEventListener('DOMContentLoaded', () => {
   }
 
   // ── Step 1: 注册跨模块回调（打破循环依赖）──
-  setRefreshCallbacks(() => fullRefresh());
   setDeviceCallbacks(
     (serial: string) => loadTasksForDevice(serial),
     (serial: string) => showDeviceInfo(serial),
@@ -535,12 +534,6 @@ window.addEventListener('DOMContentLoaded', () => {
   // ── Step 4: 初始化后端引擎（加载任务 + 监听事件）──
   initEngine()
     .then(tasks => {
-      if (globalQueue.length > 0 && !activeTask) {
-        setActiveTask(globalQueue[0]);
-        setActiveCityIdx(0);
-      }
-      renderTaskView();
-      loadChainForDevice('');
       // 启动时从数据库加载已同步的账号（修复重启后显示 0 个）
       refreshAccountList().then(phones => {
         if (tasks.length === 0 && phones.length > 0) {

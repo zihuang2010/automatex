@@ -1,9 +1,9 @@
 import { invoke } from '@tauri-apps/api/core';
 
-import { DeviceState } from './constants';
+import { DeviceState, TaskPresentationStatus } from './constants';
 import { getAssignedDeviceSerials, globalQueue, selectedDevice, setSelectedDevice } from './state';
 import { DeviceRow } from './types';
-import { $, esc, getDeviceName, timeAgo } from './utils';
+import { $, esc, getDeviceName, getPresentationState, timeAgo } from './utils';
 
 // 回调注册（由 main.ts 初始化后设置，避免循环依赖）
 let _onLoadTasksForDevice: ((serial: string) => void) | null = null;
@@ -11,6 +11,12 @@ let _onShowDeviceInfo: ((serial: string) => void) | null = null;
 let _onStartMirror: ((serial: string) => void) | null = null;
 let _pendingRafId: number | null = null;
 let _deviceCache: DeviceRow[] = [];
+
+export function rerenderDeviceCardsFromCache() {
+  if (_deviceCache.length > 0) {
+    renderDeviceCards(_deviceCache);
+  }
+}
 
 export function setDeviceCallbacks(
   onLoadTasks: (serial: string) => void,
@@ -97,6 +103,10 @@ function renderDeviceCards(devs: DeviceRow[]) {
   devs.forEach(d => {
     if (d.state === DeviceState.OFFLINE) {
       offlineDevs.push(d);
+    } else if (d.is_flagged) {
+      // flagged 设备始终归入就绪区域（显示风控样式）
+      // 即使 globalQueue 中还未清除 assigned_device（竞态防护）
+      readyDevs.push(d);
     } else if (executingSerials.has(d.serial)) {
       runningDevs.push(d);
     } else {
@@ -113,6 +123,19 @@ function renderDeviceCards(devs: DeviceRow[]) {
     const devTask = globalQueue.find(t => t.assigned_device === d.serial);
     const taskLabel = devTask ? devTask.name : '空闲';
     const progress = devTask?.progress ?? 0;
+    const presentation = devTask ? getPresentationState(devTask) : TaskPresentationStatus.RUNNING;
+    const statusLabel =
+      presentation === TaskPresentationStatus.WAITING_NEXT_ROUND ? '等待中' : '执行中';
+    const statusTextClass =
+      presentation === TaskPresentationStatus.WAITING_NEXT_ROUND
+        ? 'text-violet-600'
+        : 'text-blue-600';
+    const statusDotClass =
+      presentation === TaskPresentationStatus.WAITING_NEXT_ROUND ? 'bg-violet-500' : 'bg-blue-500';
+    const progressLabel =
+      devTask && devTask.keyword_total > 0
+        ? `${devTask.keyword_done}/${devTask.keyword_total}`
+        : taskLabel;
     const batteryIcon =
       battery > 80 ? 'battery_charging_80' : battery > 50 ? 'battery_5_bar' : 'battery_3_bar';
     const isSel = d.serial === selectedDevice;
@@ -125,14 +148,17 @@ function renderDeviceCards(devs: DeviceRow[]) {
         <div class="min-w-0 flex-1">
           <div class="flex justify-between items-center mb-0.5">
             <h3 class="text-[11px] font-bold text-s900 truncate">${esc(displayName)}</h3>
-            <div class="pulsing-dot scale-90"></div>
+            <div class="flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full ${statusDotClass}"></span>
+              <span class="text-[10px] font-bold ${statusTextClass}">${statusLabel}</span>
+            </div>
           </div>
           <p class="mono-technical text-[10px] text-s500 font-medium">${esc(shortHwid)}</p>
         </div>
       </div>
       <div class="mt-2.5">
         <div class="flex justify-between items-end mb-1">
-          <span class="text-[10px] font-bold text-blue-600 uppercase tracking-tight">${esc(taskLabel)}</span>
+          <span class="text-[10px] font-bold text-blue-600 uppercase tracking-tight">${esc(progressLabel)}</span>
           <span class="text-[10px] font-black text-blue-600">${progress}%</span>
         </div>
         <div class="w-full h-1 bg-white/80 rounded-full overflow-hidden">

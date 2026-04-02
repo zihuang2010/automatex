@@ -5,11 +5,15 @@ fn build_task_progress_payload(task: &TaskSummary) -> serde_json::Value {
     serde_json::json!({
         "task_id": task.id,
         "status": task.status,
+        "presentation_status": task.presentation_status,
         "progress": task.progress,
+        "active_city_progress": task.active_city_progress,
         "total_keywords": task.keyword_total,
         "done_keywords": task.keyword_done,
         "active_city": task.active_city_name.as_ref().map(|name| serde_json::json!({
             "name": name,
+            "done": task.active_city_done,
+            "total": task.active_city_total,
         })),
         "device": task.assigned_device,
     })

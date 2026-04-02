@@ -10,6 +10,17 @@ pub mod task_status {
     pub const ERROR: &str = "error";
 }
 
+/// 任务展示状态（前后端统一消费）
+pub mod task_presentation_status {
+    pub const READY: &str = "ready";
+    pub const RUNNING: &str = "running";
+    pub const WAITING_NEXT_ROUND: &str = "waiting_next_round";
+    pub const PAUSED_MANUAL: &str = "paused_manual";
+    pub const PAUSED_WAITING: &str = "paused_waiting";
+    pub const ERROR_PAUSED: &str = "error_paused";
+    pub const COMPLETED: &str = "completed";
+}
+
 /// 城市状态
 pub mod city_status {
     pub const PENDING: &str = "pending";

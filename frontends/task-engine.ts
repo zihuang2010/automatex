@@ -1,6 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import { type UnlistenFn, listen } from '@tauri-apps/api/event';
 
+import { rerenderDeviceCardsFromCache } from './devices';
+import { loadChainForDevice } from './queue';
 import {
   activeTask,
   globalQueue,
@@ -9,22 +11,31 @@ import {
   setActiveTaskDetail,
   setGlobalQueue,
 } from './state';
+import { renderTaskView } from './task-view';
 import { TaskSummary } from './types';
 import { showToast } from './utils';
 
-// 回调注册（由 main.ts 初始化后设置，避免循环依赖）
-let _onRefresh: (() => Promise<void>) | null = null;
 let _taskUpdateUnlisten: UnlistenFn | null = null;
-
-export function setRefreshCallbacks(onRefresh: () => Promise<void>) {
-  _onRefresh = onRefresh;
-}
 
 function syncActiveTaskFromQueue() {
   if (activeTask) {
     const currentTask = activeTask;
     const updated = globalQueue.find(task => task.id === currentTask.id);
     if (updated) {
+      const summaryChanged =
+        updated.status !== currentTask.status ||
+        updated.runtime_status !== currentTask.runtime_status ||
+        updated.presentation_status !== currentTask.presentation_status ||
+        updated.assigned_device !== currentTask.assigned_device ||
+        updated.progress !== currentTask.progress ||
+        updated.keyword_done !== currentTask.keyword_done ||
+        updated.current_city_name !== currentTask.current_city_name ||
+        updated.current_keyword_name !== currentTask.current_keyword_name ||
+        updated.next_round_at !== currentTask.next_round_at ||
+        updated.round_no !== currentTask.round_no;
+      if (summaryChanged) {
+        setActiveTaskDetail(null);
+      }
       setActiveTask(updated);
       return;
     }
@@ -40,25 +51,30 @@ function syncActiveTaskFromQueue() {
   }
 }
 
+async function renderTaskStateViews() {
+  syncActiveTaskFromQueue();
+  loadChainForDevice('');
+  rerenderDeviceCardsFromCache();
+  await renderTaskView();
+}
+
 /* ===== 后端引擎事件监听 ===== */
 
 /** 初始化后端引擎事件监听 + 加载初始任务 */
 export async function initEngine() {
   // 监听后端推送的任务状态更新
   if (!_taskUpdateUnlisten) {
-    _taskUpdateUnlisten = await listen<{ tasks: TaskSummary[] }>('task://update', event => {
+    _taskUpdateUnlisten = await listen<{ tasks: TaskSummary[] }>('task://update', async event => {
       const { tasks } = event.payload;
       setGlobalQueue(tasks);
-      syncActiveTaskFromQueue();
-      _onRefresh?.();
+      await renderTaskStateViews();
     });
   }
 
   // 从后端引擎加载初始任务列表
   const tasks = await invoke<TaskSummary[]>('engine_get_tasks');
   setGlobalQueue(tasks);
-  syncActiveTaskFromQueue();
-  await _onRefresh?.();
+  await renderTaskStateViews();
   return tasks;
 }
 

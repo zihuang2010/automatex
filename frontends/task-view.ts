@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 /** 绑定城市卡片拖拽事件（SortableJS） */
 import Sortable from 'sortablejs';
 
-import { CityStatus, KeywordStatus, TaskStatus } from './constants';
+import { CityStatus, KeywordStatus, TaskPresentationStatus } from './constants';
 import {
   activeCityIdx,
   activeTask,
@@ -14,7 +14,7 @@ import {
   setSelectedDevice,
 } from './state';
 import { Task, TaskCity, TaskKeyword, TaskRunStats } from './types';
-import { $, esc, formatRunTime } from './utils';
+import { $, esc, formatRunTime, getCountdownState, getPresentationState } from './utils';
 
 // 回调注册（由 main.ts 初始化后设置，避免循环依赖）
 let _onUpdateCardSelection: (() => void) | null = null;
@@ -56,10 +56,19 @@ function detailMatchesSummary(task: Task, summary: typeof activeTask): boolean {
   if (!summary) return false;
   if (task.id !== summary.id) return false;
   if (task.status !== summary.status) return false;
+  if ((task.runtime_status ?? null) !== (summary.runtime_status ?? null)) return false;
+  if ((task.presentation_status ?? null) !== (summary.presentation_status ?? null)) return false;
   if ((task.assigned_device ?? null) !== summary.assigned_device) return false;
+  if ((task.current_city_name ?? null) !== (summary.current_city_name ?? null)) return false;
+  if ((task.current_keyword_name ?? null) !== (summary.current_keyword_name ?? null)) return false;
+  if ((task.next_round_at ?? null) !== (summary.next_round_at ?? null)) return false;
+  if ((task.round_no ?? 0) !== summary.round_no) return false;
   const total = task.cities.reduce((sum, city) => sum + city.total, 0);
   const done = task.cities.reduce((sum, city) => sum + city.done, 0);
-  return total === summary.keyword_total && done === summary.keyword_done;
+  if (total !== summary.keyword_total || done !== summary.keyword_done) return false;
+  const progress = total > 0 ? Math.round((done / total) * 100) : 0;
+  if (progress !== summary.progress) return false;
+  return true;
 }
 
 async function ensureActiveTaskDetail(): Promise<Task | null> {
@@ -139,7 +148,7 @@ export async function renderTaskView() {
   }
 
   // ── Header ──
-  const headerHtml = buildHeader(task);
+  const headerHtml = buildHeader(task, activeTask);
   _prevHeaderHtml = patchHtml('tv-header', headerHtml, _prevHeaderHtml);
 
   // ── Metrics ──（异步获取统计信息）
@@ -201,72 +210,158 @@ export async function renderTaskView() {
 
 /* ===== 各区域构建函数 ===== */
 
-function buildHeader(task: {
-  id: string;
-  name: string;
-  status: string;
-  assigned_device: string | null;
-}): string {
+function buildHeader(
+  task: {
+    id: string;
+    name: string;
+    status: string;
+    runtime_status?: string | null;
+    assigned_device: string | null;
+  },
+  summary: typeof activeTask,
+): string {
   type BadgeInfo = { bg: string; text: string; border: string; label: string };
+  const presentation = getPresentationState(task);
+  const intervalWaiting = presentation === TaskPresentationStatus.WAITING_NEXT_ROUND;
+  const intervalPaused = presentation === TaskPresentationStatus.PAUSED_WAITING;
   const badgeMap: Record<string, BadgeInfo> = {
-    [TaskStatus.WAITING]: {
+    [TaskPresentationStatus.READY]: {
       bg: 'bg-gray-100',
       text: 'text-gray-600',
       border: 'border-gray-200',
-      label: '等待中',
+      label: '待启动',
     },
-    [TaskStatus.EXECUTING]: {
+    [TaskPresentationStatus.RUNNING]: {
       bg: 'bg-blue-100',
       text: 'text-blue-700',
       border: 'border-blue-200',
       label: '执行中',
     },
-    [TaskStatus.PAUSED]: {
+    [TaskPresentationStatus.PAUSED_MANUAL]: {
       bg: 'bg-amber-100',
       text: 'text-amber-700',
       border: 'border-amber-200',
       label: '已暂停',
     },
-    [TaskStatus.SUCCESS]: {
+    [TaskPresentationStatus.COMPLETED]: {
       bg: 'bg-green-100',
       text: 'text-green-700',
       border: 'border-green-200',
       label: '已完成',
     },
-    [TaskStatus.ERROR]: {
+    [TaskPresentationStatus.ERROR_PAUSED]: {
       bg: 'bg-red-100',
       text: 'text-red-700',
       border: 'border-red-200',
       label: '异常暂停',
     },
   };
-  const badge = badgeMap[task.status] || badgeMap[TaskStatus.WAITING];
+  const badge = intervalWaiting
+    ? {
+        bg: 'bg-violet-100',
+        text: 'text-violet-700',
+        border: 'border-violet-200',
+        label: '等待中',
+      }
+    : intervalPaused
+      ? {
+          bg: 'bg-amber-100',
+          text: 'text-amber-700',
+          border: 'border-amber-200',
+          label: '等待暂停',
+        }
+      : badgeMap[presentation] || badgeMap[TaskPresentationStatus.READY];
   const deviceTag = task.assigned_device
     ? `<p class="text-[11px] text-s400 font-semibold mt-1.5 h-4 leading-4"><span class="material-symbols-outlined text-sm icon-xs align-middle mr-0.5">smartphone</span>${esc(task.assigned_device)}</p>`
     : `<p class="h-4 mt-1.5"></p>`;
 
   const btnStart =
-    task.status === TaskStatus.WAITING
+    presentation === TaskPresentationStatus.READY
       ? `<button onclick="window.__taskStart('${task.id}')" class="flex items-center gap-2.5 px-5 py-2 bg-emerald-500 hover:bg-emerald-600 text-white font-medium rounded-xl transition-all shadow-lg shadow-emerald-500/20 text-xs"><span class="material-symbols-outlined text-base">play_arrow</span><span class="font-bold" style="letter-spacing:0.15em">启动</span></button>`
       : '';
   const btnPause =
-    task.status === TaskStatus.EXECUTING
+    presentation === TaskPresentationStatus.RUNNING ||
+    presentation === TaskPresentationStatus.WAITING_NEXT_ROUND
       ? `<button onclick="window.__taskPause('${task.id}')" class="flex items-center gap-2.5 px-5 py-2 bg-amber-500 hover:bg-amber-600 text-white font-medium rounded-xl transition-all shadow-lg shadow-amber-500/20 text-xs"><span class="material-symbols-outlined text-base">pause</span><span class="font-bold" style="letter-spacing:0.15em">暂停</span></button>`
       : '';
   const btnResume =
-    task.status === TaskStatus.PAUSED || task.status === TaskStatus.ERROR
+    presentation === TaskPresentationStatus.PAUSED_MANUAL ||
+    presentation === TaskPresentationStatus.PAUSED_WAITING ||
+    presentation === TaskPresentationStatus.ERROR_PAUSED
       ? `<button onclick="window.__taskResume('${task.id}')" class="flex items-center gap-2.5 px-5 py-2 bg-emerald-500 hover:bg-emerald-600 text-white font-medium rounded-xl transition-all shadow-lg shadow-emerald-500/20 text-xs"><span class="material-symbols-outlined text-base">play_arrow</span><span class="font-bold" style="letter-spacing:0.15em">继续</span></button>`
       : '';
   const btnRetry =
-    task.status === TaskStatus.ERROR ||
-    task.status === TaskStatus.SUCCESS ||
-    task.status === TaskStatus.PAUSED
+    presentation === TaskPresentationStatus.ERROR_PAUSED ||
+    presentation === TaskPresentationStatus.COMPLETED ||
+    presentation === TaskPresentationStatus.PAUSED_MANUAL ||
+    presentation === TaskPresentationStatus.PAUSED_WAITING
       ? `<button onclick="window.__taskRetry('${task.id}')" class="flex items-center gap-2.5 px-5 py-2 bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-xl transition-all shadow-lg shadow-blue-500/20 text-xs"><span class="material-symbols-outlined text-base">replay</span><span class="font-bold" style="letter-spacing:0.15em">重跑</span></button>`
       : '';
   const btnStop =
-    task.status === TaskStatus.EXECUTING || task.status === TaskStatus.PAUSED
+    presentation === TaskPresentationStatus.RUNNING ||
+    presentation === TaskPresentationStatus.WAITING_NEXT_ROUND ||
+    presentation === TaskPresentationStatus.PAUSED_MANUAL ||
+    presentation === TaskPresentationStatus.PAUSED_WAITING
       ? `<button onclick="window.__taskStop('${task.id}')" class="flex items-center gap-2.5 px-5 py-2 bg-white text-rose-500 border border-rose-200 font-medium rounded-xl hover:bg-rose-50 transition-all text-xs"><span class="material-symbols-outlined text-base">stop</span><span class="font-bold" style="letter-spacing:0.15em">停止</span></button>`
       : '';
+
+  // interval_waiting 状态横幅
+  const intervalBanner = (() => {
+    if (
+      (!intervalWaiting && !intervalPaused) ||
+      !summary?.next_round_at ||
+      !summary?.interval_minute
+    ) {
+      return '';
+    }
+
+    const countdown = getCountdownState(summary);
+    const waitingExpired = countdown?.expired ?? true;
+    const isPausedState = intervalPaused;
+    const title = isPausedState ? '等待已暂停' : '等待执行下一轮';
+    const subtitle = waitingExpired
+      ? `第 <span class="font-mono font-bold">${summary.round_no + 1}</span> 轮 · 已到执行时间`
+      : `第 <span class="font-mono font-bold">${summary.round_no + 1}</span> 轮 · 间隔 ${summary.interval_minute} 分钟`;
+    const bannerCls = isPausedState
+      ? 'bg-gradient-to-r from-amber-50 to-orange-50 border-amber-200/60'
+      : 'bg-gradient-to-r from-violet-50 to-indigo-50 border-violet-200/60';
+    const iconBgCls = isPausedState ? 'bg-amber-100' : 'bg-violet-100';
+    const iconTextCls = isPausedState ? 'text-amber-500' : 'text-violet-500';
+    const titleTextCls = isPausedState ? 'text-amber-700' : 'text-violet-700';
+    const subTextCls = isPausedState ? 'text-amber-500' : 'text-violet-500';
+    const ringTrack = isPausedState ? 'rgb(254 243 199)' : 'rgb(237 233 254)';
+    const ringFill = isPausedState ? 'rgb(245 158 11)' : 'rgb(139 92 246)';
+    const ringTextCls = isPausedState ? 'text-amber-600' : 'text-violet-600';
+    const centerText = countdown?.text ?? (isPausedState ? '可继续' : '即将开始');
+    const percent = countdown?.percent ?? 0;
+
+    return `
+    <div class="interval-waiting-banner ${bannerCls} rounded-xl border px-5 py-3.5 mb-4 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="interval-waiting-icon w-9 h-9 ${iconBgCls} flex items-center justify-center rounded-lg">
+          <span class="material-symbols-outlined ${iconTextCls}" style="font-size:20px">${isPausedState ? 'pause_circle' : 'hourglass_top'}</span>
+        </div>
+        <div>
+          <div class="text-[12px] font-bold ${titleTextCls} tracking-tight">${title}</div>
+          <div class="text-[11px] ${subTextCls} mt-0.5">${subtitle}</div>
+        </div>
+      </div>
+      <div class="flex items-center gap-3">
+        <div class="interval-countdown-ring relative w-12 h-12">
+          <svg class="w-12 h-12 -rotate-90" viewBox="0 0 48 48">
+            <circle cx="24" cy="24" r="20" fill="none" stroke="${ringTrack}" stroke-width="3"/>
+            <circle cx="24" cy="24" r="20" fill="none" stroke="${ringFill}" stroke-width="3"
+              stroke-dasharray="${20 * 2 * Math.PI}"
+              stroke-dashoffset="${20 * 2 * Math.PI * (1 - percent / 100)}"
+              stroke-linecap="round"/>
+          </svg>
+          <div class="absolute inset-0 flex items-center justify-center">
+            <span class="text-[10px] font-black ${ringTextCls} font-mono">${centerText}</span>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  })();
 
   return `
     <div class="bg-white rounded-2xl shadow-sm border border-s200 p-5 mb-4 flex items-center justify-between">
@@ -285,7 +380,8 @@ function buildHeader(task: {
       <div class="flex items-center gap-2.5 shrink-0 min-w-[120px] justify-end">
         ${btnStart}${btnPause}${btnResume}${btnRetry}${btnStop}
       </div>
-    </div>`;
+    </div>
+    ${intervalBanner}`;
 }
 
 async function buildMetrics(task: {

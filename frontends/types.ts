@@ -1,7 +1,9 @@
 /* ===== Shared TypeScript Types ===== */
-import { CityStatus, KeywordStatus, TaskStatus } from './constants';
+import { CityStatus, KeywordStatus, TaskPresentationStatus, TaskStatus } from './constants';
 
 export type TaskStatusType = (typeof TaskStatus)[keyof typeof TaskStatus];
+export type TaskPresentationStatusType =
+  (typeof TaskPresentationStatus)[keyof typeof TaskPresentationStatus];
 export type CityStatusType = (typeof CityStatus)[keyof typeof CityStatus];
 export type KeywordStatusType = (typeof KeywordStatus)[keyof typeof KeywordStatus];
 
@@ -24,26 +26,37 @@ export interface Task {
   id: string;
   name: string;
   status: TaskStatusType;
+  runtime_status?: string | null;
+  presentation_status?: TaskPresentationStatusType | null;
   assigned_device: string | null;
   cities: TaskCity[];
+  interval_minute?: number | null;
   round_no?: number;
   current_city_name?: string | null;
   current_keyword_name?: string | null;
+  next_round_at?: number | null;
 }
 
 export interface TaskSummary {
   id: string;
   name: string;
   status: TaskStatusType;
+  runtime_status: string | null;
+  presentation_status: TaskPresentationStatusType;
   assigned_device: string | null;
   city_count: number;
   keyword_total: number;
   keyword_done: number;
   progress: number;
   active_city_name: string | null;
+  active_city_progress: number | null;
+  active_city_done: number | null;
+  active_city_total: number | null;
   current_city_name: string | null;
   current_keyword_name: string | null;
+  interval_minute: number | null;
   round_no: number;
+  next_round_at: number | null;
 }
 
 /** 设备行（与后端 DeviceRow 一一对应） */

@@ -256,6 +256,64 @@ fn build_summaries(tasks: &[Task]) -> Vec<TaskSummary> {
     tasks.iter().map(summarize_task).collect()
 }
 
+fn task_runtime_status(task: &Task, runtime: Option<&RunningTaskState>) -> Option<String> {
+    if task.status == task_status::EXECUTING {
+        runtime
+            .map(|run| {
+                if run.active_worker.is_some() {
+                    "executing"
+                } else if run.next_wakeup_at.is_some() && is_all_keywords_pending(task) {
+                    "interval_waiting"
+                } else if run.next_wakeup_at.is_some() {
+                    "scheduled"
+                } else {
+                    "idle"
+                }
+            })
+            .or(Some("scheduled"))
+            .map(str::to_string)
+    } else if task.status == task_status::PAUSED {
+        task.runtime_status.clone().or(Some("paused".to_string()))
+    } else {
+        task.runtime_status.clone()
+    }
+}
+
+fn task_next_round_at(task: &Task, runtime: Option<&RunningTaskState>) -> Option<i64> {
+    let runtime_status = task_runtime_status(task, runtime);
+    match runtime_status.as_deref() {
+        Some("interval_waiting") => runtime.and_then(|run| wakeup_unix(run.next_wakeup_at)),
+        Some("interval_paused") => task.next_round_at,
+        _ => None,
+    }
+}
+
+fn enrich_task_runtime(task: &mut Task, runtime: Option<&RunningTaskState>) {
+    task.runtime_status = task_runtime_status(task, runtime);
+    task.presentation_status =
+        task_provider::derive_presentation_status(&task.status, task.runtime_status.as_deref());
+    task.next_round_at = task_next_round_at(task, runtime);
+}
+
+fn enrich_summaries_runtime(s: &EngineState, summaries: &mut [TaskSummary]) {
+    for summary in summaries.iter_mut() {
+        let runtime = s.running.get(&summary.id);
+        if let Some(task) = s.tasks.iter().find(|t| t.id == summary.id) {
+            summary.runtime_status = task_runtime_status(task, runtime);
+            summary.presentation_status = task_provider::derive_presentation_status(
+                &task.status,
+                summary.runtime_status.as_deref(),
+            );
+            summary.next_round_at = task_next_round_at(task, runtime);
+        } else {
+            summary.runtime_status = None;
+            summary.presentation_status =
+                task_provider::derive_presentation_status(&summary.status, None);
+            summary.next_round_at = None;
+        }
+    }
+}
+
 /// interval_waiting 判断：task 处于 executing 且所有关键词都是 pending
 fn is_all_keywords_pending(task: &Task) -> bool {
     task.cities
@@ -273,8 +331,13 @@ fn compute_summaries_hash(summaries: &[TaskSummary]) -> u64 {
         summary.keyword_done.hash(&mut hasher);
         summary.keyword_total.hash(&mut hasher);
         summary.progress.hash(&mut hasher);
+        summary.active_city_progress.hash(&mut hasher);
+        summary.active_city_done.hash(&mut hasher);
+        summary.active_city_total.hash(&mut hasher);
         summary.current_city_name.hash(&mut hasher);
         summary.current_keyword_name.hash(&mut hasher);
+        summary.runtime_status.hash(&mut hasher);
+        summary.presentation_status.hash(&mut hasher);
         summary.round_no.hash(&mut hasher);
         summary.next_round_at.hash(&mut hasher);
     }
@@ -307,24 +370,7 @@ async fn persist_runtime_state(s: &EngineState, task_id: &str) {
     let attempt = runtime.map(|run| run.attempt).unwrap_or(0);
     let next_wakeup_at = runtime.and_then(|run| wakeup_unix(run.next_wakeup_at));
     let last_error = runtime.and_then(|run| run.last_error.as_deref());
-    let runtime_status = if task.status == task_status::EXECUTING {
-        runtime
-            .map(|run| {
-                if run.active_worker.is_some() {
-                    "executing"
-                } else if run.next_wakeup_at.is_some() && is_all_keywords_pending(task) {
-                    // 所有关键词都是 pending + 有 wakeup = 轮次间隔等待
-                    "interval_waiting"
-                } else if run.next_wakeup_at.is_some() {
-                    "scheduled"
-                } else {
-                    "idle"
-                }
-            })
-            .or(Some("scheduled"))
-    } else {
-        None
-    };
+    let runtime_status = task_runtime_status(task, runtime);
 
     s.storage
         .save_task_state(
@@ -337,7 +383,7 @@ async fn persist_runtime_state(s: &EngineState, task_id: &str) {
             attempt,
             next_wakeup_at,
             last_error,
-            runtime_status,
+            runtime_status.as_deref(),
         )
         .await;
 }
@@ -428,7 +474,7 @@ async fn engine_loop(mut s: EngineState, mut rx: mpsc::Receiver<EngineMsg>) {
                 maybe_msg = rx.recv() => maybe_msg,
                 _ = tokio::time::sleep_until(due_at) => {
                     dispatch_due_wakeups(&mut s).await;
-                    emit_update(&mut s).await;
+                    force_emit(&mut s).await;
                     continue;
                 }
             }
@@ -437,28 +483,42 @@ async fn engine_loop(mut s: EngineState, mut rx: mpsc::Receiver<EngineMsg>) {
         };
 
         let Some(msg) = maybe_msg else { break };
+        let mut should_force_emit = false;
 
         match msg {
             EngineMsg::StartTask { task_id, reply } => {
                 let _ = reply.send(handle_start(&mut s, &task_id).await);
+                should_force_emit = true;
             },
             EngineMsg::PauseTask { task_id, reply } => {
                 let _ = reply.send(handle_pause(&mut s, &task_id).await);
+                should_force_emit = true;
             },
             EngineMsg::ResumeTask { task_id, reply } => {
                 let _ = reply.send(handle_resume(&mut s, &task_id).await);
+                should_force_emit = true;
             },
             EngineMsg::StopTask { task_id, reply } => {
                 let _ = reply.send(handle_stop(&mut s, &task_id).await);
+                should_force_emit = true;
             },
             EngineMsg::RetryTask { task_id, reply } => {
                 let _ = reply.send(handle_retry(&mut s, &task_id).await);
+                should_force_emit = true;
             },
             EngineMsg::GetTasks { reply } => {
-                let _ = reply.send(build_summaries(&s.tasks));
+                let mut summaries = build_summaries(&s.tasks);
+                enrich_summaries_runtime(&s, &mut summaries);
+                let _ = reply.send(summaries);
             },
             EngineMsg::GetTaskDetail { task_id, reply } => {
-                let _ = reply.send(s.tasks.iter().find(|task| task.id == task_id).cloned());
+                let detail =
+                    s.tasks.iter().find(|task| task.id == task_id).cloned().map(|mut task| {
+                        let runtime = s.running.get(&task.id);
+                        enrich_task_runtime(&mut task, runtime);
+                        task
+                    });
+                let _ = reply.send(detail);
             },
             EngineMsg::GetReadySerials { reply } => {
                 let devices = s.storage.load_all_devices().await;
@@ -476,24 +536,31 @@ async fn engine_loop(mut s: EngineState, mut rx: mpsc::Receiver<EngineMsg>) {
             },
             EngineMsg::ReorderCities { task_id, new_order, reply } => {
                 let _ = reply.send(handle_reorder(&mut s, &task_id, new_order).await);
+                should_force_emit = true;
             },
             EngineMsg::ReloadTasks => {
                 handle_reload_tasks(&mut s).await;
+                should_force_emit = true;
             },
             EngineMsg::HandleTaskReload { action, task_id } => {
                 handle_task_reload_msg(&mut s, &action, task_id.as_deref()).await;
+                should_force_emit = true;
             },
             EngineMsg::HandleDeviceKick { hw_serials, reply } => {
                 let _ = reply.send(handle_device_kick(&mut s, hw_serials).await);
+                should_force_emit = true;
             },
             EngineMsg::HandlePhonesUnbind { phones, reply } => {
                 let _ = reply.send(handle_phones_unbind(&mut s, phones).await);
+                should_force_emit = true;
             },
             EngineMsg::ReleaseOfflineDevices { online_serials, reply } => {
                 let _ = reply.send(handle_release_offline(&mut s, &online_serials).await);
+                should_force_emit = true;
             },
             EngineMsg::WorkerResult { task_id, worker_seq, outcome } => {
                 handle_worker_result(&mut s, &task_id, worker_seq, outcome).await;
+                should_force_emit = true;
             },
             EngineMsg::Shutdown { reply } => {
                 for (task_id, runtime) in s.running.drain() {
@@ -507,7 +574,11 @@ async fn engine_loop(mut s: EngineState, mut rx: mpsc::Receiver<EngineMsg>) {
             },
         }
 
-        emit_update(&mut s).await;
+        if should_force_emit {
+            force_emit(&mut s).await;
+        } else {
+            emit_update(&mut s).await;
+        }
     }
 }
 
@@ -567,7 +638,7 @@ async fn emit_update(s: &mut EngineState) {
     }
 
     let mut summaries = build_summaries(&s.tasks);
-    inject_next_round_at(s, &mut summaries);
+    enrich_summaries_runtime(s, &mut summaries);
     let hash = compute_summaries_hash(&summaries);
     if hash == s.last_hash {
         return;
@@ -583,20 +654,11 @@ async fn emit_update(s: &mut EngineState) {
 async fn force_emit(s: &mut EngineState) {
     s.last_emit = StdInstant::now();
     let mut summaries = build_summaries(&s.tasks);
-    inject_next_round_at(s, &mut summaries);
+    enrich_summaries_runtime(s, &mut summaries);
     s.last_hash = compute_summaries_hash(&summaries);
     let _ = s.snapshot_tx.send(summaries.clone());
     let snapshot = TaskSummarySnapshotRef { tasks: summaries.as_slice() };
     let _ = s.app_handle.emit(constants::tauri_event::TASK_UPDATE, &snapshot);
-}
-
-/// 将 interval_waiting 的 next_wakeup_at 注入到 TaskSummary.next_round_at
-fn inject_next_round_at(s: &EngineState, summaries: &mut [TaskSummary]) {
-    for summary in summaries.iter_mut() {
-        if let Some(runtime) = s.running.get(&summary.id) {
-            summary.next_round_at = wakeup_unix(runtime.next_wakeup_at);
-        }
-    }
 }
 
 async fn handle_start(s: &mut EngineState, task_id: &str) -> Result<(), String> {
@@ -659,8 +721,33 @@ async fn handle_pause(s: &mut EngineState, task_id: &str) -> Result<(), String> 
         return Err(format!("任务状态为 {}，只有 EXECUTING 可以暂停", status));
     }
 
-    let runtime = remove_runtime(s, task_id);
+    // 暂停前检测是否处于 interval_waiting（保留 next_wakeup_at 供 resume 使用）
+    let was_interval_waiting = s
+        .tasks
+        .iter()
+        .find(|t| t.id == task_id)
+        .map(|task| task.interval_minute.unwrap_or(0) > 0 && is_all_keywords_pending(task))
+        .unwrap_or(false);
+
+    let mut runtime = s.running.remove(task_id);
+    if let Some(run) = runtime.as_mut() {
+        if let Some(worker) = run.active_worker.take() {
+            worker.cancel.cancel();
+        }
+    }
     let round_id = runtime.as_ref().map(|run| run.round_id);
+
+    // interval_waiting 暂停时，将 next_wakeup_at 转为 Unix 时间戳保存
+    // 以便 resume 时计算剩余等待时间
+    let saved_wakeup = if was_interval_waiting {
+        runtime.as_ref().and_then(|run| wakeup_unix(run.next_wakeup_at))
+    } else {
+        None
+    };
+
+    if let Some(run) = runtime.as_mut() {
+        clear_task_schedule(run);
+    }
 
     if let Some(run) = runtime {
         s.storage.finish_round(run.round_id, round_status::STOPPED).await;
@@ -676,6 +763,11 @@ async fn handle_pause(s: &mut EngineState, task_id: &str) -> Result<(), String> 
 
     let task = s.tasks.iter().find(|task| task.id == task_id).unwrap();
     let cursor = task_state_cursor(task);
+    let runtime_status_label = if was_interval_waiting {
+        "interval_paused" // 标记是从 interval_waiting 暂停的
+    } else {
+        "paused"
+    };
     s.storage
         .save_task_state(
             task_id,
@@ -685,9 +777,9 @@ async fn handle_pause(s: &mut EngineState, task_id: &str) -> Result<(), String> 
             cursor.0,
             cursor.1,
             0,
+            saved_wakeup,
             None,
-            None,
-            Some("paused"),
+            Some(runtime_status_label),
         )
         .await;
     Ok(())
@@ -708,11 +800,24 @@ async fn handle_resume(s: &mut EngineState, task_id: &str) -> Result<(), String>
     let serial = pick_ready_serial(&devices, &s.tasks)?;
     let saved_state = s.storage.load_task_state(task_id).await;
 
+    // 检测是否从 interval_waiting 恢复（暂停时标记了 interval_paused 并保留了 next_wakeup_at）
+    let was_interval_paused = saved_state
+        .as_ref()
+        .map(|st| st.runtime_status.as_deref() == Some("interval_paused"))
+        .unwrap_or(false);
+    let saved_wakeup_at = saved_state.as_ref().and_then(|st| st.next_wakeup_at);
+
+    // 先计算恢复策略：是否还需要继续等待
+    let still_waiting =
+        was_interval_paused && saved_wakeup_at.map(|t| t > constants::now_unix()).unwrap_or(false);
+
     let task = s.tasks.iter_mut().find(|task| task.id == task_id).unwrap();
     rollback_running_keywords(task);
     task.status = task_status::EXECUTING.to_string();
     task.assigned_device = Some(serial.clone());
-    let _ = ensure_execution_cursor(task, true);
+    // 关键：还在等待期内时不标记关键词为 RUN
+    // 否则 is_all_keywords_pending 返回 false → inject_next_round_at 不注入 → 前端不显示倒计时
+    let _ = ensure_execution_cursor(task, !still_waiting);
 
     let round_id = match saved_state.as_ref().and_then(|state| state.current_round_id) {
         Some(round_id) => {
@@ -742,7 +847,20 @@ async fn handle_resume(s: &mut EngineState, task_id: &str) -> Result<(), String>
             last_error: saved_state.and_then(|state| state.last_error),
         },
     );
-    schedule_task(s, task_id, constants::timing::TASK_DISPATCH_INTERVAL_SECS * 1000);
+
+    // 智能恢复策略：从 interval_waiting 暂停的任务
+    let dispatch_delay_ms = if still_waiting {
+        let remaining_secs = (saved_wakeup_at.unwrap() - constants::now_unix()) as u64;
+        eprintln!("[engine] interval_paused 恢复: task={}, 剩余等待 {}s", task_id, remaining_secs);
+        remaining_secs * 1000
+    } else if was_interval_paused {
+        eprintln!("[engine] interval_paused 恢复: task={}, 等待已过期, 立即执行", task_id);
+        0
+    } else {
+        constants::timing::TASK_DISPATCH_INTERVAL_SECS * 1000
+    };
+
+    schedule_task(s, task_id, dispatch_delay_ms);
     persist_runtime_state(s, task_id).await;
     Ok(())
 }
@@ -1357,6 +1475,8 @@ mod tests {
             id: "task-1".to_string(),
             name: "task".to_string(),
             status: task_status::WAITING.to_string(),
+            runtime_status: None,
+            presentation_status: crate::constants::task_presentation_status::READY.to_string(),
             assigned_device: None,
             cities: vec![
                 TaskCity {
@@ -1395,6 +1515,7 @@ mod tests {
             current_round_id: None,
             current_city_name: None,
             current_keyword_name: None,
+            next_round_at: None,
         }
     }
 
