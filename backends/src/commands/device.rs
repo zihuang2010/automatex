@@ -57,13 +57,8 @@ fn ensure_safe_remote_path(path: &str, field: &str) -> Result<(), String> {
     }
 
     // 允许的安全目录前缀白名单
-    const ALLOWED_PREFIXES: &[&str] = &[
-        "/sdcard/",
-        "/storage/emulated/",
-        "/data/local/tmp/",
-        "/mnt/sdcard/",
-        "/mnt/user/",
-    ];
+    const ALLOWED_PREFIXES: &[&str] =
+        &["/sdcard/", "/storage/emulated/", "/data/local/tmp/", "/mnt/sdcard/", "/mnt/user/"];
     if !ALLOWED_PREFIXES.iter().any(|prefix| path.starts_with(prefix)) {
         return Err(format!(
             "{} 不在允许路径范围内（允许: /sdcard/ /data/local/tmp/ 等）: {}",

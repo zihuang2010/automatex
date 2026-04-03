@@ -457,23 +457,22 @@ impl SessionManager {
             tokio::join!(
                 async {
                     if let Some(h) = pump_handle_taken {
-                        let _ = tokio::time::timeout(
-                            std::time::Duration::from_secs(5),
-                            h,
-                        ).await;
+                        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), h).await;
                     }
                 },
                 async {
                     let _ = tokio::time::timeout(
                         std::time::Duration::from_secs(2),
                         session.control_handle,
-                    ).await;
+                    )
+                    .await;
                 },
                 async {
                     let _ = tokio::time::timeout(
                         std::time::Duration::from_secs(2),
                         session.control_reader_handle,
-                    ).await;
+                    )
+                    .await;
                 },
             );
             eprintln!("[scrcpy] shutdown: stopped {}", serial);
@@ -613,23 +612,22 @@ impl SessionManager {
             tokio::join!(
                 async {
                     if let Some(h) = pump_handle_taken {
-                        let _ = tokio::time::timeout(
-                            std::time::Duration::from_secs(5),
-                            h,
-                        ).await;
+                        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), h).await;
                     }
                 },
                 async {
                     let _ = tokio::time::timeout(
                         std::time::Duration::from_secs(2),
                         session.control_handle,
-                    ).await;
+                    )
+                    .await;
                 },
                 async {
                     let _ = tokio::time::timeout(
                         std::time::Duration::from_secs(2),
                         session.control_reader_handle,
-                    ).await;
+                    )
+                    .await;
                 },
             );
             eprintln!("[scrcpy] 停止投屏: {}", serial);

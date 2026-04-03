@@ -216,8 +216,9 @@ impl Database {
                     version     INTEGER PRIMARY KEY,
                     applied_at  INTEGER NOT NULL DEFAULT 0,
                     description TEXT
-                );"
-            ).map_err(|e| format!("建 _schema_version 表失败: {}", e))?;
+                );",
+            )
+            .map_err(|e| format!("建 _schema_version 表失败: {}", e))?;
 
             // ARC-1 修复（Part 2）：迁移循环改为 fail-loud 模式：
             // - "duplicate column" 错误：列已存在，静默跳过（兼容旧库）
@@ -263,12 +264,14 @@ impl Database {
                             );
                         } else {
                             // ARC-1 fail-loud：真实迁移错误，返回 Err 而非静默吞掉
-                            return Err(format!("[db] 迁移 v{} ({}) 失败: {}", version, description, e));
+                            return Err(format!(
+                                "[db] 迁移 v{} ({}) 失败: {}",
+                                version, description, e
+                            ));
                         }
                     },
                 }
             }
-
 
             // 建索引（此时所有列已确保存在）
             conn.execute_batch(

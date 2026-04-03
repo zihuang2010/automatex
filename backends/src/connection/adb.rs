@@ -28,9 +28,17 @@ pub fn adb_path() -> &'static str {
     }
 
     ADB_FALLBACK_PATH.get_or_init(|| {
-        if let Some(sidecar) = sidecar_dir().map(|dir| {
-            if cfg!(windows) { dir.join("adb.exe") } else { dir.join("adb") }
-        }) {
+        if let Some(sidecar) =
+            sidecar_dir().map(
+                |dir| {
+                    if cfg!(windows) {
+                        dir.join("adb.exe")
+                    } else {
+                        dir.join("adb")
+                    }
+                },
+            )
+        {
             if sidecar.exists() {
                 return sidecar.to_string_lossy().to_string();
             }
@@ -40,18 +48,25 @@ pub fn adb_path() -> &'static str {
 }
 
 fn sidecar_dir() -> Option<PathBuf> {
-    std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.to_path_buf()))
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.to_path_buf()))
 }
 
 fn resolve_resource_path_candidates(app: &AppHandle, candidates: &[&str]) -> Option<PathBuf> {
     candidates.iter().find_map(|relative| {
-        app.path().resolve(relative, BaseDirectory::Resource).ok().filter(|path| path.exists())
+        app.path()
+            .resolve(relative, BaseDirectory::Resource)
+            .ok()
+            .filter(|path| path.exists())
     })
 }
 
 fn embedded_runtime_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let base =
-        app.path().app_local_data_dir().map_err(|e| format!("获取应用本地数据目录失败: {}", e))?;
+    let base = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| format!("获取应用本地数据目录失败: {}", e))?;
     Ok(base.join("runtime-sidecars"))
 }
 
@@ -99,10 +114,9 @@ pub fn resolve_scrcpy_server_path(app: &AppHandle) -> Result<PathBuf, String> {
         return Ok(PathBuf::from(path));
     }
 
-    if let Some(path) = resolve_resource_path_candidates(
-        app,
-        &["resources/scrcpy-server", "scrcpy-server"],
-    ) {
+    if let Some(path) =
+        resolve_resource_path_candidates(app, &["resources/scrcpy-server", "scrcpy-server"])
+    {
         return Ok(path);
     }
 
@@ -285,9 +299,11 @@ pub fn verify_sidecar_integrity(app: Option<&AppHandle>) {
         },
     }
 
-    let scrcpy_resource = EMBEDDED_SCRCPY_SERVER_PATH.get().map(PathBuf::from).or_else(|| app.and_then(|app| {
-        resolve_resource_path_candidates(app, &["resources/scrcpy-server", "scrcpy-server"])
-    }));
+    let scrcpy_resource = EMBEDDED_SCRCPY_SERVER_PATH.get().map(PathBuf::from).or_else(|| {
+        app.and_then(|app| {
+            resolve_resource_path_candidates(app, &["resources/scrcpy-server", "scrcpy-server"])
+        })
+    });
     match scrcpy_resource
         .or_else(|| {
             sidecar_dir().and_then(|dir| {
@@ -309,7 +325,7 @@ pub fn verify_sidecar_integrity(app: Option<&AppHandle>) {
         },
         None => {
             eprintln!("[integrity] ⚠ scrcpy-server 未找到（资源目录或 sidecar 同目录）");
-        }
+        },
     }
 
     // Windows: 检查 ADB 运行时 DLL 依赖

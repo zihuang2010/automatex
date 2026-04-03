@@ -14,15 +14,17 @@ fn emit_optional_include(name: &str, path: Option<PathBuf>, output: &mut String)
             ));
         },
         Some(path) => {
-            println!(
-                "cargo:warning=embedded asset missing for {}: {}",
-                name,
-                path.display()
-            );
-            output.push_str(&format!("#[allow(dead_code)]\npub const {}: Option<&'static [u8]> = None;\n", name));
+            println!("cargo:warning=embedded asset missing for {}: {}", name, path.display());
+            output.push_str(&format!(
+                "#[allow(dead_code)]\npub const {}: Option<&'static [u8]> = None;\n",
+                name
+            ));
         },
         None => {
-            output.push_str(&format!("#[allow(dead_code)]\npub const {}: Option<&'static [u8]> = None;\n", name));
+            output.push_str(&format!(
+                "#[allow(dead_code)]\npub const {}: Option<&'static [u8]> = None;\n",
+                name
+            ));
         },
     }
 }
