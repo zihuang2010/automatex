@@ -10,7 +10,7 @@ pub async fn get_settings(state: tauri::State<'_, AppState>) -> Result<serde_jso
         setting_key::MQTT_HOST: setting_or(&s, setting_key::MQTT_HOST, mqtt_default::host()),
         setting_key::MQTT_PORT: setting_or(&s, setting_key::MQTT_PORT, mqtt_default::port()),
         setting_key::MQTT_CLIENT_ID: s.get(setting_key::MQTT_CLIENT_ID).cloned()
-            .unwrap_or_else(|| crate::utils::generate_machine_client_id()),
+            .unwrap_or_else(crate::utils::generate_machine_client_id),
         setting_key::MQTT_USERNAME: setting_or(&s, setting_key::MQTT_USERNAME, ""),
         setting_key::MQTT_PASSWORD: setting_or(&s, setting_key::MQTT_PASSWORD, ""),
         setting_key::SYNCED_PHONES: setting_or(&s, setting_key::SYNCED_PHONES, "[]"),

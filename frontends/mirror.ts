@@ -414,37 +414,31 @@ function getStreamStateMeta(phase: MirrorStreamState, reason?: string | null) {
   switch (phase) {
     case 'starting':
       return {
-        className: '',
         title: '正在建立投屏链路',
         subtitle: '正在等待设备首帧回传，连接完成后将平滑切入实时画面',
       };
     case 'streaming':
       return {
-        className: '',
         title: '实时画面已连接',
         subtitle: '当前视频链路稳定，可直接进行触控、键盘和滚轮操作',
       };
     case 'recovering':
       return {
-        className: '',
         title: '正在恢复视频流',
         subtitle: reason ? `恢复原因：${reason}` : '输入法或视频链路变化后，正在请求新的关键帧',
       };
     case 'stalled':
       return {
-        className: '',
         title: '画面暂时停滞',
         subtitle: reason ? `检测到异常：${reason}` : '等待自动恢复或重新请求视频流',
       };
     case 'degraded':
       return {
-        className: '',
         title: '当前处于降级运行',
         subtitle: '已进入保守恢复模式，尽量维持会话可用',
       };
     case 'stopped':
       return {
-        className: '',
         title: '投屏已停止',
         subtitle: '当前会话已关闭，可重新打开投屏窗口',
       };
@@ -464,10 +458,7 @@ function setMirrorStreamState(
 
   instance.win.dataset.streamState = phase;
   const meta = getStreamStateMeta(phase, reason);
-  const statusEl = instance.win.querySelector('.mirror-win-status') as HTMLElement | null;
-  if (statusEl) {
-    statusEl.className = meta.className;
-  }
+  // DEAD-1 修复：移除无效的 statusEl.className 赋值（meta.className 全为 ''）
 
   const titleEl = instance.win.querySelector('.mirror-stream-placeholder-title');
   if (titleEl) titleEl.textContent = meta.title;
@@ -736,32 +727,29 @@ export async function startMirror(serial: string) {
   try {
     const { gl, program, vertexBuffer, texture } = initWebGL(canvas);
     let hasRenderedFirstFrame = false;
-    let resetTimer = 0;
+    // resetTimer 局部变量已移除 — timer 统一由 instance.resetTimerId 管理（见 MEM-L1 修复）
 
     const scheduleVideoReset = (reason: string) => {
       const live = mirrors.get(serial);
-      if (live) {
-        setMirrorStreamState(live, 'recovering', reason);
-        if (live.resetTimerId) {
-          window.clearTimeout(live.resetTimerId);
-        }
+      if (!live) return;
+
+      // MEM-L1 修复：统一用 live.resetTimerId 单个字段管理 timer，
+      // 原来同时维护局部 resetTimer 和实例 resetTimerId 两个变量，
+      // clearTimeout 时只清了局部变量，实例字段的 timer 仍在运行，
+      // 两者可能并发触发同一 serial 的 reset，造成重复 invoke 和僵尸 timer。
+      setMirrorStreamState(live, 'recovering', reason);
+      if (live.resetTimerId) {
+        window.clearTimeout(live.resetTimerId);
+        live.resetTimerId = null;
       }
-      if (resetTimer) window.clearTimeout(resetTimer);
-      resetTimer = window.setTimeout(() => {
-        resetTimer = 0;
-        const current = mirrors.get(serial);
-        if (current) {
-          current.resetTimerId = null;
-        }
+      live.resetTimerId = window.setTimeout(() => {
+        live.resetTimerId = null;
         if (!mirrors.has(serial)) return;
         console.warn(`[mirror:${serial}] 请求重置视频流: ${reason}`);
         invoke('scrcpy_reset_video', { serial, reason }).catch(err =>
           console.error(`[mirror:${serial}] reset_video 失败:`, err),
         );
       }, 120);
-      if (live) {
-        live.resetTimerId = resetTimer;
-      }
     };
 
     const decoder = new VideoDecoder({

@@ -83,7 +83,8 @@ pub(crate) async fn merge_batch_task_items(
         server_ids.insert(def.id);
     }
 
-    db.batch_upsert_task_defs(upsert_items).await;
+    // CON-4 修复：用 `?` 传播错误，调用方可感知并中止同步流程
+    db.batch_upsert_task_defs(upsert_items).await?;
 
     let local_defs = db.load_all_task_defs().await;
     let stale_ids: Vec<String> = local_defs

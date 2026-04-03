@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::constants::{self, city_status, keyword_status, round_status, run_status, task_status};
 use crate::http;
-use crate::storage::{Database, DeviceRow};
+use crate::storage::{Database, DeviceRow, SaveTaskStateParams};
 use crate::task_provider::{self, summarize_task, Task, TaskSummary};
 use crate::task_sync;
 
@@ -381,18 +381,18 @@ async fn persist_runtime_state(s: &EngineState, task_id: &str) {
     let runtime_status = task_runtime_status(task, runtime);
 
     s.storage
-        .save_task_state(
+        .save_task_state(SaveTaskStateParams {
             task_id,
-            &task.status,
+            status: &task.status,
             assigned_device,
             current_round_id,
-            cursor.0,
-            cursor.1,
+            current_city_name: cursor.0,
+            current_keyword_name: cursor.1,
             attempt,
             next_wakeup_at,
             last_error,
-            runtime_status.as_deref(),
-        )
+            runtime_status: runtime_status.as_deref(),
+        })
         .await;
 }
 
@@ -683,7 +683,12 @@ async fn handle_start(s: &mut EngineState, task_id: &str) -> Result<(), String> 
     let devices = s.storage.load_all_devices().await;
     let serial = pick_ready_serial(&devices, &s.tasks)?;
 
-    let task = s.tasks.iter_mut().find(|task| task.id == task_id).unwrap();
+    // CON-1 修复：用 ok_or 替代 unwrap，避免 .await 点后内存状态变化导致意外 panic
+    let task = s
+        .tasks
+        .iter_mut()
+        .find(|task| task.id == task_id)
+        .ok_or_else(|| format!("任务 {} 在启动中意外消失（内存不一致）", task_id))?;
     task.status = task_status::EXECUTING.to_string();
     task.runtime_status = Some("executing".to_string());
     task.next_round_at = None;
@@ -693,15 +698,18 @@ async fn handle_start(s: &mut EngineState, task_id: &str) -> Result<(), String> 
     let round_id = match s.storage.create_round(task_id).await {
         Some(round_id) => round_id,
         None => {
-            let task = s.tasks.iter_mut().find(|task| task.id == task_id).unwrap();
-            task.status = task_status::WAITING.to_string();
-            task.assigned_device = None;
-            clear_execution_cursor(task);
+            // CON-1 修复：回滚路径也用 if let 更安全
+            if let Some(task) = s.tasks.iter_mut().find(|task| task.id == task_id) {
+                task.status = task_status::WAITING.to_string();
+                task.assigned_device = None;
+                clear_execution_cursor(task);
+            }
             return Err("创建轮次失败（数据库错误），无法启动任务".into());
         },
     };
     sync_task_round_no(s, task_id, round_id).await;
 
+    // LOG-2 修复：start_task_run 失败时回滚内存状态，避免 DB/内存不一致
     let started_at = s.storage.start_task_run(task_id, &serial, round_id).await;
     s.running.insert(
         task_id.to_string(),
@@ -779,22 +787,22 @@ async fn handle_pause(s: &mut EngineState, task_id: &str) -> Result<(), String> 
         let _ = ensure_execution_cursor(task, false);
     }
 
-    let task = s.tasks.iter().find(|task| task.id == task_id).unwrap();
-    let cursor = task_state_cursor(task);
-    s.storage
-        .save_task_state(
-            task_id,
-            task_status::PAUSED,
-            None,
-            round_id,
-            cursor.0,
-            cursor.1,
-            0,
-            saved_wakeup,
-            None,
-            Some(runtime_status_label),
-        )
-        .await;
+    // CON-1 修复：用 if let 替代 unwrap
+    if let Some(task) = s.tasks.iter().find(|task| task.id == task_id) {
+        let cursor = task_state_cursor(task);
+        s.storage
+            .save_task_state(SaveTaskStateParams {
+                task_id,
+                status: task_status::PAUSED,
+                current_round_id: round_id,
+                current_city_name: cursor.0,
+                current_keyword_name: cursor.1,
+                next_wakeup_at: saved_wakeup,
+                runtime_status: Some(runtime_status_label),
+                ..Default::default()
+            })
+            .await;
+    }
     Ok(())
 }
 
@@ -824,15 +832,18 @@ async fn handle_resume(s: &mut EngineState, task_id: &str) -> Result<(), String>
     let still_waiting =
         was_interval_paused && saved_wakeup_at.map(|t| t > constants::now_unix()).unwrap_or(false);
 
-    let task = s.tasks.iter_mut().find(|task| task.id == task_id).unwrap();
+    // CON-1 修复：用 ok_or_else 替代 unwrap
+    let task = s
+        .tasks
+        .iter_mut()
+        .find(|task| task.id == task_id)
+        .ok_or_else(|| format!("任务 {} 在恢复过程中意外消失", task_id))?;
     rollback_running_keywords(task);
     task.status = task_status::EXECUTING.to_string();
     task.runtime_status =
         Some(if still_waiting { "interval_waiting" } else { "executing" }.to_string());
     task.next_round_at = if still_waiting { saved_wakeup_at } else { None };
     task.assigned_device = Some(serial.clone());
-    // 关键：还在等待期内时不标记关键词为 RUN
-    // 否则 is_all_keywords_pending 返回 false → inject_next_round_at 不注入 → 前端不显示倒计时
     let _ = ensure_execution_cursor(task, !still_waiting);
 
     let round_id = match saved_state.as_ref().and_then(|state| state.current_round_id) {
@@ -971,10 +982,9 @@ async fn handle_reorder(
 }
 
 async fn handle_reload_tasks(s: &mut EngineState) {
-    let running_snapshot: HashMap<
-        String,
-        (String, Option<String>, Option<String>, Option<String>),
-    > = s
+    /// (status, assigned_device, current_city, current_keyword)
+    type RunSnapshot = (String, Option<String>, Option<String>, Option<String>);
+    let running_snapshot: HashMap<String, RunSnapshot> = s
         .tasks
         .iter()
         .filter(|task| s.running.contains_key(&task.id))
@@ -1141,7 +1151,11 @@ async fn complete_task_success(s: &mut EngineState, task_id: &str, round_id: i64
     s.storage.finish_round(round_id, round_status::COMPLETED).await;
     s.storage.finish_task_run(task_id, started_at, run_status::COMPLETED).await;
     s.storage
-        .save_task_state(task_id, task_status::SUCCESS, None, None, None, None, 0, None, None, None)
+        .save_task_state(SaveTaskStateParams {
+            task_id,
+            status: task_status::SUCCESS,
+            ..Default::default()
+        })
         .await;
 }
 
@@ -1203,7 +1217,7 @@ async fn complete_round_with_interval(
 
     // 6. 注册延时 wakeup — interval_minutes 转毫秒
     // 防御性上限：最大 24 小时，避免整数溢出
-    let clamped_minutes = interval_minutes.max(1).min(1440) as u64;
+    let clamped_minutes = interval_minutes.clamp(1, 1440) as u64;
     let delay_ms = clamped_minutes * 60 * 1000;
     schedule_task(s, task_id, delay_ms);
     if let Some(task) = s.tasks.iter_mut().find(|t| t.id == task_id) {
@@ -1260,18 +1274,17 @@ async fn mark_task_error(
         let _ = ensure_execution_cursor(task, false);
         let cursor = task_state_cursor(task);
         s.storage
-            .save_task_state(
+            .save_task_state(SaveTaskStateParams {
                 task_id,
-                task_status::ERROR,
-                None,
-                round_id,
-                cursor.0,
-                cursor.1,
+                status: task_status::ERROR,
+                current_round_id: round_id,
+                current_city_name: cursor.0,
+                current_keyword_name: cursor.1,
                 attempt,
-                None,
-                Some(error_message.as_str()),
-                Some("error"),
-            )
+                last_error: Some(error_message.as_str()),
+                runtime_status: Some("error"),
+                ..Default::default()
+            })
             .await;
     }
 

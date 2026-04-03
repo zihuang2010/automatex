@@ -35,9 +35,9 @@ fn allocate_port() -> Result<u16, String> {
 }
 
 fn release_port(port: u16) {
-    if let Ok(mut pool) = PORT_POOL.lock() {
-        pool.push_back(port);
-    }
+    // M-3 修复：与 allocate_port 保持一致，Mutex 中毒时仍归还端口，避免泄漏
+    let mut pool = PORT_POOL.lock().unwrap_or_else(|e| e.into_inner());
+    pool.push_back(port);
 }
 
 /// P1 watchdog: 带超时的进程终止（防僵尸 adb 进程）
@@ -114,7 +114,22 @@ impl ScrcpyServer {
             .await
             .map_err(|e| format!("push_jar 任务失败: {}", e))??;
 
-        // 2. 端口转发
+        // 2. C-2 修复：先无条件移除旧转发，防止快速 stop→start 时端口转发冲突
+        //    （若旧转发不存在，adb 会返回非零但可忽略）
+        {
+            let s = serial.to_string();
+            let local = format!("tcp:{}", port);
+            let _ = tokio::task::spawn_blocking(move || {
+                let _ = crate::connection::adb::run_adb_timed(
+                    crate::connection::adb::adb_command()
+                        .args(["-s", &s, "forward", "--remove", &local]),
+                    3,
+                );
+            })
+            .await;
+        }
+
+        // 端口转发（--remove 之后重建）
         let s = serial.to_string();
         tokio::task::spawn_blocking(move || Self::forward_port(&s, port))
             .await
@@ -275,7 +290,6 @@ impl ScrcpyServer {
         // Windows: 隐藏控制台窗口
         #[cfg(windows)]
         {
-            use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
         }
 

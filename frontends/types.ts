@@ -48,10 +48,7 @@ export interface TaskSummary {
   keyword_total: number;
   keyword_done: number;
   progress: number;
-  active_city_name: string | null;
-  active_city_progress: number | null;
-  active_city_done: number | null;
-  active_city_total: number | null;
+  // active_city_* 字段已移除：前端使用 current_city_name 和 cities 数组，这 4 个字段从未被消费
   current_city_name: string | null;
   current_keyword_name: string | null;
   interval_minute: number | null;

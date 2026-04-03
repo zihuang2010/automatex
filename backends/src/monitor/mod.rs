@@ -20,6 +20,20 @@ impl Drop for PropFetchGuard {
     }
 }
 
+/// MEM-3 修复：RAII guard，确保 inflight_props 中的 serial 在任何退出路径都被移除。
+/// 单纯依赖手动 remove 时，若 catch_unwind 未捕获该 panic，
+/// 或未来代码删掉 catch_unwind 后， serial 将永远残留导致属性永不刷新。
+struct InFlightGuard {
+    serial: String,
+    inflight: Arc<Mutex<HashSet<String>>>,
+}
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        let mut set = self.inflight.lock().unwrap_or_else(|p| p.into_inner());
+        set.remove(&self.serial);
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct WifiReconnectState {
     failure_count: u32,
@@ -354,6 +368,11 @@ pub fn spawn_device_monitor(
                     let existing_for_fetch = existing.clone();
                     rt_cb.spawn(async move {
                         let _guard = PropFetchGuard;
+                        // MEM-3 修复：RAII guard 替代手动 remove
+                        let _inflight_guard = InFlightGuard {
+                            serial: serial.clone(),
+                            inflight: Arc::clone(&inflight_props_inner),
+                        };
                         let serial_for_fetch = serial.clone();
                         let result = tokio::task::spawn_blocking(move || {
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -400,10 +419,7 @@ pub fn spawn_device_monitor(
                                 );
                             },
                         }
-
-                        let mut inflight =
-                            inflight_props_inner.lock().unwrap_or_else(|e| e.into_inner());
-                        inflight.remove(&serial);
+                        // _inflight_guard drop 在此自动执行 (MEM-3)
                     });
                 } else {
                     let row = placeholder_device_row(&serial, state, existing.as_ref());
@@ -521,21 +537,12 @@ pub fn spawn_device_monitor(
 
                 let mut handles = Vec::new();
                 for serial in batch {
-                    handles.push(tokio::task::spawn_blocking(move || {
-                        let raw = connection::run_adb_timed(
-                            connection::adb_command().args([
-                                "-s",
-                                &serial,
-                                "shell",
-                                "dumpsys battery",
-                            ]),
-                            constants::timing::ADB_COMMAND_TIMEOUT_SECS,
-                        )
-                        .ok()
-                        .filter(|output| output.status.success())
-                        .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
-                        .unwrap_or_default();
-
+                    // MEM-1 修复：改用 adb_shell_async，零阻塞事件驱动，
+                    // 彻底消除 spawn_blocking + run_adb_timed 的 20ms 诞询干扰线程池。
+                    handles.push(tokio::spawn(async move {
+                        let raw = connection::adb::adb_shell_async(&serial, "dumpsys battery")
+                            .await
+                            .unwrap_or_default();
                         let battery_level = parse_battery_field(&raw, "level").unwrap_or(-1);
                         let battery_temp_raw =
                             parse_battery_field(&raw, "temperature").unwrap_or(-1);

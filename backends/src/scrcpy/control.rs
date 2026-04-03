@@ -44,13 +44,19 @@ async fn send<W: AsyncWrite + Unpin>(stream: &mut W, buf: &[u8]) -> Result<(), S
     stream.write_all(buf).await.map_err(|e| format!("控制消息发送失败: {}", e))
 }
 
+/// 在 `raw` 的字节数组中，找到不超过 `limit` 字节且刚好落在 UTF-8 字符边界的最大偏移。
+///
+/// **复杂度**: O(1) 均摊（UTF-8 续字节最多连续 3 字节，最多回退 3 次）。
+/// 原实现使用 `from_utf8(&raw[..end])` 逐字节扫描，最坏 O(limit²)，此处修正。
 pub(crate) fn utf8_truncation_index(raw: &[u8], limit: usize) -> usize {
     if raw.len() <= limit {
         return raw.len();
     }
-
+    // UTF-8 续字节的标志：高两位为 0b10xxxxxx（即 0x80–0xBF）。
+    // 从 limit 处向前跳过所有续字节，找到第一个起始字节或 ASCII 字节。
+    // 最坏情况：4 字节序列，最多回退 3 次。
     let mut end = limit;
-    while end > 0 && std::str::from_utf8(&raw[..end]).is_err() {
+    while end > 0 && (raw[end] & 0xC0) == 0x80 {
         end -= 1;
     }
     end
@@ -115,7 +121,7 @@ impl ScrcpyControl {
     }
 
     /// 滑动
-    #[allow(dead_code)]
+    #[allow(dead_code, clippy::too_many_arguments)]
     pub async fn swipe<W: AsyncWrite + Unpin>(
         stream: &mut W,
         x1: u32,
@@ -186,6 +192,7 @@ impl ScrcpyControl {
         send(stream, &[MSG_BACK_OR_SCREEN_ON, ACTION_KEY_UP]).await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn inject_scroll<W: AsyncWrite + Unpin>(
         stream: &mut W,
         x: u32,

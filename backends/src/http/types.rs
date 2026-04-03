@@ -13,7 +13,7 @@ where
     D: Deserializer<'de>,
     T: Deserialize<'de>,
 {
-    Ok(Option::<Vec<T>>::deserialize(deserializer)?)
+    Option::<Vec<T>>::deserialize(deserializer)
 }
 
 #[derive(Debug, Deserialize)]

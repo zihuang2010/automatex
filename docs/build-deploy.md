@@ -1,166 +1,142 @@
-# 构建与部署
+# 构建与打包
 
-## 1. 开发环境搭建
+## 1. 当前打包策略
 
-### 前置依赖
+AutomateX 现在采用“编译期内嵌 + 运行时自动释放”方案：
 
-| 工具    | 版本                  | 用途     |
-| ------- | --------------------- | -------- |
-| Node.js | ≥ 18                  | 前端构建 |
-| Rust    | stable (2021 edition) | 后端编译 |
-| ADB     | 内嵌 sidecar          | 设备通信 |
+- `adb`
+- `scrcpy-server`
+- Windows 的 `AdbWinApi.dll`
+- Windows 的 `AdbWinUsbApi.dll`
 
-### 初始安装
+都会在构建时嵌入主程序。应用首次启动时，会自动将这些文件释放到应用私有目录，再从那里调用。
+
+这意味着：
+
+- macOS：发布给用户的是一个 `.app` / `.dmg`
+- Windows：发布给用户的是一个安装器 `.exe`，或一个单独的主程序 `.exe`
+
+对最终用户来说，不再需要额外携带 `adb.exe`、`scrcpy-server` 等外部文件。
+
+## 2. 源资源准备
+
+构建时仍然需要这些源文件存在于仓库中：
+
+| 路径                                                                                                                                             | 用途                       |
+| ------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------- |
+| [backends/resources/scrcpy-server](/Users/pis0sion/Pis0sion/RustCode/automatex/backends/resources/scrcpy-server)                                 | 设备端 scrcpy server       |
+| [backends/binaries/adb-aarch64-apple-darwin](/Users/pis0sion/Pis0sion/RustCode/automatex/backends/binaries/adb-aarch64-apple-darwin)             | Apple Silicon macOS 的 adb |
+| [backends/binaries/adb-x86_64-apple-darwin](/Users/pis0sion/Pis0sion/RustCode/automatex/backends/binaries/adb-x86_64-apple-darwin)               | Intel macOS 的 adb         |
+| [backends/binaries/adb-x86_64-pc-windows-msvc.exe](/Users/pis0sion/Pis0sion/RustCode/automatex/backends/binaries/adb-x86_64-pc-windows-msvc.exe) | Windows x64 的 adb         |
+
+Windows 如果要做到最稳，建议额外提供：
+
+- [backends/resources/windows/AdbWinApi.dll](/Users/pis0sion/Pis0sion/RustCode/automatex/backends/resources/windows/AdbWinApi.dll)
+- [backends/resources/windows/AdbWinUsbApi.dll](/Users/pis0sion/Pis0sion/RustCode/automatex/backends/resources/windows/AdbWinUsbApi.dll)
+
+## 3. 打包前检查
 
 ```bash
-# 安装前端依赖
-npm install
-
-# 验证 Rust 工具链
-rustup show
+npm run package:doctor
 ```
 
-### 开发模式
+指定目标检查：
 
 ```bash
-# 同时启动 Vite 开发服务器 + Tauri 客户端
+npm run package:doctor -- aarch64-apple-darwin
+npm run package:doctor -- x86_64-pc-windows-msvc
+```
+
+它会检查：
+
+- 对应 target 的 `adb` 源文件
+- `scrcpy-server`
+- Windows DLL 是否已提供
+
+## 4. 开发模式
+
+```bash
+npm install
 npm run tauri dev
 ```
 
-- Vite 监听 `localhost:1420`
-- 支持 HMR 热更新
-- 自动忽略 `backends/` 目录变更
-
-## 2. 构建流程
-
-### macOS 构建
+## 5. macOS 打包
 
 ```bash
-# 直接构建 macOS 应用
-npm run tauri build
+npm run package:mac
+```
 
-# 或使用构建脚本
+等价于：
+
+```bash
 bash scripts/build-macos.sh
 ```
 
-产物路径: `backends/target/release/bundle/`
+产物目录：
 
-### Windows 交叉编译 (从 macOS)
+- `backends/target/output/macos-arm64`
+- `backends/target/output/macos-x64`
+
+## 6. Windows 构建
+
+从 macOS 交叉构建：
+
+```bash
+npm run package:win
+```
+
+等价于：
 
 ```bash
 bash scripts/build-windows.sh
 ```
 
-**脚本自动处理**：
+脚本会生成一个单独的主程序 `.exe`，运行时自动释放 `adb`、`scrcpy-server` 和可选 DLL。
 
-1. ✅ 安装 `cargo-xwin`
-2. ✅ 配置 Windows MSVC 工具链
-3. ✅ 下载 xwin SDK 头文件
-4. ✅ 设置环境变量 (`CC_x86_64_pc_windows_msvc`, `CXX_x86_64_pc_windows_msvc`)
-5. ✅ 执行 `cargo xwin build --release --target x86_64-pc-windows-msvc`
-6. ✅ 收集产物到 `backends/target/x86_64-pc-windows/`
+产物目录：
 
-### 前端单独构建
+- `backends/target/output/windows-x64-single`
+
+如果你要最终给用户分发 Windows 安装器，建议在原生 Windows 机器上执行：
 
 ```bash
-# TypeScript 编译 + Vite 打包
+npm install
 npm run build
+npx tauri build --target x86_64-pc-windows-msvc
 ```
 
-### Rust 单独编译检查
+## 7. 运行时行为
+
+应用启动时会把内嵌资源释放到应用私有目录：
+
+- macOS：`App Local Data/runtime-sidecars/`
+- Windows：`App Local Data\\runtime-sidecars\\`
+
+随后所有 ADB / scrcpy 调用都走这个运行时目录，不再依赖应用安装目录旁边存在 sidecar 文件。
+
+## 8. 常见问题
+
+### 打包后提示找不到 `scrcpy-server`
+
+先检查构建源文件是否存在：
+
+- [backends/resources/scrcpy-server](/Users/pis0sion/Pis0sion/RustCode/automatex/backends/resources/scrcpy-server)
+
+再重新执行：
 
 ```bash
-cd backends && cargo check
+npm run package:mac
 ```
 
-## 3. 代码质量
+### Windows 上 `adb.exe` 无法启动
 
-### Linting
+优先补齐：
 
-```bash
-# ESLint 检查
-npm run lint
+- `AdbWinApi.dll`
+- `AdbWinUsbApi.dll`
 
-# Prettier 格式化
-npm run format
+然后重新构建 Windows 目标。
 
-# Prettier 检查（不修改）
-npm run format:check
-```
+### 为什么现在可以做成单文件？
 
-### Pre-commit Hooks
-
-通过 Husky + lint-staged 配置，提交前自动运行：
-
-- `.ts/.tsx`: ESLint --fix + Prettier
-- `.css/.html/.json/.md`: Prettier
-
-## 4. Vite 配置要点
-
-```typescript
-export default defineConfig({
-    plugins: [tailwindcss()], // Tailwind CSS v4 Vite 插件
-    clearScreen: false, // 不清屏（便于查看 Rust 编译错误）
-    server: {
-        port: 1420, // Tauri 要求固定端口
-        strictPort: true,
-        watch: {
-            ignored: ['**/backends/**'], // 忽略后端目录
-        },
-    },
-});
-```
-
-## 5. Tauri 配置 (`tauri.conf.json`)
-
-```json
-{
-    "app": {
-        "withGlobalTauri": true,
-        "macOSPrivateApi": true, // macOS 透明窗口需要
-        "windows": [
-            {
-                "decorations": false, // 全平台无原生标题栏
-                "transparent": true, // macOS 圆角窗口需要
-                "backgroundColor": "#050202" // 开屏渐变边缘色
-            }
-        ]
-    },
-    "bundle": {
-        "externalBin": ["binaries/adb"] // 内嵌 ADB sidecar
-    }
-}
-```
-
-## 6. 权限声明 (`capabilities/default.json`)
-
-```json
-{
-    "permissions": [
-        "core:default",
-        "opener:default",
-        "core:window:allow-close",
-        "core:window:allow-minimize",
-        "core:window:allow-toggle-maximize",
-        "core:window:allow-start-dragging",
-        "core:window:allow-is-maximized",
-        "core:window:allow-set-background-color",
-        "os:default"
-    ]
-}
-```
-
-## 7. 部署清单
-
-### macOS
-
-- 产物: `.app` 或 `.dmg`
-- 路径: `backends/target/release/bundle/macos/`
-- 签名: 需要 Apple Developer 证书（可选）
-
-### Windows
-
-- 产物: `AutomateX.exe` + `adb.exe`
-- 路径: `backends/target/x86_64-pc-windows/`
-- 部署: 整个文件夹复制到 Windows 机器
-- 注意: `adb.exe` 必须与主程序在同一目录
+因为 `adb` 和 `scrcpy-server` 不再依赖 Tauri 的 `externalBin/resources` 在安装目录旁边存在，而是在编译时直接嵌入主程序，再由应用在首次启动时自动释放。这样分发时只需要给用户一个应用即可。

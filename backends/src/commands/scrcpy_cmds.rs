@@ -35,19 +35,9 @@ pub async fn scrcpy_start_mirror(
 ) -> Result<crate::scrcpy::session::MirrorStartedPayload, String> {
     validate_serial(&serial)?;
 
-    // JAR 路径：与 adb 同目录
-    let jar_path = {
-        let adb = crate::connection::adb::adb_path();
-        let adb_dir = std::path::Path::new(adb).parent().ok_or("无法获取 adb 所在目录")?;
-        let jar = adb_dir.join("scrcpy-server");
-        if !jar.exists() {
-            return Err(format!(
-                "找不到 scrcpy-server: {} (请将 scrcpy-server 放到 adb 同目录)",
-                jar.display()
-            ));
-        }
-        jar.to_string_lossy().to_string()
-    };
+    let jar_path = crate::connection::adb::resolve_scrcpy_server_path(&app)?
+        .to_string_lossy()
+        .to_string();
 
     state.scrcpy.start_mirror(&serial, &jar_path, app, on_frame).await
 }

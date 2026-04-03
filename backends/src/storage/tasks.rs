@@ -83,39 +83,43 @@ impl Database {
 
     /// 批量 upsert 任务定义（单事务，减少连接开销）
     /// items: Vec<(task_id, name, payload, version, phone)>
-    pub async fn batch_upsert_task_defs(&self, items: Vec<(String, String, String, i64, String)>) {
+    ///
+    /// CON-4 修复：返回 Result<usize, String>，事务失败时向调用方传播错误，
+    /// 不再静默丢失数据（原实现事务 commit 失败仅打日志、调用方无法感知）。
+    pub async fn batch_upsert_task_defs(
+        &self,
+        items: Vec<(String, String, String, i64, String)>,
+    ) -> Result<usize, String> {
         if items.is_empty() {
-            return;
+            return Ok(0);
         }
-        let Ok(conn) = self.pool.get().await else { return };
-        let _ = conn
-            .interact(move |conn| {
-                let now = now_unix();
-                let tx = match conn.transaction() {
-                    Ok(tx) => tx,
-                    Err(e) => {
-                        eprintln!("[db] batch_upsert_task_defs 事务失败: {}", e);
-                        return;
-                    }
-                };
-                for (task_id, name, payload, version, phone) in &items {
-                    let _ = tx.execute(
-                        "INSERT INTO a_task_defs (task_id, name, payload, version, fetched_at, phone)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                         ON CONFLICT(task_id) DO UPDATE SET
-                             name=excluded.name, payload=excluded.payload,
-                             version=excluded.version, fetched_at=excluded.fetched_at,
-                             phone=CASE WHEN excluded.phone = '' THEN a_task_defs.phone ELSE excluded.phone END",
-                        params![task_id, name, payload, version, now, phone],
-                    );
-                }
-                if let Err(e) = tx.commit() {
-                    eprintln!("[db] batch_upsert_task_defs 提交失败: {}", e);
-                } else {
-                    eprintln!("[db] batch_upsert: {} 条任务定义", items.len());
-                }
-            })
-            .await;
+        let count = items.len();
+        let Ok(conn) = self.pool.get().await else {
+            return Err("[db] batch_upsert_task_defs: 获取连接失败".to_string());
+        };
+        conn.interact(move |conn| {
+            let now = now_unix();
+            let tx = conn
+                .transaction()
+                .map_err(|e| format!("[db] batch_upsert_task_defs 事务失败: {}", e))?;
+            for (task_id, name, payload, version, phone) in &items {
+                tx.execute(
+                    "INSERT INTO a_task_defs (task_id, name, payload, version, fetched_at, phone)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT(task_id) DO UPDATE SET
+                         name=excluded.name, payload=excluded.payload,
+                         version=excluded.version, fetched_at=excluded.fetched_at,
+                         phone=CASE WHEN excluded.phone = '' THEN a_task_defs.phone ELSE excluded.phone END",
+                    rusqlite::params![task_id, name, payload, version, now, phone],
+                )
+                .map_err(|e| format!("[db] batch_upsert row 失败: {}", e))?;
+            }
+            tx.commit().map_err(|e| format!("[db] batch_upsert_task_defs commit 失败: {}", e))?;
+            eprintln!("[db] batch_upsert: {} 条任务定义", count);
+            Ok::<usize, String>(count)
+        })
+        .await
+        .map_err(|e| format!("[db] batch_upsert interact 失败: {}", e))?
     }
 
     pub async fn get_tasks_by_phone(&self, phone: &str) -> Vec<String> {
@@ -175,26 +179,17 @@ impl Database {
 
     // ─── 任务运行时状态操作（a_task_state）────────────────────────────
 
-    pub async fn save_task_state(
-        &self,
-        task_id: &str,
-        status: &str,
-        assigned_device: Option<&str>,
-        current_round_id: Option<i64>,
-        current_city_name: Option<&str>,
-        current_keyword_name: Option<&str>,
-        attempt: i32,
-        next_wakeup_at: Option<i64>,
-        last_error: Option<&str>,
-        runtime_status: Option<&str>,
-    ) {
-        let task_id = task_id.to_string();
-        let status = status.to_string();
-        let assigned_device = assigned_device.map(|s| s.to_string());
-        let current_city_name = current_city_name.map(|s| s.to_string());
-        let current_keyword_name = current_keyword_name.map(|s| s.to_string());
-        let last_error = last_error.map(|s| s.to_string());
-        let runtime_status = runtime_status.map(|s| s.to_string());
+    pub async fn save_task_state(&self, p: super::SaveTaskStateParams<'_>) {
+        let task_id = p.task_id.to_string();
+        let status = p.status.to_string();
+        let assigned_device = p.assigned_device.map(|s| s.to_string());
+        let current_city_name = p.current_city_name.map(|s| s.to_string());
+        let current_keyword_name = p.current_keyword_name.map(|s| s.to_string());
+        let current_round_id = p.current_round_id;
+        let attempt = p.attempt;
+        let next_wakeup_at = p.next_wakeup_at;
+        let last_error = p.last_error.map(|s| s.to_string());
+        let runtime_status = p.runtime_status.map(|s| s.to_string());
         let Ok(conn) = self.pool.get().await else { return };
         let _ = conn
             .interact(move |conn| {

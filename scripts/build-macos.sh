@@ -7,7 +7,6 @@ set -euo pipefail
 
 APP_NAME="AutomateX"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-BUNDLE_DIR="$ROOT_DIR/backends/target/release/bundle"
 
 # 颜色输出
 GREEN='\033[0;32m'
@@ -40,8 +39,14 @@ else
 fi
 info "目标架构: $TARGET"
 
+BUNDLE_DIR="$ROOT_DIR/backends/target/$TARGET/release/bundle"
+
 # 确保目标已安装
 rustup target add "$TARGET" 2>/dev/null || true
+
+# ── sidecar / 资源检查 ──
+info "检查打包资源..."
+node "$ROOT_DIR/scripts/package-doctor.mjs" "$TARGET"
 
 # ── 安装前端依赖 ──
 info "安装前端依赖..."

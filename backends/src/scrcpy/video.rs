@@ -14,15 +14,24 @@ const MAX_FRAME_SIZE: usize = 8 * 1024 * 1024; // 8MB
 
 /// P1 优化：帧缓冲池 — 预分配 Vec，复用内存避免每帧 alloc
 ///
-/// 30fps × 100KB/帧 = 3MB/s 堆分配压力。FramePool 将其降至接近零。
+/// **内存收缩策略（H-1 修复）**：若 buf 容量超过 `POOL_SHRINK_HIGH_WATER`（2MB）
+/// 且当前帧远小于该阈值，主动收缩至 `POOL_INITIAL_CAPACITY`（512KB），
+/// 防止单次异常大帧（≤8MB）导致 buf 永久持有高水位容量。
 pub struct FramePool {
     buf: Vec<u8>,
 }
 
+/// 高水位：超过此容量且帧小时触发收缩
+const POOL_SHRINK_HIGH_WATER: usize = 2 * 1024 * 1024; // 2 MB
+/// 收缩目标：回退到初始预分配大小
+const POOL_INITIAL_CAPACITY: usize = 512 * 1024; // 512 KB
+/// 收缩触发阈值：当前帧小于高水位的 1/4 时才收缩，避免抖动
+const POOL_SHRINK_FRAME_THRESHOLD: usize = POOL_SHRINK_HIGH_WATER / 4; // 512 KB
+
 impl FramePool {
     /// 预分配 512KB（可容纳大多数 I-frame）
     pub fn new() -> Self {
-        Self { buf: Vec::with_capacity(512 * 1024) }
+        Self { buf: Vec::with_capacity(POOL_INITIAL_CAPACITY) }
     }
 
     /// P2 优化：读取帧并直接编码为传输格式（仅一次拷贝）
@@ -51,8 +60,14 @@ impl FramePool {
             return Err(format!("帧数据过大: {} bytes", size));
         }
 
-        // 直接在 buf 中组装完整输出：[header 9B] + [data NB]
         let total = 9 + size;
+
+        // H-1 修复：高水位内存收缩，防止异常大帧导致 buf 永久膨胀
+        if self.buf.capacity() > POOL_SHRINK_HIGH_WATER && total < POOL_SHRINK_FRAME_THRESHOLD {
+            self.buf = Vec::with_capacity(POOL_INITIAL_CAPACITY);
+        }
+
+        // 直接在 buf 中组装完整输出：[header 9B] + [data NB]
         self.buf.resize(total, 0);
         self.buf[0] = if is_config { 1 } else { 0 };
         self.buf[1..9].copy_from_slice(&ts.to_be_bytes());

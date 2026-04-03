@@ -507,13 +507,13 @@ function buildCityCards(task: { cities: TaskCity[] }): string {
           : c.status === CityStatus.ACTIVE
             ? 'bg-blue-50/40'
             : 'bg-s50/50';
-      const dragAttr = '';
+      // DEAD-2 修复：移除永远为空字符串的 dragAttr 变量
       const dragCls = isPending ? 'city-draggable' : '';
       const dragHandle = isPending
         ? '<span class="material-symbols-outlined text-s300 text-sm cursor-grab city-drag-handle">drag_indicator</span>'
         : '';
       return `
-      <div class="city-card ${cardBg} rounded-md ${borderCls} p-3 cursor-pointer ${!isSelected ? 'hover:bg-s50' : ''} transition-all relative overflow-hidden ${dragCls}" style="width:220px;min-width:220px;flex-shrink:0" data-city-name="${esc(c.name)}" data-city-idx="${i}" ${dragAttr} onclick="window.__switchCity(${i})">
+      <div class="city-card ${cardBg} rounded-md ${borderCls} p-3 cursor-pointer ${!isSelected ? 'hover:bg-s50' : ''} transition-all relative overflow-hidden ${dragCls}" style="width:220px;min-width:220px;flex-shrink:0" data-city-name="${esc(c.name)}" data-city-idx="${i}" onclick="window.__switchCity(${i})">
         <div class="flex items-center justify-between mb-2">
           <div class="flex items-center space-x-2">
             ${dragHandle}
@@ -538,6 +538,12 @@ function buildCityCards(task: { cities: TaskCity[] }): string {
 }
 
 let _sortableInstance: Sortable | null = null;
+
+/** LOGIC-2: beforeunload 时由 main.ts 调用，销毁 SortableJS DOM 监听器防止泄漏 */
+export function cleanupTaskView() {
+  _sortableInstance?.destroy();
+  _sortableInstance = null;
+}
 
 function bindCityDragEvents(taskId: string) {
   const container = document.getElementById('tv-cities');

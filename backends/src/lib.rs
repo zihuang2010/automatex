@@ -76,8 +76,9 @@ pub fn run() {
                     let _ = app_handle
                         .emit(constants::tauri_event::STARTUP_SYNC_STATUS, "booting:prepare");
 
-                    // 二进制完整性校验（启动时执行一次）
-                    connection::adb::verify_sidecar_integrity();
+                    // 打包资源准备与完整性校验（启动时执行一次）
+                    connection::adb::prepare_packaged_sidecars(&app_handle);
+                    connection::adb::verify_sidecar_integrity(Some(&app_handle));
 
                     // ADB 端口探测：如果 5037 被占用，自动尝试 5038-5047
                     connection::adb::resolve_adb_port();
@@ -109,7 +110,7 @@ pub fn run() {
                                 startup_settings.get(constants::setting_key::MOCK_SCENARIO)
                             {
                                 if !scenario.is_empty() {
-                                    mock.set_mock_scenario(&scenario);
+                                    mock.set_mock_scenario(scenario);
                                 }
                             }
                             Arc::new(mock)

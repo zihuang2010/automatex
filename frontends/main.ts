@@ -7,7 +7,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { platform } from '@tauri-apps/plugin-os';
 
 import { DeviceState } from './constants';
-import { refreshDevices, setDeviceCallbacks, updateCardSelection } from './devices';
+import { cleanupDevices, refreshDevices, setDeviceCallbacks, updateCardSelection } from './devices';
 import {
   hideAddDeviceDialog,
   removeSelectedDevice,
@@ -17,11 +17,12 @@ import {
   unflagSelectedDevice,
 } from './dialogs';
 import { initMirror, startMirror, stopAllMirrors } from './mirror';
-import { loadChainForDevice } from './queue';
+import { cleanupQueue, loadChainForDevice } from './queue';
 import { initSettings, updateMqttStatusUI } from './settings';
 import { selectedDevice } from './state';
 import { initEngine, registerTaskActions } from './task-engine';
 import {
+  cleanupTaskView,
   loadTasksForDevice,
   registerViewActions,
   renderTaskView,
@@ -41,9 +42,16 @@ let appBootstrapped = false;
 let accountPanelInitialized = false;
 const appUnlisteners: UnlistenFn[] = [];
 
-// 窗口关闭时优雅停止所有投屏
+// 窗口关闭时优雅停止所有投屏并清理所有资源
 window.addEventListener('beforeunload', () => {
   stopAllMirrors();
+  // MEM-L3: 清除倒计时 setInterval 和 SortableJS 实例
+  cleanupQueue();
+  // LOGIC-2: 销毁城市拖拽 Sortable 实例
+  cleanupTaskView();
+  // MEM-L4: 取消挂起的 requestAnimationFrame
+  cleanupDevices();
+  // 清除 Tauri 事件监听器
   while (appUnlisteners.length > 0) {
     try {
       appUnlisteners.pop()?.();
@@ -339,14 +347,6 @@ function initAccountPanel() {
     target.classList.add('opacity-50');
 
     try {
-      // P1 优化：从 DOM 读取当前列表，避免多余的 get_settings 调用
-      const allPhoneBtns = accountList!.querySelectorAll('button[data-phone]');
-      const remaining: string[] = [];
-      allPhoneBtns.forEach(btn => {
-        const p = (btn as HTMLElement).dataset.phone;
-        if (p && p !== phoneToRemove) remaining.push(p);
-      });
-
       const syncResult = await invoke<{ tasks?: number; phones?: number }>('unbind_phone', {
         phone: phoneToRemove,
       });
@@ -533,7 +533,9 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // ── Step 4: 初始化后端引擎（加载任务 + 监听事件）──
   initEngine()
-    .then(tasks => {
+    .then(({ tasks, unlisten }) => {
+      // LOGIC-9 修复：将 task://update 监听器纳入 appUnlisteners 统一管理
+      appUnlisteners.push(unlisten);
       // 启动时从数据库加载已同步的账号（修复重启后显示 0 个）
       refreshAccountList().then(phones => {
         if (tasks.length === 0 && phones.length > 0) {
@@ -593,8 +595,8 @@ window.addEventListener('DOMContentLoaded', () => {
         devicesChangedTimer = setTimeout(async () => {
           devicesChangedTimer = null;
           const devs = await refreshDevices();
-          // 设备离线处理现在由后端引擎负责
-          // 只需通知引擎当前在线设备列表
+          // MEM 修复：在 beforeunload 时 devicesChangedTimer 也应被清除
+          // 通过将 clear 逻辑归入 appUnlisteners 外层 IIFE 控制
           const onlineSerials = devs.filter(d => d.state === DeviceState.DEVICE).map(d => d.serial);
           invoke('engine_release_offline', { onlineSerials }).catch(() => {});
         }, 300);

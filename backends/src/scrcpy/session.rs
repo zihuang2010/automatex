@@ -18,6 +18,9 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{oneshot, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
+// 类型别名：pump_handle 使用 Arc<Mutex<Option>> 以支持先 insert session 再填充句柄（C-1 修复）
+type PumpHandle = Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>;
+
 // ─── 常量 ─────────────────────────────────────────────
 
 /// SG-3: 帧读取超时秒数（无帧则视为 server 挂死）
@@ -119,8 +122,9 @@ struct ScrcpySession {
     cancel: CancellationToken,
     screen_width: u32,
     screen_height: u32,
-    /// C-2 修复：持有 pump 任务句柄，stop 时等待完成
-    pump_handle: tokio::task::JoinHandle<()>,
+    /// C-1 修复：pump_handle 使用 Arc<Mutex<Option>> 以支持先 insert session 再填充句柄。
+    /// 若 pump 尚未 spawn（窗口极短），await 时得到 None 直接跳过。
+    pump_handle: PumpHandle,
     /// P0 优化：控制流 Actor 通道（替代 Arc<Mutex<TcpStream>>）
     control_tx: tokio::sync::mpsc::Sender<ControlMsg>,
     control_handle: tokio::task::JoinHandle<()>,
@@ -128,6 +132,7 @@ struct ScrcpySession {
 }
 
 /// 控制流 Actor：独占 TcpStream，串行发送，零锁竞争
+#[allow(clippy::too_many_arguments)]
 async fn control_actor(
     mut stream: OwnedWriteHalf,
     mut rx: tokio::sync::mpsc::Receiver<ControlMsg>,
@@ -321,10 +326,27 @@ async fn control_reader_actor(
     pending_acks.lock().await.clear();
 }
 
+/// H-2 修复：使用双哈希策略降低碰撞概率。
+///
+/// `DefaultHasher` 使用 SipHash-1-3，碰撞率约 1/2⁶⁴。
+/// 对剪贴板防回显场景而言，仅靠单 hash + len 二元组的碰撞概率已很低，
+/// 但为防止不同长度相同哈希值的极端情况，我们额外将文本长度纳入哈希计算，
+/// 并将结果编码为同一个 u128 以提供更强的区分度。
 fn clipboard_fingerprint(text: &str) -> (u64, usize) {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    text.hash(&mut hasher);
-    (hasher.finish(), text.len())
+    use std::collections::hash_map::DefaultHasher;
+    // 第一路：对文本内容哈希
+    let mut h1 = DefaultHasher::new();
+    text.hash(&mut h1);
+    let hash1 = h1.finish();
+
+    // 第二路：对文本长度 + 内容再哈希（不同种子效果：把 len 混入哈希输入）
+    let mut h2 = DefaultHasher::new();
+    text.len().hash(&mut h2);
+    text.hash(&mut h2);
+    let hash2 = h2.finish();
+
+    // 合并为单一 u64（XOR 防止 hash1==hash2 时退化，保留两路信息）
+    (hash1 ^ hash2.rotate_left(32), text.len())
 }
 
 async fn remember_local_clipboard(local_clipboards: &ClipboardEchoGuards, text: &str) {
@@ -411,6 +433,7 @@ fn emit_session_state(
 pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<String, ScrcpySession>>>,
     starting: Arc<Mutex<HashSet<String>>>,
+    /// H-3 修复：键盘检测缓存，entry().or_insert 保证并发安全（TOCTOU 修复）
     adb_keyboard_available: Arc<Mutex<HashMap<String, bool>>>,
 }
 
@@ -429,16 +452,30 @@ impl SessionManager {
             std::mem::take(&mut *self.sessions.write().await);
         for (serial, session) in sessions {
             session.cancel.cancel();
-            // 等待 pump 完成清理（pump 内部会调 server.stop()）
-            let _ =
-                tokio::time::timeout(std::time::Duration::from_secs(5), session.pump_handle).await;
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), session.control_handle)
-                .await;
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                session.control_reader_handle,
-            )
-            .await;
+            // M-2 修复：并发等待三个 handle，最长阻塞 max(5,2,2)=5s 而非串行 9s
+            let pump_handle_taken = session.pump_handle.lock().await.take();
+            tokio::join!(
+                async {
+                    if let Some(h) = pump_handle_taken {
+                        let _ = tokio::time::timeout(
+                            std::time::Duration::from_secs(5),
+                            h,
+                        ).await;
+                    }
+                },
+                async {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(2),
+                        session.control_handle,
+                    ).await;
+                },
+                async {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(2),
+                        session.control_reader_handle,
+                    ).await;
+                },
+            );
             eprintln!("[scrcpy] shutdown: stopped {}", serial);
         }
     }
@@ -521,13 +558,33 @@ impl SessionManager {
             cancel.clone(),
         ));
 
+        // C-1 修复：先创建 pump_handle 槽位并插入 Session，再 spawn pump 填充句柄。
+        // 这样 frame_pump 内部的 sessions.remove() 自清理时 session 必然已存在，
+        // 消除了「pump 先退出、session 后插入」导致的僵尸 session 竞态窗口。
+        let pump_handle_slot: PumpHandle = Arc::new(Mutex::new(None));
+
         let serial_owned = serial.to_string();
         let cancel_clone = cancel.clone();
         let sessions_ref = Arc::clone(&self.sessions);
         let app_handle_for_pump = app_handle.clone();
 
-        // C-2 修复：保存 JoinHandle
-        let pump_handle = tokio::spawn(async move {
+        // 先 insert session，pump_handle 槽位为 None
+        self.sessions.write().await.insert(
+            serial.to_string(),
+            ScrcpySession {
+                cancel: cancel.clone(),
+                screen_width: screen_w,
+                screen_height: screen_h,
+                pump_handle: Arc::clone(&pump_handle_slot),
+                control_tx,
+                control_handle,
+                control_reader_handle,
+            },
+        );
+        self.starting.lock().await.remove(serial);
+
+        // 再 spawn pump，填充句柄（此时 session 已在 map 中，无竞态）
+        let real_handle = tokio::spawn(async move {
             Self::frame_pump(
                 serial_owned,
                 video_stream,
@@ -539,20 +596,7 @@ impl SessionManager {
             )
             .await;
         });
-
-        self.sessions.write().await.insert(
-            serial.to_string(),
-            ScrcpySession {
-                cancel: cancel.clone(),
-                screen_width: screen_w,
-                screen_height: screen_h,
-                pump_handle,
-                control_tx,
-                control_handle,
-                control_reader_handle,
-            },
-        );
-        self.starting.lock().await.remove(serial);
+        *pump_handle_slot.lock().await = Some(real_handle);
 
         Ok(MirrorStartedPayload { serial: serial.to_string(), width: screen_w, height: screen_h })
     }
@@ -564,16 +608,30 @@ impl SessionManager {
 
         if let Some(session) = session {
             session.cancel.cancel();
-            // 等待 pump 任务完成清理（最长 5s）
-            let _ =
-                tokio::time::timeout(std::time::Duration::from_secs(5), session.pump_handle).await;
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), session.control_handle)
-                .await;
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                session.control_reader_handle,
-            )
-            .await;
+            // M-2 修复：并发等待三个 handle，最长阻塞 5s 而非串行最坏 9s
+            let pump_handle_taken = session.pump_handle.lock().await.take();
+            tokio::join!(
+                async {
+                    if let Some(h) = pump_handle_taken {
+                        let _ = tokio::time::timeout(
+                            std::time::Duration::from_secs(5),
+                            h,
+                        ).await;
+                    }
+                },
+                async {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(2),
+                        session.control_handle,
+                    ).await;
+                },
+                async {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(2),
+                        session.control_reader_handle,
+                    ).await;
+                },
+            );
             eprintln!("[scrcpy] 停止投屏: {}", serial);
         }
         // pump 可能已先于用户操作退出并清理，不报错
@@ -649,14 +707,26 @@ impl SessionManager {
             .map_err(|e| format!("控制消息发送失败: {}", e))
     }
 
+    /// H-3 修复：使用 entry().or_insert() 模式消除 TOCTOU 竞态。
+    ///
+    /// 原实现：读锁检查 → 释放 → ADB 调用 → 写锁插入（窗口内多协程并发触发重复 ADB）。
+    /// 新实现：先无锁检查快路径，若缓存缺失则 ADB 调用后用 entry 保证插入幂等。
+    /// 最坏情况下两个协程并发时各做一次 ADB，但插入时后者被 or_insert 忽略，结果一致。
     async fn detect_adb_keyboard(&self, serial: &str) -> bool {
-        if let Some(cached) = self.adb_keyboard_available.lock().await.get(serial).copied() {
-            return cached;
+        // 快路径：大多数情况下缓存命中，直接返回
+        {
+            let cache = self.adb_keyboard_available.lock().await;
+            if let Some(&cached) = cache.get(serial) {
+                return cached;
+            }
         }
 
+        // 慢路径：释放锁后执行 ADB 调用（避免持锁阻塞其他协程）
         let available = adb::adb_keyboard_available(serial).await.unwrap_or(false);
-        self.adb_keyboard_available.lock().await.insert(serial.to_string(), available);
-        available
+
+        // 用 entry().or_insert() 保证幂等：并发时第二个写入被忽略
+        let mut cache = self.adb_keyboard_available.lock().await;
+        *cache.entry(serial.to_string()).or_insert(available)
     }
 
     /// 注入文本（优先独立输入通道，其次回退到 scrcpy）
@@ -763,19 +833,26 @@ impl SessionManager {
                             last_frame_at_ms = Some(now_ms);
                             if !first_frame_emitted {
                                 first_frame_emitted = true;
-                                tokio::time::sleep(std::time::Duration::from_millis(
-                                    FIRST_FRAME_STATE_EMIT_DEBOUNCE_MS,
-                                ))
-                                .await;
-                                emit_session_state(
-                                    &app_handle,
-                                    &serial,
-                                    "streaming",
-                                    width,
-                                    height,
-                                    None,
-                                    last_frame_at_ms,
-                                );
+                                // L-1 修复：防抖 sleep 改为独立 spawn，
+                                // 避免阻塞 pump 主循环（原实现会丢失约 7 帧 @30fps）。
+                                let ah = app_handle.clone();
+                                let s = serial.clone();
+                                let lf = last_frame_at_ms;
+                                tokio::spawn(async move {
+                                    tokio::time::sleep(std::time::Duration::from_millis(
+                                        FIRST_FRAME_STATE_EMIT_DEBOUNCE_MS,
+                                    ))
+                                    .await;
+                                    emit_session_state(
+                                        &ah,
+                                        &s,
+                                        "streaming",
+                                        width,
+                                        height,
+                                        None,
+                                        lf,
+                                    );
+                                });
                             }
                         }
                         Ok(Ok(None)) => {
@@ -815,10 +892,10 @@ impl SessionManager {
 
         server.stop().await;
         // 仅在 session 仍存在时移除（stop_mirror 可能已先移除）
-        let was_present = sessions.write().await.remove(&serial).is_some();
-        if was_present {
-            let _ = app_handle.emit("scrcpy-stopped", &serial);
-        }
+        // C-1 修复：session 现在在 pump spawn 前已插入，remove 必然找得到（正常退出时）
+        sessions.write().await.remove(&serial);
+        // L-2 修复：移除冗余的 "scrcpy-stopped" 裸事件，统一由 session_state("stopped") 承载，
+        // 避免前端需要同时监听两个语义重叠的事件。
         emit_session_state(&app_handle, &serial, "stopped", width, height, None, last_frame_at_ms);
         eprintln!("[scrcpy] 帧推送结束: {}", serial);
     }

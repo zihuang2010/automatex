@@ -12,6 +12,7 @@
 //! EventLoop 在每轮循环开头对比自己持有的代数与当前全局代数：
 //!   - 相等 → 继续运行（自己是最新一代）
 //!   - 不等 → 立刻退出（已被新连接替代）
+//!
 //! connect() 永远不需要 store(false)，彻底消除竞态。
 
 use crate::constants::{mqtt_emit_status, mqtt_topic, tauri_event};

@@ -87,7 +87,7 @@ export function showToast(msg: string, type: 'info' | 'warning' | 'error' = 'war
  * 将 Unix 时间戳（秒）格式化为剩余倒计时
  * 返回 null 表示已过期，否则返回 { text, totalSeconds, percent }
  */
-export function formatCountdown(
+function formatCountdown(
   targetUnix: number,
   intervalMinute: number,
 ): { text: string; totalSeconds: number; percent: number } | null {

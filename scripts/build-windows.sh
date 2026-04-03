@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────
 #  AutomateX — Windows 交叉编译构建脚本 (从 macOS 构建)
-#  产物: AutomateX.exe + adb.exe (位于 backends/target/output/windows-x64/)
+#  产物: 单文件主程序（adb / scrcpy-server / DLL 已内嵌）
+#        位于 backends/target/output/windows-x64-single/
 #
 #  前置依赖 (一次性安装):
 #    1. rustup target add x86_64-pc-windows-msvc
@@ -16,9 +17,8 @@ set -euo pipefail
 APP_NAME="AutomateX"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET="x86_64-pc-windows-msvc"
-ADB_BIN="$ROOT_DIR/backends/binaries/adb-${TARGET}.exe"
 RELEASE_DIR="$ROOT_DIR/backends/target/$TARGET/release"
-OUTPUT_DIR="$ROOT_DIR/backends/target/x86_64-pc-windows"
+OUTPUT_DIR="$ROOT_DIR/backends/target/output/windows-x64-single"
 XWIN_CACHE="$HOME/.xwin-cache"
 XWIN_SPLAT="$XWIN_CACHE/splat"
 
@@ -52,6 +52,10 @@ info "Node $(node -v) | npm $(npm -v)"
 info "Rust $(rustc --version | awk '{print $2}')"
 info "目标: $TARGET"
 
+# ── sidecar / 资源检查 ──
+info "检查打包资源..."
+node "$ROOT_DIR/scripts/package-doctor.mjs" "$TARGET"
+
 # 代理检测
 PROXY_ARGS=()
 if [ -n "${HTTPS_PROXY:-}" ]; then
@@ -61,12 +65,6 @@ elif [ -n "${https_proxy:-}" ]; then
     info "使用代理: $https_proxy"
     PROXY_ARGS=(--https-proxy "$https_proxy")
 fi
-
-# ── 检查 Windows 版 ADB ──
-if [ ! -f "$ADB_BIN" ]; then
-    error "未找到 Windows ADB: $ADB_BIN"
-fi
-info "Windows ADB: $(du -h "$ADB_BIN" | awk '{print $1}')"
 
 # ── 预下载 MSVC SDK (xwin splat) ──
 if [ -d "$XWIN_SPLAT/crt" ] && [ -d "$XWIN_SPLAT/sdk" ]; then
@@ -111,7 +109,7 @@ export XWIN_CACHE_DIR="$XWIN_CACHE"
 # 正规 `npx tauri build` 会自动添加此 feature，但 cargo xwin build 绕过 CLI 必须手动指定
 cargo xwin build --release --target "$TARGET" --features tauri/custom-protocol
 
-# ── 收集产物到 backends/target/x86_64-pc-windows/ ──
+# ── 收集产物 ──
 info "收集产物..."
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
@@ -125,10 +123,6 @@ else
     error "未找到构建产物 .exe"
 fi
 
-# 复制 ADB
-cp "$ADB_BIN" "$OUTPUT_DIR/adb.exe"
-info "ADB: adb.exe"
-
 # ── 输出摘要 ──
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -137,6 +131,5 @@ echo ""
 info "产物目录: $OUTPUT_DIR"
 ls -lh "$OUTPUT_DIR"
 echo ""
-warn "部署: 将 backends/target/x86_64-pc-windows/ 整个文件夹复制到 Windows 机器运行"
-warn "确保 adb.exe 与主程序在同一目录下"
+warn "部署: 直接分发该 exe 即可，运行时会自动释放 adb / scrcpy-server / Windows DLL"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

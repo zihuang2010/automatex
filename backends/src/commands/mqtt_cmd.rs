@@ -8,11 +8,11 @@ pub(crate) fn build_mqtt_config_from(s: &std::collections::HashMap<String, Strin
     let port: u16 = s
         .get(setting_key::MQTT_PORT)
         .and_then(|v| v.parse().ok())
-        .unwrap_or_else(|| mqtt_default::port_num());
+        .unwrap_or_else(mqtt_default::port_num);
     let client_id = s
         .get(setting_key::MQTT_CLIENT_ID)
         .cloned()
-        .unwrap_or_else(|| crate::utils::generate_machine_client_id());
+        .unwrap_or_else(crate::utils::generate_machine_client_id);
     let username = s.get(setting_key::MQTT_USERNAME).filter(|v| !v.is_empty()).cloned();
     let password = s.get(setting_key::MQTT_PASSWORD).filter(|v| !v.is_empty()).cloned();
     MqttConfig { broker_host: host, broker_port: port, client_id, username, password }

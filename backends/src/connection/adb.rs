@@ -4,27 +4,168 @@
 //! DeviceManager 方法通过本模块与 ADB 交互。
 
 use base64::Engine;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::OnceLock;
+use tauri::{path::BaseDirectory, AppHandle, Manager};
+
+include!(concat!(env!("OUT_DIR"), "/embedded_assets.rs"));
 
 const ADB_KEYBOARD_IME: &str = "com.android.adbkeyboard/.AdbIME";
 const ADB_KEYBOARD_SWITCH_DELAY_MS: u64 = 120;
 const ADB_KEYBOARD_RESTORE_DELAY_MS: u64 = 40;
+static EMBEDDED_ADB_PATH: OnceLock<String> = OnceLock::new();
+static EMBEDDED_SCRCPY_SERVER_PATH: OnceLock<String> = OnceLock::new();
+static ADB_FALLBACK_PATH: OnceLock<String> = OnceLock::new();
 
-/// 获取内嵌 adb 的路径（Tauri sidecar，与可执行文件同目录）
+/// 获取 adb 的运行时路径。
+///
+/// 优先使用启动时从主程序中释放到应用私有目录的 adb，
+/// 其次回退到同目录 sidecar，再次回退到系统 PATH。
 pub fn adb_path() -> &'static str {
-    static ADB: OnceLock<String> = OnceLock::new();
-    ADB.get_or_init(|| {
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(dir) = exe.parent() {
-                let sidecar = if cfg!(windows) { dir.join("adb.exe") } else { dir.join("adb") };
-                if sidecar.exists() {
-                    return sidecar.to_string_lossy().to_string();
-                }
+    if let Some(path) = EMBEDDED_ADB_PATH.get() {
+        return path.as_str();
+    }
+
+    ADB_FALLBACK_PATH.get_or_init(|| {
+        if let Some(sidecar) = sidecar_dir().map(|dir| {
+            if cfg!(windows) { dir.join("adb.exe") } else { dir.join("adb") }
+        }) {
+            if sidecar.exists() {
+                return sidecar.to_string_lossy().to_string();
             }
         }
         "adb".to_string()
     })
+}
+
+fn sidecar_dir() -> Option<PathBuf> {
+    std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.to_path_buf()))
+}
+
+fn resolve_resource_path_candidates(app: &AppHandle, candidates: &[&str]) -> Option<PathBuf> {
+    candidates.iter().find_map(|relative| {
+        app.path().resolve(relative, BaseDirectory::Resource).ok().filter(|path| path.exists())
+    })
+}
+
+fn embedded_runtime_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let base =
+        app.path().app_local_data_dir().map_err(|e| format!("获取应用本地数据目录失败: {}", e))?;
+    Ok(base.join("runtime-sidecars"))
+}
+
+fn write_embedded_asset(
+    target: &std::path::Path,
+    bytes: &[u8],
+    #[cfg_attr(not(unix), allow(unused_variables))] executable: bool,
+) -> Result<(), String> {
+    // LOG-1 修复：先毒大小（快路），大小相同时再全量内容比对，
+    // 防止攻击者用相同大小的恶意二进制替换 adb/scrcpy-server。
+    // 启动期读取一次（最多 8MB）可接受（<100ms on SSD）。
+    let needs_write = match std::fs::metadata(target) {
+        Ok(meta) if meta.len() as usize == bytes.len() => {
+            // 大小相同：全量内容比对确保完整性
+            std::fs::read(target).map(|existing| existing != bytes).unwrap_or(true)
+        },
+        Ok(_) => true,  // 大小不同，必须重写
+        Err(_) => true, // 文件不存在
+    };
+    if needs_write {
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("创建运行时资源目录失败 {}: {}", parent.display(), e))?;
+        }
+        std::fs::write(target, bytes)
+            .map_err(|e| format!("写入运行时资源失败 {}: {}", target.display(), e))?;
+    }
+
+    #[cfg(unix)]
+    if executable {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(target)
+            .map_err(|e| format!("读取权限失败 {}: {}", target.display(), e))?
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(target, perms)
+            .map_err(|e| format!("设置可执行权限失败 {}: {}", target.display(), e))?;
+    }
+
+    Ok(())
+}
+
+pub fn resolve_scrcpy_server_path(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Some(path) = EMBEDDED_SCRCPY_SERVER_PATH.get() {
+        return Ok(PathBuf::from(path));
+    }
+
+    if let Some(path) = resolve_resource_path_candidates(
+        app,
+        &["resources/scrcpy-server", "scrcpy-server"],
+    ) {
+        return Ok(path);
+    }
+
+    if let Some(dir) = sidecar_dir() {
+        let sibling = dir.join("scrcpy-server");
+        if sibling.exists() {
+            return Ok(sibling);
+        }
+    }
+
+    Err("找不到 scrcpy-server 资源，请确认已将 backends/resources/scrcpy-server 打包进应用".into())
+}
+
+pub fn prepare_packaged_sidecars(app: &AppHandle) {
+    let runtime_dir = match embedded_runtime_dir(app) {
+        Ok(dir) => dir,
+        Err(err) => {
+            eprintln!("[integrity] 初始化运行时资源目录失败: {}", err);
+            return;
+        },
+    };
+
+    if let Some(bytes) = EMBEDDED_ADB_BYTES {
+        let target = runtime_dir.join(if cfg!(windows) { "adb.exe" } else { "adb" });
+        match write_embedded_asset(&target, bytes, true) {
+            Ok(()) => {
+                let _ = EMBEDDED_ADB_PATH.set(target.to_string_lossy().to_string());
+                eprintln!("[integrity] ✓ 已准备内嵌 adb: {}", target.display());
+            },
+            Err(err) => eprintln!("[integrity] 准备 adb 失败: {}", err),
+        }
+    } else {
+        eprintln!("[integrity] ⚠ 当前目标未内嵌 adb，将继续尝试 sidecar / PATH");
+    }
+
+    if let Some(bytes) = EMBEDDED_SCRCPY_SERVER_BYTES {
+        let target = runtime_dir.join("scrcpy-server");
+        match write_embedded_asset(&target, bytes, false) {
+            Ok(()) => {
+                let _ = EMBEDDED_SCRCPY_SERVER_PATH.set(target.to_string_lossy().to_string());
+                eprintln!("[integrity] ✓ 已准备内嵌 scrcpy-server: {}", target.display());
+            },
+            Err(err) => eprintln!("[integrity] 准备 scrcpy-server 失败: {}", err),
+        }
+    } else {
+        eprintln!("[integrity] ⚠ 当前目标未内嵌 scrcpy-server");
+    }
+
+    #[cfg(windows)]
+    for (dll, bytes) in [
+        ("AdbWinApi.dll", EMBEDDED_ADB_WIN_API_BYTES),
+        ("AdbWinUsbApi.dll", EMBEDDED_ADB_WIN_USB_BYTES),
+    ] {
+        let Some(bytes) = bytes else {
+            eprintln!("[integrity] Windows 运行时依赖未内嵌: {}", dll);
+            continue;
+        };
+        let dst = runtime_dir.join(dll);
+        match write_embedded_asset(&dst, bytes, false) {
+            Ok(()) => eprintln!("[integrity] ✓ 已准备 Windows ADB 依赖: {}", dll),
+            Err(err) => eprintln!("[integrity] 同步 {} 失败: {}", dll, err),
+        }
+    }
 }
 
 /// 全局 ADB server 端口（默认 5037，启动时可自动调整）
@@ -121,36 +262,53 @@ pub fn resolve_adb_port() {
 /// 检测点：文件存在、大小 > 100KB（防截断）、可读。
 /// Windows 额外检查 AdbWinApi.dll 和 AdbWinUsbApi.dll。
 /// 在启动时调用一次即可，结果缓存在日志中。
-pub fn verify_sidecar_integrity() {
-    let exe_dir =
-        match std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())) {
-            Some(d) => d,
-            None => {
-                eprintln!("[integrity] 无法获取可执行文件目录");
-                return;
-            },
-        };
-
+pub fn verify_sidecar_integrity(app: Option<&AppHandle>) {
     let adb_name = if cfg!(windows) { "adb.exe" } else { "adb" };
-    let sidecars = [adb_name, "scrcpy-server"];
+    let adb_path = EMBEDDED_ADB_PATH
+        .get()
+        .map(PathBuf::from)
+        .or_else(|| sidecar_dir().map(|dir| dir.join(adb_name)));
+    match adb_path.and_then(|path| std::fs::metadata(&path).ok().map(|meta| (path, meta))) {
+        Some((path, meta)) if meta.len() >= 100_000 => {
+            eprintln!("[integrity] ✓ {} ({} bytes) @ {}", adb_name, meta.len(), path.display());
+        },
+        Some((path, meta)) => {
+            eprintln!(
+                "[integrity] ⚠ {} 文件异常: 大小仅 {} 字节 (可能被截断/替换) @ {}",
+                adb_name,
+                meta.len(),
+                path.display()
+            );
+        },
+        None => {
+            eprintln!("[integrity] ⚠ {} 未找到（内嵌运行时 / sidecar / PATH）", adb_name);
+        },
+    }
 
-    for name in &sidecars {
-        let path = exe_dir.join(name);
-        match std::fs::metadata(&path) {
-            Ok(meta) => {
-                let size = meta.len();
-                if size < 100_000 {
-                    eprintln!(
-                        "[integrity] ⚠ {} 文件异常: 大小仅 {} 字节 (可能被截断/替换)",
-                        name, size
-                    );
-                } else {
-                    eprintln!("[integrity] ✓ {} ({} bytes)", name, size);
-                }
-            },
-            Err(_) => {
-                eprintln!("[integrity] ⚠ {} 未找到: {:?}", name, path);
-            },
+    let scrcpy_resource = EMBEDDED_SCRCPY_SERVER_PATH.get().map(PathBuf::from).or_else(|| app.and_then(|app| {
+        resolve_resource_path_candidates(app, &["resources/scrcpy-server", "scrcpy-server"])
+    }));
+    match scrcpy_resource
+        .or_else(|| {
+            sidecar_dir().and_then(|dir| {
+                let sibling = dir.join("scrcpy-server");
+                sibling.exists().then_some(sibling)
+            })
+        })
+        .and_then(|path| std::fs::metadata(&path).ok().map(|meta| (path, meta)))
+    {
+        Some((path, meta)) if meta.len() >= 50_000 => {
+            eprintln!("[integrity] ✓ scrcpy-server ({} bytes) @ {}", meta.len(), path.display());
+        },
+        Some((path, meta)) => {
+            eprintln!(
+                "[integrity] ⚠ scrcpy-server 文件异常: 大小仅 {} 字节 @ {}",
+                meta.len(),
+                path.display()
+            );
+        },
+        None => {
+            eprintln!("[integrity] ⚠ scrcpy-server 未找到（资源目录或 sidecar 同目录）");
         }
     }
 
@@ -159,11 +317,19 @@ pub fn verify_sidecar_integrity() {
     {
         let dlls = ["AdbWinApi.dll", "AdbWinUsbApi.dll"];
         for dll in &dlls {
-            let path = exe_dir.join(dll);
-            if path.exists() {
-                eprintln!("[integrity] ✓ {}", dll);
-            } else {
-                eprintln!("[integrity] ⚠ {} 未找到: {:?} — adb.exe 可能无法正常运行！", dll, path);
+            let path = EMBEDDED_ADB_PATH
+                .get()
+                .and_then(|adb| PathBuf::from(adb).parent().map(|dir| dir.join(dll)))
+                .or_else(|| sidecar_dir().map(|dir| dir.join(dll)));
+            if let Some(path) = path {
+                if path.exists() {
+                    eprintln!("[integrity] ✓ {}", dll);
+                } else {
+                    eprintln!(
+                        "[integrity] ⚠ {} 未找到: {:?} — adb.exe 可能无法正常运行！",
+                        dll, path
+                    );
+                }
             }
         }
     }
@@ -236,7 +402,10 @@ pub fn run_adb_timed(
                     let _ = child.wait();
                     return Err(format!("ADB 命令超时 ({}s)", timeout_secs));
                 }
-                std::thread::sleep(std::time::Duration::from_millis(100));
+                // MEM-1 修复：躺询间隔 100ms → 20ms，
+                // 降低 spawn_blocking 线程池最坏阻塞时间。
+                // 并行 fetch 趄多时，OS 级 thread sleep 对内核准确无开销。
+                std::thread::sleep(std::time::Duration::from_millis(20));
             },
             Err(e) => return Err(format!("等待命令失败: {}", e)),
         }
@@ -256,7 +425,6 @@ pub async fn run_adb_async(
     let mut cmd = tokio::process::Command::new(adb_path());
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000);
     }
 
@@ -304,7 +472,6 @@ async fn run_adb_async_raw(args: &[&str], timeout_secs: u64) -> Result<String, S
     let mut cmd = tokio::process::Command::new(adb_path());
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000);
     }
 

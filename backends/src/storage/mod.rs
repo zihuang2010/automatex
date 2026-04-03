@@ -49,6 +49,21 @@ pub struct TaskStateRow {
     pub runtime_status: Option<String>,
 }
 
+/// save_task_state 的参数包（消除 11 参数 code smell）
+#[derive(Default)]
+pub struct SaveTaskStateParams<'a> {
+    pub task_id: &'a str,
+    pub status: &'a str,
+    pub assigned_device: Option<&'a str>,
+    pub current_round_id: Option<i64>,
+    pub current_city_name: Option<&'a str>,
+    pub current_keyword_name: Option<&'a str>,
+    pub attempt: i32,
+    pub next_wakeup_at: Option<i64>,
+    pub last_error: Option<&'a str>,
+    pub runtime_status: Option<&'a str>,
+}
+
 // ─── 辅助函数 ──────────────────────────────────────────────────
 
 pub(crate) fn log_exec(result: rusqlite::Result<usize>, op: &str) {
@@ -193,25 +208,67 @@ impl Database {
             )
             .map_err(|e| format!("建表失败: {}", e))?;
 
-            // 迁移：为旧数据库添加新列（ignore duplicate column 错误）
-            let migrations = [
-                "ALTER TABLE a_task_progress ADD COLUMN round_id INTEGER NOT NULL DEFAULT 0;",
-                "ALTER TABLE a_task_progress ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'pending';",
-                "ALTER TABLE a_task_progress ADD COLUMN device_serial TEXT NOT NULL DEFAULT '';",
-                "ALTER TABLE a_task_runs ADD COLUMN round_id INTEGER;",
-                "ALTER TABLE a_task_runs ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'pending';",
-                "ALTER TABLE a_task_runs ADD COLUMN cities_baseline INTEGER NOT NULL DEFAULT 0;",
-                "ALTER TABLE a_task_runs ADD COLUMN keywords_baseline INTEGER NOT NULL DEFAULT 0;",
-                "ALTER TABLE a_task_state ADD COLUMN current_city_name TEXT;",
-                "ALTER TABLE a_task_state ADD COLUMN current_keyword_name TEXT;",
-                "ALTER TABLE a_task_state ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0;",
-                "ALTER TABLE a_task_state ADD COLUMN next_wakeup_at INTEGER;",
-                "ALTER TABLE a_task_state ADD COLUMN last_error TEXT;",
-                "ALTER TABLE a_task_state ADD COLUMN runtime_status TEXT;",
+            // ARC-1 修复（Part 1）：建立 _schema_version 档案表追踪迁移历史
+            // 当前仍使用 ALTER TABLE 增量方式，但版本号提供可观测性，
+            // 为后续迁移至 refinery/diesel_migrations 奠定基础。
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS _schema_version (
+                    version     INTEGER PRIMARY KEY,
+                    applied_at  INTEGER NOT NULL DEFAULT 0,
+                    description TEXT
+                );"
+            ).map_err(|e| format!("建 _schema_version 表失败: {}", e))?;
+
+            // ARC-1 修复（Part 2）：迁移循环改为 fail-loud 模式：
+            // - "duplicate column" 错误：列已存在，静默跳过（兼容旧库）
+            // - 其他错误：明确失败，防止 schema 静默不一致
+            let versioned_migrations: &[(i64, &str, &str)] = &[
+                (1, "ALTER TABLE a_task_progress ADD COLUMN round_id INTEGER NOT NULL DEFAULT 0;", "progress.round_id"),
+                (2, "ALTER TABLE a_task_progress ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'pending';", "progress.sync_status"),
+                (3, "ALTER TABLE a_task_progress ADD COLUMN device_serial TEXT NOT NULL DEFAULT '';", "progress.device_serial"),
+                (4, "ALTER TABLE a_task_runs ADD COLUMN round_id INTEGER;", "runs.round_id"),
+                (5, "ALTER TABLE a_task_runs ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'pending';", "runs.sync_status"),
+                (6, "ALTER TABLE a_task_runs ADD COLUMN cities_baseline INTEGER NOT NULL DEFAULT 0;", "runs.cities_baseline"),
+                (7, "ALTER TABLE a_task_runs ADD COLUMN keywords_baseline INTEGER NOT NULL DEFAULT 0;", "runs.keywords_baseline"),
+                (8, "ALTER TABLE a_task_state ADD COLUMN current_city_name TEXT;", "state.current_city_name"),
+                (9, "ALTER TABLE a_task_state ADD COLUMN current_keyword_name TEXT;", "state.current_keyword_name"),
+                (10, "ALTER TABLE a_task_state ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0;", "state.attempt"),
+                (11, "ALTER TABLE a_task_state ADD COLUMN next_wakeup_at INTEGER;", "state.next_wakeup_at"),
+                (12, "ALTER TABLE a_task_state ADD COLUMN last_error TEXT;", "state.last_error"),
+                (13, "ALTER TABLE a_task_state ADD COLUMN runtime_status TEXT;", "state.runtime_status"),
             ];
-            for sql in &migrations {
-                let _ = conn.execute_batch(sql); // 列已存在时忽略错误
+
+            let now_ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+
+            for (version, sql, description) in versioned_migrations {
+                match conn.execute_batch(sql) {
+                    Ok(_) => {
+                        // 迁移成功，记录版本
+                        let _ = conn.execute(
+                            "INSERT OR IGNORE INTO _schema_version (version, applied_at, description) VALUES (?1, ?2, ?3)",
+                            rusqlite::params![version, now_ts, description],
+                        );
+                        eprintln!("[db] 迁移 v{} ({}) 已应用", version, description);
+                    },
+                    Err(e) => {
+                        let err_msg = e.to_string();
+                        if err_msg.contains("duplicate column") {
+                            // 列已存在（旧库已应用此迁移），静默记录版本
+                            let _ = conn.execute(
+                                "INSERT OR IGNORE INTO _schema_version (version, applied_at, description) VALUES (?1, ?2, ?3)",
+                                rusqlite::params![version, now_ts, description],
+                            );
+                        } else {
+                            // ARC-1 fail-loud：真实迁移错误，返回 Err 而非静默吞掉
+                            return Err(format!("[db] 迁移 v{} ({}) 失败: {}", version, description, e));
+                        }
+                    },
+                }
             }
+
 
             // 建索引（此时所有列已确保存在）
             conn.execute_batch(

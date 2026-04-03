@@ -10,6 +10,16 @@ let _lastQueueHtml = '';
 let _queueSortable: Sortable | null = null;
 let _countdownTimer: ReturnType<typeof setInterval> | null = null;
 
+/** MEM-L3: 页面卸载时由 main.ts 调用，清除内部定时器和 Sortable 实例，防止内存泄漏 */
+export function cleanupQueue() {
+  if (_countdownTimer) {
+    clearInterval(_countdownTimer);
+    _countdownTimer = null;
+  }
+  _queueSortable?.destroy();
+  _queueSortable = null;
+}
+
 function getTaskCardProgress(task: TaskSummary): { pct: number; label: string } {
   if (task.keyword_total > 0) {
     return {

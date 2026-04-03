@@ -18,6 +18,14 @@ export function rerenderDeviceCardsFromCache() {
   }
 }
 
+/** MEM-L4: beforeunload 时由 main.ts 调用，取消挂起的 rAF，防止页面卸载后仍执行 DOM 更新 */
+export function cleanupDevices() {
+  if (_pendingRafId) {
+    cancelAnimationFrame(_pendingRafId);
+    _pendingRafId = null;
+  }
+}
+
 export function setDeviceCallbacks(
   onLoadTasks: (serial: string) => void,
   onShowDeviceInfo: (serial: string) => void,

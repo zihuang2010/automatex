@@ -23,7 +23,16 @@ let activePhoneBindPromise: Promise<void> | null = null;
 let activePhoneBindCleanup: (() => void) | null = null;
 
 export function updateStartupStatusUI(status: string): void {
-  void status;
+  // 更新启动状态 UI（splash 页面的状态文字）
+  // status 格式: 'booting:prepare' | 'booting:sync' | 'connected' | 等
+  const statusEl = document.getElementById('splash-status-text');
+  if (!statusEl) return;
+  const labelMap: Record<string, string> = {
+    'booting:prepare': '初始化中...',
+    'booting:sync': '同步任务数据...',
+    connected: '已连接',
+  };
+  statusEl.textContent = labelMap[status] ?? status;
 }
 
 /* ===== 手机号验证 ===== */
@@ -213,33 +222,26 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
           status: string;
           phones?: number;
           tasks?: number;
-          taskItems?: string[];
           conflicts?: Array<{ mobile?: string; phone?: string; clientId: string }>;
         }>('sync_tasks_by_phones', {
           phones: valid,
-          force: forceSync,
+          force:
+            forceSync || !!(submitBtn as HTMLButtonElement & { _forceNext?: boolean })._forceNext,
         });
+        (submitBtn as HTMLButtonElement & { _forceNext?: boolean })._forceNext = false;
 
         if (result.status === 'conflicts') {
           const message =
             result.conflicts
               ?.map(item => `${item.mobile ?? item.phone ?? ''}（占用端：${item.clientId}）`)
               .join('、') || '';
-          showError(`以下号码已在其他客户端绑定：${message}`);
-          const confirmed = window.confirm(
-            `以下号码已在其他客户端绑定：\n${message}\n\n是否强制绑定并继续同步？`,
+          // LOGIC-8 修复：移除 window.confirm（Tauri webview 中被阻止）
+          // 改为在 showError 中展示冲突信息，并提示用户再次点击提交将自动强制绑定
+          showError(
+            `以下号码已在其他客户端绑定：${message}。再次点击「${options.submitLabel ?? '开始同步'}」将强制绑定。`,
           );
-          if (confirmed) {
-            const forcedResult = await invoke<{ tasks?: number }>('sync_tasks_by_phones', {
-              phones: valid,
-              force: true,
-            });
-            if ((forcedResult.tasks ?? 0) === 0) {
-              showError(emptyTasksMessage);
-              return;
-            }
-            exit();
-          }
+          // 第二次提交时将走 force=true 路径（通过重新调用 onSubmit 处理）
+          (submitBtn as HTMLButtonElement & { _forceNext?: boolean })._forceNext = true;
           return;
         }
 

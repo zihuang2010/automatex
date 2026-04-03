@@ -195,7 +195,7 @@ impl Database {
                  FROM a_devices
                  ORDER BY CASE state WHEN 'Offline' THEN 1 ELSE 0 END, name",
             )?;
-            let rows = stmt.query_map([], |row| row_to_device(row))?;
+            let rows = stmt.query_map([], row_to_device)?;
             Ok::<_, rusqlite::Error>(rows.filter_map(|r| r.ok()).collect())
         })
         .await
@@ -213,7 +213,7 @@ impl Database {
                         battery_level, battery_temperature, is_flagged, updated_at
                  FROM a_devices WHERE serial = ?1",
                 params![serial],
-                |row| row_to_device(row),
+                row_to_device,
             )
             .ok()
         })
@@ -232,7 +232,7 @@ impl Database {
                         battery_level, battery_temperature, is_flagged, updated_at
                  FROM a_devices WHERE hw_serial = ?1",
                 params![hw_serial],
-                |row| row_to_device(row),
+                row_to_device,
             )
             .ok()
         })

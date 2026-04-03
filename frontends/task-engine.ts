@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { type UnlistenFn, listen } from '@tauri-apps/api/event';
+import { listen } from '@tauri-apps/api/event';
 
 import { rerenderDeviceCardsFromCache } from './devices';
 import { loadChainForDevice } from './queue';
@@ -15,7 +15,7 @@ import { renderTaskView } from './task-view';
 import { TaskSummary } from './types';
 import { showToast } from './utils';
 
-let _taskUpdateUnlisten: UnlistenFn | null = null;
+// LOGIC-9 修复：_taskUpdateUnlisten 已移至 main.ts 的 appUnlisteners 统一管理
 
 function syncActiveTaskFromQueue() {
   if (activeTask) {
@@ -60,22 +60,23 @@ async function renderTaskStateViews() {
 
 /* ===== 后端引擎事件监听 ===== */
 
-/** 初始化后端引擎事件监听 + 加载初始任务 */
-export async function initEngine() {
+/**
+ * 初始化后端引擎事件监听 + 加载初始任务
+ * 返回 unlisten 函数，由调用方（main.ts）将其纳入 appUnlisteners 统一管理
+ */
+export async function initEngine(): Promise<{ tasks: TaskSummary[]; unlisten: () => void }> {
   // 监听后端推送的任务状态更新
-  if (!_taskUpdateUnlisten) {
-    _taskUpdateUnlisten = await listen<{ tasks: TaskSummary[] }>('task://update', async event => {
-      const { tasks } = event.payload;
-      setGlobalQueue(tasks);
-      await renderTaskStateViews();
-    });
-  }
+  const unlisten = await listen<{ tasks: TaskSummary[] }>('task://update', async event => {
+    const { tasks } = event.payload;
+    setGlobalQueue(tasks);
+    await renderTaskStateViews();
+  });
 
   // 从后端引擎加载初始任务列表
   const tasks = await invoke<TaskSummary[]>('engine_get_tasks');
   setGlobalQueue(tasks);
   await renderTaskStateViews();
-  return tasks;
+  return { tasks, unlisten };
 }
 
 /* ===== 任务操作（调用后端引擎）===== */

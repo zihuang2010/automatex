@@ -44,6 +44,36 @@ fn ensure_local_parent_exists(path: &str, field: &str) -> Result<(), String> {
     }
 }
 
+/// SEC-3 修复：远端设备路径白名单校验，防止路径遍历攻击。
+///
+/// 仅允许访问安全的设备目录（/sdcard/、/data/local/tmp/ 等），
+/// 拒绝包含 `..` 的路径进行巡路径遍历。
+fn ensure_safe_remote_path(path: &str, field: &str) -> Result<(), String> {
+    ensure_safe_text(path, field)?;
+
+    // 重配隋防御：路径中不允许出现 .. 组件
+    if path.split('/').any(|seg| seg == ".." || seg == ".") {
+        return Err(format!("{} 包含非法路径组件 (.. / .): {}", field, path));
+    }
+
+    // 允许的安全目录前缀白名单
+    const ALLOWED_PREFIXES: &[&str] = &[
+        "/sdcard/",
+        "/storage/emulated/",
+        "/data/local/tmp/",
+        "/mnt/sdcard/",
+        "/mnt/user/",
+    ];
+    if !ALLOWED_PREFIXES.iter().any(|prefix| path.starts_with(prefix)) {
+        return Err(format!(
+            "{} 不在允许路径范围内（允许: /sdcard/ /data/local/tmp/ 等）: {}",
+            field, path
+        ));
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn add_device(
     address: String,
@@ -110,31 +140,32 @@ pub async fn execute_shell(
     command: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<ShellResult, String> {
-    let shell_debug_enabled = cfg!(debug_assertions)
-        || std::env::var("AUTOMATEX_ALLOW_DEVICE_SHELL")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+    // SEC-1 修复：编译期门控——不再依赖运行时环境变量。
+    // release 构建中函数体直接返回 Err，即使运维设置环境变量也不能绕过。
+    // debug 构建（开发调试）前保留完整功能。
 
-    if !shell_debug_enabled {
-        return Err(
-            "生产模式已禁用任意 ADB shell；如需调试，请设置 AUTOMATEX_ALLOW_DEVICE_SHELL=1"
-                .to_string(),
-        );
+    #[cfg(not(debug_assertions))]
+    {
+        // 避免未使用变量警告
+        let _ = (&serial, &command, &state);
+        return Err("生产模式已禁用任意 ADB shell（仅 debug 构建可用）".to_string());
     }
 
-    ensure_registered_device(&state, &serial).await?;
-    ensure_safe_text(&command, "shell 命令")?;
-    if command.len() > 512 {
-        return Err("shell 命令过长，已拒绝执行".to_string());
-    }
-
-    match connection::adb::adb_shell_async(&serial, &command).await {
-        Ok(output) => Ok(ShellResult {
-            success: true,
-            output: output.trim().to_string(),
-            error: String::new(),
-        }),
-        Err(e) => Ok(ShellResult { success: false, output: String::new(), error: e }),
+    #[cfg(debug_assertions)]
+    {
+        ensure_registered_device(&state, &serial).await?;
+        ensure_safe_text(&command, "shell 命令")?;
+        if command.len() > 512 {
+            return Err("shell 命令过长，已拒绝执行".to_string());
+        }
+        match connection::adb::adb_shell_async(&serial, &command).await {
+            Ok(output) => Ok(ShellResult {
+                success: true,
+                output: output.trim().to_string(),
+                error: String::new(),
+            }),
+            Err(e) => Ok(ShellResult { success: false, output: String::new(), error: e }),
+        }
     }
 }
 
@@ -185,7 +216,8 @@ pub async fn push_file(
 ) -> Result<String, String> {
     ensure_registered_device(&state, &serial).await?;
     ensure_local_path_exists(&local_path, "本地路径")?;
-    ensure_safe_text(&remote_path, "远端路径")?;
+    // SEC-3 修复：验证远端路径安全性
+    ensure_safe_remote_path(&remote_path, "远端路径")?;
     connection::adb::adb_cmd_async(&serial, &["push", &local_path, &remote_path])
         .await
         .map(|_| format!("文件已推送: {} -> {}", local_path, remote_path))
@@ -199,7 +231,8 @@ pub async fn pull_file(
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
     ensure_registered_device(&state, &serial).await?;
-    ensure_safe_text(&remote_path, "远端路径")?;
+    // SEC-3 修复：验证远端路径安全性
+    ensure_safe_remote_path(&remote_path, "远端路径")?;
     ensure_local_parent_exists(&local_path, "本地保存路径")?;
     connection::adb::adb_cmd_async(&serial, &["pull", &remote_path, &local_path])
         .await
