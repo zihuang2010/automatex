@@ -124,10 +124,11 @@ impl Database {
                     placeholders.join(",")
                 );
                 if let Ok(mut stmt) = conn.prepare(&sql) {
-                    if let Ok(rows) = stmt.query_map(
-                        rusqlite::params_from_iter(chunk.iter()),
-                        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i32>(1)?)),
-                    ) {
+                    if let Ok(rows) = stmt
+                        .query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
+                            Ok((row.get::<_, i64>(0)?, row.get::<_, i32>(1)?))
+                        })
+                    {
                         for row in rows.flatten() {
                             map.insert(row.0, row.1);
                         }
@@ -310,19 +311,16 @@ impl Database {
                     placeholders.join(",")
                 );
                 let mut stmt = conn.prepare(&sql)?;
-                let rows = stmt.query_map(
-                    rusqlite::params_from_iter(chunk.iter()),
-                    |row| {
-                        Ok(ProgressRow {
-                            task_id: row.get(0)?,
-                            city_name: row.get(1)?,
-                            keyword_name: row.get(2)?,
-                            status: row.get(3)?,
-                            completed_at: row.get(4)?,
-                            device_serial: row.get(5)?,
-                        })
-                    },
-                )?;
+                let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
+                    Ok(ProgressRow {
+                        task_id: row.get(0)?,
+                        city_name: row.get(1)?,
+                        keyword_name: row.get(2)?,
+                        status: row.get(3)?,
+                        completed_at: row.get(4)?,
+                        device_serial: row.get(5)?,
+                    })
+                })?;
                 all_rows.extend(rows.filter_map(|r| r.ok()));
             }
             Ok::<_, rusqlite::Error>(all_rows)
@@ -448,9 +446,11 @@ impl Database {
                     rusqlite::params![cutoff],
                 );
                 match result {
-                    Ok(n) if n > 0 => eprintln!("[db] 清理过期采集结果: {} 条（保留 {} 天）", n, keep_days),
+                    Ok(n) if n > 0 => {
+                        eprintln!("[db] 清理过期采集结果: {} 条（保留 {} 天）", n, keep_days)
+                    },
                     Err(e) => eprintln!("[db] cleanup_old_results 失败: {}", e),
-                    _ => {}
+                    _ => {},
                 }
             })
             .await;

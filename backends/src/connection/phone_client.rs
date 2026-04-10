@@ -338,6 +338,10 @@ impl PhoneClient {
             self.local_port
         );
 
-        Ok(PhoneStream { reader: BufReader::new(reader_half), _writer: writer_half, line_buf: String::new() })
+        Ok(PhoneStream {
+            reader: BufReader::new(reader_half),
+            _writer: writer_half,
+            line_buf: String::new(),
+        })
     }
 }

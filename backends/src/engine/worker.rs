@@ -138,26 +138,34 @@ async fn run_phone_scan(
         match stream.next_msg().await {
             // ── 实时进度（切换城市 / 开始扫描关键词）──
             Ok(Some(PhoneMsg::Progress { city, keyword, status })) => {
-                let _ = tx.send(EngineMsg::ScanProgress {
-                    task_id: task_id.to_string(),
-                    city,
-                    keyword,
-                    status,
-                    worker_seq,
-                }).await;
+                let _ = tx
+                    .send(EngineMsg::ScanProgress {
+                        task_id: task_id.to_string(),
+                        city,
+                        keyword,
+                        status,
+                        worker_seq,
+                    })
+                    .await;
             },
 
             // ── 单个关键词完成 ──
             Ok(Some(PhoneMsg::Result { city, keyword, items })) => {
                 let item_count = items.len() as i32;
                 // 实时写入 DB — crash-safe：进程崩溃后下次重启能准确恢复进度
-                db.record_keyword_done(task_id, &city, &keyword, device_serial, round_id, item_count).await;
+                db.record_keyword_done(
+                    task_id,
+                    &city,
+                    &keyword,
+                    device_serial,
+                    round_id,
+                    item_count,
+                )
+                .await;
                 // 写入采集结果明细
                 if !items.is_empty() {
-                    let pairs: Vec<(String, String)> = items
-                        .iter()
-                        .map(|it| (it.name.clone(), it.captured_at.clone()))
-                        .collect();
+                    let pairs: Vec<(String, String)> =
+                        items.iter().map(|it| (it.name.clone(), it.captured_at.clone())).collect();
                     db.save_keyword_results(task_id, round_id, &city, &keyword, &pairs).await;
                 }
                 eprintln!(
@@ -170,21 +178,20 @@ async fn run_phone_scan(
                     item_count,
                 );
                 // 通知引擎实时更新内存状态 + 推送前端
-                let _ = tx.send(EngineMsg::KeywordDone {
-                    task_id: task_id.to_string(),
-                    city: city.clone(),
-                    keyword: keyword.clone(),
-                    worker_seq,
-                }).await;
+                let _ = tx
+                    .send(EngineMsg::KeywordDone {
+                        task_id: task_id.to_string(),
+                        city: city.clone(),
+                        keyword: keyword.clone(),
+                        worker_seq,
+                    })
+                    .await;
                 completed.push((city, keyword));
             },
 
             // ── 手机端致命错误：立即终止，释放设备 ──
             Ok(Some(PhoneMsg::FatalError { city, reason, .. })) => {
-                eprintln!(
-                    "[worker] 致命错误 task={} city={} reason={}",
-                    task_id, city, reason
-                );
+                eprintln!("[worker] 致命错误 task={} city={} reason={}", task_id, city, reason);
                 return ExecutionOutcome::FatalError { completed, city, reason };
             },
 

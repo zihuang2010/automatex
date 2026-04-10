@@ -90,11 +90,8 @@ impl MqttManager {
                 }
 
                 // ── 每次重连都构建全新 opts + (client, eventloop)，彻底清空旧 outbox ──
-                let mut opts = MqttOptions::new(
-                    &config.client_id,
-                    &config.broker_host,
-                    config.broker_port,
-                );
+                let mut opts =
+                    MqttOptions::new(&config.client_id, &config.broker_host, config.broker_port);
                 opts.set_keep_alive(Duration::from_secs(
                     crate::constants::timing::MQTT_KEEP_ALIVE_SECS,
                 ));
@@ -142,8 +139,10 @@ impl MqttManager {
                                 Event::Incoming(Incoming::ConnAck(_)) => {
                                     was_connected = true;
                                     *status.lock().await = MqttStatus::Connected;
-                                    let _ = app_handle
-                                        .emit(tauri_event::MQTT_STATUS, mqtt_emit_status::CONNECTED);
+                                    let _ = app_handle.emit(
+                                        tauri_event::MQTT_STATUS,
+                                        mqtt_emit_status::CONNECTED,
+                                    );
                                     connect_ts = crate::constants::now_unix();
 
                                     // ⚠️ subscribe 必须在独立 task 内执行，避免自我死锁
@@ -189,7 +188,13 @@ impl MqttManager {
                                     let topic = publish.topic.clone();
                                     let payload =
                                         String::from_utf8_lossy(&publish.payload).to_string();
-                                    route_message(&topic, &payload, &app_handle, &config.client_id, connect_ts);
+                                    route_message(
+                                        &topic,
+                                        &payload,
+                                        &app_handle,
+                                        &config.client_id,
+                                        connect_ts,
+                                    );
                                 },
                                 Event::Incoming(Incoming::Disconnect) => {
                                     // Broker 主动发 DISCONNECT → 等待片刻后重新建立连接
@@ -211,10 +216,8 @@ impl MqttManager {
                             if was_connected {
                                 // 曾经连接成功 → 瞬态断线，用全新 EventLoop 重连（清除旧 outbox）
                                 *status.lock().await = MqttStatus::Connecting;
-                                let _ = app_handle.emit(
-                                    tauri_event::MQTT_STATUS,
-                                    mqtt_emit_status::CONNECTING,
-                                );
+                                let _ = app_handle
+                                    .emit(tauri_event::MQTT_STATUS, mqtt_emit_status::CONNECTING);
                                 eprintln!("[mqtt] 连接中断，3s 后重连: {}", err_msg);
                                 tokio::time::sleep(Duration::from_secs(3)).await;
                                 backoff_secs = 5; // 曾经成功过，重置退避计数
@@ -223,10 +226,7 @@ impl MqttManager {
                                 *status.lock().await = MqttStatus::Error(err_msg.clone());
                                 let _ = app_handle
                                     .emit(tauri_event::MQTT_STATUS, format!("error:{}", err_msg));
-                                eprintln!(
-                                    "[mqtt] 连接错误，{}s 后重试: {}",
-                                    backoff_secs, err_msg
-                                );
+                                eprintln!("[mqtt] 连接错误，{}s 后重试: {}", backoff_secs, err_msg);
                                 tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
                                 backoff_secs = (backoff_secs * 2).min(60);
                             }

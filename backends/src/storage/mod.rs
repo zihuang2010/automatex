@@ -4,8 +4,8 @@ mod settings;
 mod stats;
 mod tasks;
 
-pub use stats::{DailyStatRow, DailySummary, ProgressRow, TaskRunStats};
 pub use progress::ResultRow;
+pub use stats::{DailyStatRow, DailySummary, ProgressRow, TaskRunStats};
 
 use deadpool_sqlite::{Config, Hook, Pool, Runtime};
 use rusqlite::Connection;

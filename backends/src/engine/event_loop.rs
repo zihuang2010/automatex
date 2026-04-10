@@ -503,7 +503,11 @@ fn build_pending_batch(task: &crate::task_provider::Task) -> Vec<BatchTask> {
             if pending_kws.is_empty() {
                 None
             } else {
-                Some(BatchTask { city: city.name.clone(), poi: city.poi.clone(), keywords: pending_kws })
+                Some(BatchTask {
+                    city: city.name.clone(),
+                    poi: city.poi.clone(),
+                    keywords: pending_kws,
+                })
             }
         })
         .collect()
@@ -1382,8 +1386,12 @@ async fn handle_batch_done(
         .all(|city| city.keywords.iter().all(|kw| kw.status == keyword_status::OK));
 
     if all_done {
-        let interval =
-            s.tasks.iter().find(|t| t.id == task_id).and_then(|t| t.interval_minute).unwrap_or(0);
+        let interval = s
+            .tasks
+            .iter()
+            .find(|t| t.id == task_id)
+            .and_then(|t| t.interval_minute)
+            .unwrap_or(0);
 
         if interval > 0 {
             complete_round_with_interval(s, task_id, round_id, started_at, interval).await;
@@ -1404,10 +1412,7 @@ async fn handle_batch_done(
                     .unwrap_or(0),
             );
         } else {
-            eprintln!(
-                "[engine] task={} 批次未完全执行（未收到 done），调度继续",
-                task_id
-            );
+            eprintln!("[engine] task={} 批次未完全执行（未收到 done），调度继续", task_id);
         }
 
         if let Some(runtime) = s.running.get_mut(task_id) {
@@ -1426,10 +1431,7 @@ async fn handle_batch_done(
 /// - 对每个已完成的关键词：将状态置为 OK，更新城市 done 计数和进度
 /// - 若城市内所有关键词均已完成，将城市状态置为 DONE
 /// - **幂等**：关键词已是 OK 状态时跳过（不重复计数）
-fn apply_completed_to_task(
-    task: &mut crate::task_provider::Task,
-    completed: &[(String, String)],
-) {
+fn apply_completed_to_task(task: &mut crate::task_provider::Task, completed: &[(String, String)]) {
     for (city_name, keyword_name) in completed {
         let Some(city) = task.cities.iter_mut().find(|c| c.name == *city_name) else {
             eprintln!(
