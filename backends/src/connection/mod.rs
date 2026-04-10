@@ -1,10 +1,12 @@
 //! 设备连接管理模块
 //!
 //! - `types.rs` — DeviceType、DeviceEntry、ShellResult 数据结构
-//! - `adb.rs` — ADB 底层辅助函数
+//! - `adb.rs` — ADB 底层辅助函数（含 port-forward 管理）
+//! - `phone_client.rs` — 手机无障碍 App TCP 客户端（NDJSON 协议）
 //! - `mod.rs` — DeviceManager 设备管理器
 
 pub mod adb;
+pub mod phone_client;
 pub mod types;
 
 pub use adb::{adb_command, run_adb_timed};

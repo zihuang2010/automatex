@@ -372,12 +372,11 @@ function bindDragEngine(instance: MirrorInstance) {
 }
 
 function clampMirrorWindowPosition(win: HTMLElement, left: number, top: number) {
-  const visibleGripWidth = 96;
-  const visibleGripHeight = 88;
-  const minLeft = Math.min(24, window.innerWidth - visibleGripWidth);
-  const maxLeft = Math.max(minLeft, window.innerWidth - visibleGripWidth);
-  const safeLeft = clamp(left, minLeft - win.offsetWidth, maxLeft);
-  const safeTop = clamp(top, 12, Math.max(12, window.innerHeight - visibleGripHeight));
+  const winW = win.offsetWidth || 280;
+  const winH = win.offsetHeight || 400;
+  const pad = 4;
+  const safeLeft = clamp(left, pad, Math.max(pad, window.innerWidth - winW - pad));
+  const safeTop = clamp(top, pad, Math.max(pad, window.innerHeight - winH - pad));
 
   return { left: safeLeft, top: safeTop };
 }

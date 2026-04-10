@@ -13,7 +13,7 @@ import {
   setActiveTaskDetail,
   setSelectedDevice,
 } from './state';
-import { Task, TaskCity, TaskKeyword, TaskRunStats } from './types';
+import { ResultRow, Task, TaskCity, TaskKeyword, TaskRunStats } from './types';
 import { $, esc, formatRunTime, getCountdownState, getPresentationState } from './utils';
 
 // 回调注册（由 main.ts 初始化后设置，避免循环依赖）
@@ -38,6 +38,10 @@ let _prevKwInfoHtml = '';
 
 // TaskRunStats 缓存（避免每次渲染都跨进程查 DB）
 let _statsCache: { taskId: string; stats: TaskRunStats; taskStatus: string } | null = null;
+
+// 城市自动跟随：记录上一次手机所在城市，避免覆盖用户的手动选择
+let _lastPhoneCityName: string | null = null;
+let _manualCityOverride = false;
 
 export async function loadTasksForDevice(serial: string) {
   const task = globalQueue.find(t => t.assigned_device === serial);
@@ -100,6 +104,7 @@ function ensureSkeleton(mid: HTMLElement): boolean {
       <div class="flex-1 overflow-y-auto p-4 min-h-0">
         <div id="tv-kw-info" class="flex items-center justify-between mb-3"></div>
         <div id="tv-kw-grid" class="flex flex-wrap gap-2"></div>
+        <div id="tv-kw-results" class="hidden mt-4"></div>
       </div>
     </div>`;
   // 首次创建，清空缓存
@@ -130,6 +135,21 @@ export async function renderTaskView() {
       '<div class="empty-hint" style="padding:40px;text-align:center">选择任务以查看详情</div>';
     _prevTaskId = null;
     return;
+  }
+
+  // 手机切换城市时自动跟随：仅在手机切换到新城市时跟随，不覆盖用户手动选择
+  if (task.current_city_name && activeTask.presentation_status === TaskPresentationStatus.RUNNING) {
+    const phoneCity = task.current_city_name;
+    if (phoneCity !== _lastPhoneCityName) {
+      // 手机进入了新城市，清除手动覆盖并跟随
+      _lastPhoneCityName = phoneCity;
+      _manualCityOverride = false;
+      const phoneIdx = task.cities.findIndex(c => c.name === phoneCity);
+      if (phoneIdx >= 0 && phoneIdx !== activeCityIdx) {
+        setActiveCityIdx(phoneIdx);
+      }
+    }
+    // 手机仍在同一城市：不覆盖用户手动选择的城市
   }
 
   const city = task.cities[activeCityIdx] ?? task.cities[0];
@@ -582,11 +602,12 @@ function buildKeywordGrid(city: TaskCity): string {
   return city.keywords
     .map((k: TaskKeyword) => {
       if (k.status === KeywordStatus.OK) {
-        return `<div class="kw-item flex items-center justify-between p-2 rounded bg-green-100/50 border border-green-200 transition-all hover:bg-green-100">
+        return `<div class="kw-item flex items-center justify-between p-2 rounded bg-green-100/50 border border-green-200 transition-all hover:bg-green-100 cursor-pointer" onclick="window.__showKwResults('${esc(city.name)}','${esc(k.name)}')">
         <div class="flex items-center min-w-0">
           <span class="material-symbols-outlined icon-sm text-green-500 mr-1.5 fill-1">check_circle</span>
           <span class="text-[12px] font-semibold text-s600 truncate">${k.name}</span>
         </div>
+        <span class="material-symbols-outlined text-green-400 shrink-0" style="font-size:14px">chevron_right</span>
       </div>`;
       } else if (k.status === KeywordStatus.RUN) {
         return `<div class="kw-item flex items-center p-2 rounded bg-blue-100/50 border border-blue-400 keyword-active ring-2 ring-blue-100">
@@ -594,12 +615,102 @@ function buildKeywordGrid(city: TaskCity): string {
         <span class="text-[12px] font-bold text-blue-700 truncate">${k.name}</span>
       </div>`;
       } else {
-        return `<div class="kw-item flex items-center p-2 rounded bg-s100/50 border border-s200 hover:border-s300 transition-all cursor-pointer">
+        return `<div class="kw-item flex items-center justify-between p-2 rounded bg-s100/50 border border-s200 hover:border-s300 transition-all cursor-pointer" onclick="window.__showKwResults('${esc(city.name)}','${esc(k.name)}')">
         <span class="text-[12px] font-medium text-s500 truncate">${k.name}</span>
+        <span class="material-symbols-outlined text-s300 shrink-0" style="font-size:14px">chevron_right</span>
       </div>`;
       }
     })
     .join('');
+}
+
+// ─── 关键词结果内联面板 ────────────────────────────────────────
+
+function closeKwResultsPanel() {
+  const panel = document.getElementById('tv-kw-results');
+  if (panel) {
+    panel.classList.add('hidden');
+    panel.innerHTML = '';
+  }
+}
+
+function buildResultItem(r: ResultRow, i: number): string {
+  return `<div class="flex items-start gap-1.5 px-2 py-2 rounded-lg bg-white border border-s100 hover:border-s200 transition-all">
+    <span class="inline-flex items-center justify-center w-4 h-4 rounded bg-s100 text-[9px] font-black text-s600 font-mono mt-0.5 shrink-0 leading-none">${i + 1}</span>
+    <div class="min-w-0 flex-1">
+      <div class="text-[11px] font-semibold text-s800 leading-tight truncate" title="${esc(r.shop_name)}">${esc(r.shop_name)}</div>
+      ${r.captured_at ? `<div class="text-[10px] text-s400 mt-0.5 font-mono leading-none">${esc(r.captured_at)}</div>` : ''}
+    </div>
+  </div>`;
+}
+
+function groupResultsByRound(rows: ResultRow[]): Array<{ roundId: number; items: ResultRow[] }> {
+  const groups: Array<{ roundId: number; items: ResultRow[] }> = [];
+  for (const row of rows) {
+    const last = groups[groups.length - 1];
+    if (last && last.roundId === row.round_id) {
+      last.items.push(row);
+    } else {
+      groups.push({ roundId: row.round_id, items: [row] });
+    }
+  }
+  return groups; // 已按 round_id DESC 排序（最新一轮在前）
+}
+
+function renderKwResultsPanel(city: string, keyword: string, rows: ResultRow[], loading = false) {
+  const panel = document.getElementById('tv-kw-results');
+  if (!panel) return;
+
+  let listHtml: string;
+  if (loading) {
+    listHtml = `<div class="flex items-center justify-center py-8 text-s300 gap-2">
+        <span class="material-symbols-outlined animate-spin" style="font-size:18px">progress_activity</span>
+        <span class="text-[12px]">加载中...</span>
+       </div>`;
+  } else if (rows.length === 0) {
+    listHtml = `<div class="flex flex-col items-center justify-center py-8 text-s300">
+        <span class="material-symbols-outlined mb-1.5" style="font-size:28px">inbox</span>
+        <span class="text-[10px]">暂无采集数据</span>
+       </div>`;
+  } else {
+    const groups = groupResultsByRound(rows);
+    const totalRounds = groups.length;
+    listHtml = groups
+      .map((group, gIdx) => {
+        const roundNo = totalRounds - gIdx; // 最新一轮编号最大
+        const isLatest = gIdx === 0;
+        const roundLabel = `第 ${roundNo} 轮`;
+        return `
+          <div class="${gIdx > 0 ? 'mt-5 pt-4 border-t border-s100' : ''}">
+            <div class="flex items-center gap-2 mb-2">
+              <span class="material-symbols-outlined text-s400" style="font-size:13px">refresh</span>
+              <span class="text-[11px] font-bold text-s700">${roundLabel}</span>
+              ${isLatest ? '<span class="px-1.5 py-0.5 bg-blue-50 text-blue-600 border border-blue-200 rounded text-[9px] font-bold">最新</span>' : ''}
+              <span class="text-[10px] text-s400">${group.items.length} 条</span>
+            </div>
+            <div class="grid grid-cols-3 gap-1.5">
+              ${group.items.map((r, i) => buildResultItem(r, i)).join('')}
+            </div>
+          </div>`;
+      })
+      .join('');
+  }
+
+  panel.className = 'mt-4 rounded-xl border border-green-200 bg-green-50/30 overflow-hidden';
+  panel.innerHTML = `
+    <div class="flex items-center justify-between px-3.5 py-2.5 border-b border-green-200/60 bg-green-50/50">
+      <div class="flex items-center gap-2">
+        <span class="material-symbols-outlined text-green-500 fill-1" style="font-size:15px">check_circle</span>
+        <span class="text-[11px] text-s500 font-medium">${esc(city)}</span>
+        <span class="text-s300">/</span>
+        <span class="text-[12px] font-bold text-s800">${esc(keyword)}</span>
+        ${!loading ? `<span class="px-1.5 py-0.5 bg-green-100 text-green-700 border border-green-200 rounded text-[10px] font-bold">${rows.length} 条</span>` : ''}
+      </div>
+      <button onclick="window.__closeKwResults()" class="w-6 h-6 flex items-center justify-center rounded-md hover:bg-green-200/60 transition-colors">
+        <span class="material-symbols-outlined text-s400" style="font-size:16px">close</span>
+      </button>
+    </div>
+    <div class="p-3">${listHtml}</div>`;
 }
 
 /** 注册全局视图切换回调 */
@@ -612,6 +723,9 @@ export function registerViewActions() {
       setActiveTaskDetail(null);
       setActiveCityIdx(0);
       setSelectedDevice(null);
+      _lastPhoneCityName = null;
+      _manualCityOverride = false;
+      closeKwResultsPanel();
       _onUpdateCardSelection?.();
       renderTaskView();
       _onLoadChainForDevice?.('');
@@ -620,6 +734,8 @@ export function registerViewActions() {
     __switchCity: async (idx: unknown) => {
       const i = idx as number;
       if (i === activeCityIdx) return;
+      _manualCityOverride = true;
+      closeKwResultsPanel();
       setActiveCityIdx(i);
       await renderTaskView();
       const cityContainer = document.getElementById('tv-cities');
@@ -635,6 +751,34 @@ export function registerViewActions() {
         const name = el.textContent?.toLowerCase() || '';
         (el as HTMLElement).style.display = name.includes(q) ? '' : 'none';
       });
+    },
+
+    __showKwResults: async (city: unknown, keyword: unknown) => {
+      const cityStr = city as string;
+      const kwStr = keyword as string;
+      if (!activeTask) return;
+      // 立即显示 loading 状态
+      renderKwResultsPanel(cityStr, kwStr, [], true);
+      // 滚动到结果面板
+      setTimeout(() => {
+        document
+          .getElementById('tv-kw-results')
+          ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }, 50);
+      try {
+        const rows = await invoke<ResultRow[]>('get_keyword_results', {
+          taskId: activeTask.id,
+          cityName: cityStr,
+          keywordName: kwStr,
+        });
+        renderKwResultsPanel(cityStr, kwStr, rows);
+      } catch {
+        renderKwResultsPanel(cityStr, kwStr, []);
+      }
+    },
+
+    __closeKwResults: () => {
+      closeKwResultsPanel();
     },
   };
 

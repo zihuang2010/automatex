@@ -89,6 +89,7 @@ pub(crate) async fn check_daily_reset(db: &storage::Database) {
     db.daily_reset_tasks().await;
     db.delete_all_devices().await;
     db.cleanup_synced_progress().await;
+    db.cleanup_old_results(3).await; // 只保留近 3 天的采集结果
     db.set_setting(constants::setting_key::LAST_ACTIVE_DATE, &today).await;
     eprintln!("[startup] 跨日重置完成, last_active_date={}", today);
 }

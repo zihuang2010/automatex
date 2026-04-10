@@ -316,8 +316,9 @@ export function loadChainForDevice(_serial: string) {
               <span class="task-queue-drag-handle material-symbols-outlined">drag_indicator</span>
               <h4 class="truncate text-[12px] font-bold leading-none tracking-[0.01em] text-s700">${esc(q.name)}</h4>
             </div>
-            <div class="flex h-7 shrink-0 items-center rounded-full bg-s100 px-2.5 py-0.5">
-              <span class="text-[11px] font-bold text-red-500">异常暂停</span>
+            <div class="flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-red-50 border border-red-200 px-2.5 py-0.5">
+              <span class="material-symbols-outlined text-red-400" style="font-size:13px">error</span>
+              <span class="text-[11px] font-bold text-red-600">异常暂停</span>
             </div>
           </div>
           ${statsRow}

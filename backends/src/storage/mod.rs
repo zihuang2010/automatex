@@ -5,6 +5,7 @@ mod stats;
 mod tasks;
 
 pub use stats::{DailyStatRow, DailySummary, ProgressRow, TaskRunStats};
+pub use progress::ResultRow;
 
 use deadpool_sqlite::{Config, Hook, Pool, Runtime};
 use rusqlite::Connection;
@@ -203,7 +204,19 @@ impl Database {
                 completed_at  INTEGER NOT NULL,
                 device_serial TEXT NOT NULL,
                 sync_status   TEXT NOT NULL DEFAULT 'pending',
+                item_count    INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(task_id, city_name, keyword_name, round_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS a_task_results (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id      TEXT NOT NULL,
+                round_id     INTEGER NOT NULL,
+                city_name    TEXT NOT NULL,
+                keyword_name TEXT NOT NULL,
+                shop_name    TEXT NOT NULL,
+                captured_at  TEXT NOT NULL DEFAULT '',
+                created_at   INTEGER NOT NULL
             );",
             )
             .map_err(|e| format!("建表失败: {}", e))?;
@@ -237,6 +250,8 @@ impl Database {
                 (11, "ALTER TABLE a_task_state ADD COLUMN next_wakeup_at INTEGER;", "state.next_wakeup_at"),
                 (12, "ALTER TABLE a_task_state ADD COLUMN last_error TEXT;", "state.last_error"),
                 (13, "ALTER TABLE a_task_state ADD COLUMN runtime_status TEXT;", "state.runtime_status"),
+                (14, "ALTER TABLE a_devices ADD COLUMN local_port INTEGER;", "devices.local_port"),
+                (15, "ALTER TABLE a_task_progress ADD COLUMN item_count INTEGER NOT NULL DEFAULT 0;", "progress.item_count"),
             ];
 
             let now_ts = std::time::SystemTime::now()
@@ -286,7 +301,10 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_runs_round ON a_task_runs(round_id);
             CREATE INDEX IF NOT EXISTS idx_runs_date ON a_task_runs(run_date, task_id);
             CREATE INDEX IF NOT EXISTS idx_runs_sync ON a_task_runs(sync_status);
-            CREATE INDEX IF NOT EXISTS idx_runs_device_date ON a_task_runs(device_serial, run_date);",
+            CREATE INDEX IF NOT EXISTS idx_runs_device_date ON a_task_runs(device_serial, run_date);
+            CREATE INDEX IF NOT EXISTS idx_results_lookup ON a_task_results(task_id, city_name, keyword_name);
+            CREATE INDEX IF NOT EXISTS idx_results_round ON a_task_results(task_id, round_id);
+            CREATE INDEX IF NOT EXISTS idx_results_round_id ON a_task_results(round_id);",
             )
             .map_err(|e| format!("建索引失败: {}", e))?;
         }

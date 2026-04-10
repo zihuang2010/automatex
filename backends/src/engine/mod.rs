@@ -82,10 +82,31 @@ pub(crate) enum EngineMsg {
     },
 
     // ── Worker 回报 ──
+    /// 手机端切换城市 / 开始扫描关键词（实时位置同步）
+    ScanProgress {
+        task_id: String,
+        city: String,
+        keyword: String,
+        /// "switching_location" | "searching"
+        status: String,
+        worker_seq: u64,
+    },
+    /// 单个关键词完成（实时进度，已写入 DB）
+    KeywordDone {
+        task_id: String,
+        city: String,
+        keyword: String,
+        worker_seq: u64,
+    },
     WorkerResult {
         task_id: String,
         worker_seq: u64,
         outcome: ExecutionOutcome,
+    },
+    /// 清除 ERROR 任务的设备关联，使设备重新可调度（用户手动确认异常后操作）
+    ClearTaskDevice {
+        task_id: String,
+        reply: oneshot::Sender<Result<(), String>>,
     },
     /// P1 修复：优雅关闭，取消所有 worker
     Shutdown {
@@ -95,9 +116,24 @@ pub(crate) enum EngineMsg {
 
 #[derive(Debug)]
 pub(crate) enum ExecutionOutcome {
-    Success { next_delay_ms: u64 },
+    /// 手机端返回了 `done` 消息（或部分完成后连接关闭）。
+    ///
+    /// - `completed` — 本批次中已确认完成的 (city, keyword) 列表（已写入 DB）
+    /// - `stopped` — 手机端是否提前停止（true 时可能仍有未完成的关键词）
+    BatchDone {
+        completed: Vec<(String, String)>,
+        stopped: bool,
+    },
+    /// TCP 连接失败或流中断，且无任何已完成结果（判定设备离线）
     DeviceOffline,
+    /// 被 CancellationToken 取消（用户暂停 / 停止任务）
     Cancelled,
+    /// 手机端报告不可恢复的致命错误（如切换城市超时），任务终止并释放设备
+    FatalError {
+        completed: Vec<(String, String)>,
+        city: String,
+        reason: String,
+    },
 }
 
 // ─── TaskEngine（thin sender wrapper）─────────────────
@@ -249,6 +285,15 @@ impl TaskEngine {
     #[allow(dead_code)]
     pub async fn force_emit_update(&self) {
         // 同上，event_loop 在每个消息处理后自动 emit
+    }
+
+    /// 清除 ERROR 任务的设备关联，使关联设备重新可调度
+    pub async fn clear_task_device(&self, task_id: &str) -> Result<(), String> {
+        self.send_and_recv(|reply| EngineMsg::ClearTaskDevice {
+            task_id: task_id.to_string(),
+            reply,
+        })
+        .await?
     }
 
     /// P1 修复：优雅关闭引擎，取消所有 worker 并等待 event_loop 退出

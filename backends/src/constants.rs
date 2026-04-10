@@ -26,6 +26,8 @@ pub mod city_status {
     pub const PENDING: &str = "pending";
     pub const ACTIVE: &str = "active";
     pub const DONE: &str = "done";
+    /// 手机端发生不可恢复错误（如切换城市超时），本轮跳过该城市
+    pub const ERROR: &str = "error";
 }
 
 /// 关键词状态
@@ -104,6 +106,18 @@ pub mod round_status {
     pub const STOPPED: &str = "stopped";
 }
 
+/// 手机无障碍 App TCP 通信配置
+pub mod phone_client {
+    /// 手机端无障碍 App 固定监听端口（每台设备相同）
+    pub const PHONE_PORT_ON_DEVICE: u16 = 7899;
+    /// PC 端端口分配起点（第一台设备使用此端口，依次递增）
+    pub const PORT_BASE: u16 = 7899;
+    /// 每次扫描任务的默认最大翻页数
+    pub const DEFAULT_MAX_PAGES: u32 = 3;
+    /// TCP 连接超时（秒）——超时即判定设备离线
+    pub const CONNECT_TIMEOUT_SECS: u64 = 10;
+}
+
 /// 时间间隔常量（秒）
 pub mod timing {
     /// 电池/温度定时刷新间隔
@@ -112,8 +126,8 @@ pub mod timing {
     pub const ADB_RECONNECT_WAIT_SECS: u64 = 5;
     /// WiFi 设备连接超时
     pub const WIFI_CONNECT_TIMEOUT_SECS: u64 = 5;
-    /// MQTT keep-alive 间隔
-    pub const MQTT_KEEP_ALIVE_SECS: u64 = 30;
+    /// MQTT keep-alive 间隔（10s：避免 NAT/防火墙 idle 超时，保持连接活跃）
+    pub const MQTT_KEEP_ALIVE_SECS: u64 = 10;
     /// ADB shell/cmd 命令超时（防止永久阻塞）
     pub const ADB_COMMAND_TIMEOUT_SECS: u64 = 30;
     /// 设备列表缓存 TTL（毫秒）

@@ -1,8 +1,10 @@
 import { invoke } from '@tauri-apps/api/core';
-import { DeviceRow } from './types';
-import { selectedDevice, setSelectedDevice } from './state';
-import { $, esc, showToast } from './utils';
+
+import { TaskPresentationStatus } from './constants';
 import { refreshDevices, updateCardSelection } from './devices';
+import { globalQueue, selectedDevice, setSelectedDevice } from './state';
+import { DeviceRow } from './types';
+import { $, esc, getPresentationState, showToast } from './utils';
 
 /* ===== Add Device Dialog ===== */
 
@@ -77,6 +79,45 @@ export async function removeSelectedDevice() {
 
 export async function unflagSelectedDevice() {
   if (!selectedDevice) return;
+
+  const card = document.querySelector(
+    `.dev-card[data-s="${selectedDevice}"]`,
+  ) as HTMLElement | null;
+  const isError = card?.dataset.error === '1';
+  const isFlagged = card?.dataset.flagged === '1';
+
+  if (isError) {
+    // 清除任务异常标记：找到绑定该设备的 ERROR_PAUSED 任务，解除关联
+    // FatalError 路径会同时 flag 设备，此处需同时解除 is_flagged
+    const errorTask = globalQueue.find(
+      t =>
+        t.assigned_device === selectedDevice &&
+        getPresentationState(t) === TaskPresentationStatus.ERROR_PAUSED,
+    );
+    if (!errorTask) {
+      showToast('未找到关联的异常任务', 'error');
+      return;
+    }
+    try {
+      if (isFlagged) {
+        // FatalError 已将设备标记为 is_flagged，需先解除才能重新调度
+        await invoke('unflag_device', { serial: selectedDevice });
+      }
+      await invoke('engine_clear_task_device', { taskId: errorTask.id });
+      showToast('设备异常标记已解除，可重新调度', 'info');
+      setSelectedDevice(null);
+      const unflagBtn = $('#btn-unflag-device') as HTMLButtonElement;
+      const removeBtn = $('#btn-remove-selected') as HTMLButtonElement;
+      if (unflagBtn) unflagBtn.disabled = true;
+      if (removeBtn) removeBtn.disabled = true;
+      await refreshDevices();
+    } catch (e) {
+      showToast(`解除失败: ${e}`, 'error');
+    }
+    return;
+  }
+
+  // 原有风控标记解除逻辑
   try {
     await invoke('unflag_device', { serial: selectedDevice });
     showToast('设备风控标记已解除', 'info');

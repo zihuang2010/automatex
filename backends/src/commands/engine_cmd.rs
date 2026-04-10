@@ -95,6 +95,15 @@ pub async fn engine_release_offline(
 }
 
 #[tauri::command]
+pub async fn engine_clear_task_device(
+    task_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    state.engine()?.clear_task_device(&task_id).await?;
+    Ok(constants::response::OK.into())
+}
+
+#[tauri::command]
 pub async fn engine_reorder_cities(
     task_id: String,
     new_order: Vec<String>,

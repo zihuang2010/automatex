@@ -107,22 +107,26 @@ impl Database {
                     "mark_all_offline",
                 );
             } else {
+                // Fix-SQL2b：使用 params_from_iter 替代 Box<dyn ToSql> 逐个堆分配
                 let placeholders: Vec<String> =
                     (0..online_serials.len()).map(|i| format!("?{}", i + 3)).collect();
                 let sql = format!(
                     "UPDATE a_devices SET state = ?1, updated_at = ?2 WHERE state != ?1 AND serial NOT IN ({})",
                     placeholders.join(",")
                 );
-                let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> =
-                    Vec::with_capacity(online_serials.len() + 2);
-                param_values.push(Box::new(offline.to_string()));
-                param_values.push(Box::new(now));
-                for s in &online_serials {
-                    param_values.push(Box::new(s.clone()));
-                }
-                let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-                    param_values.iter().map(|p| p.as_ref()).collect();
-                log_exec(conn.execute(&sql, params_ref.as_slice()), "mark_offline_except");
+                let all_params: Vec<Box<dyn rusqlite::types::ToSql>> = {
+                    let mut v: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(online_serials.len() + 2);
+                    v.push(Box::new(offline.to_string()));
+                    v.push(Box::new(now));
+                    for s in &online_serials {
+                        v.push(Box::new(s.clone()));
+                    }
+                    v
+                };
+                log_exec(
+                    conn.execute(&sql, rusqlite::params_from_iter(all_params.iter().map(|p| p.as_ref()))),
+                    "mark_offline_except",
+                );
             }
         }).await;
     }
@@ -235,6 +239,103 @@ impl Database {
                 row_to_device,
             )
             .ok()
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    // ─── 设备端口分配 ──────────────────────────────────────────
+
+    /// 为设备分配（或返回已分配的）PC 本地端口。
+    ///
+    /// ## 策略
+    /// - **幂等**：若该 serial 已有 `local_port`，直接返回，不重新分配。
+    /// - **递增分配**：从 `PORT_BASE`（7899）起，在已分配的最大端口上 +1。
+    /// - **原子操作**：在单个 `interact` 闭包内完成查询 + 写入，避免并发竞争。
+    ///
+    /// ## 返回值
+    /// 分配或已持有的端口号。若 DB 操作失败，返回 `PORT_BASE`（降级保证不崩溃）。
+    pub async fn assign_device_port(&self, serial: &str) -> u16 {
+        let serial = serial.to_string();
+        let port_base = crate::constants::phone_client::PORT_BASE;
+
+        let Ok(conn) = self.pool.get().await else {
+            return port_base;
+        };
+
+        conn.interact(move |conn| -> u16 {
+            // Fix-L3：使用 IMMEDIATE 事务包裹读-改-写操作，
+            // 避免并发连接的 TOCTOU 竞争导致端口分配重复
+            let tx = match conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate) {
+                Ok(tx) => tx,
+                Err(e) => {
+                    eprintln!("[db] assign_device_port 事务开始失败: {}", e);
+                    return port_base;
+                },
+            };
+
+            // ── 1. 检查是否已分配 ──
+            let existing: Option<i64> = tx
+                .query_row(
+                    "SELECT local_port FROM a_devices WHERE serial = ?1 AND local_port IS NOT NULL",
+                    rusqlite::params![serial],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .unwrap_or(None);
+
+            if let Some(port) = existing {
+                // 已分配，无需写入，直接回滚事务释放锁
+                let _ = tx.finish();
+                return port.clamp(port_base as i64, u16::MAX as i64) as u16;
+            }
+
+            // ── 2. 分配新端口（max 已分配 + 1，最小为 PORT_BASE）──
+            let max_existing: i64 = tx
+                .query_row(
+                    "SELECT COALESCE(MAX(local_port), ?1 - 1) FROM a_devices WHERE local_port IS NOT NULL",
+                    rusqlite::params![port_base as i64],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap_or(port_base as i64 - 1);
+
+            let new_port = ((max_existing + 1).max(port_base as i64)) as u16;
+
+            // ── 3. 写回 DB ──
+            if let Err(e) = tx.execute(
+                "UPDATE a_devices SET local_port = ?1 WHERE serial = ?2",
+                rusqlite::params![new_port as i64, serial],
+            ) {
+                eprintln!("[db] 设备端口写入失败 ({}, {}): {}", serial, new_port, e);
+                return port_base;
+            }
+
+            if let Err(e) = tx.commit() {
+                eprintln!("[db] assign_device_port 事务提交失败: {}", e);
+                return port_base;
+            }
+
+            eprintln!("[db] 设备 {} 分配本地端口: {}", serial, new_port);
+            new_port
+        })
+        .await
+        .unwrap_or(port_base)
+    }
+
+    /// 查询设备已分配的本地端口（未分配返回 `None`）
+    #[allow(dead_code)]
+    pub async fn get_device_port(&self, serial: &str) -> Option<u16> {
+        let serial = serial.to_string();
+        let conn = self.pool.get().await.ok()?;
+        conn.interact(move |conn| {
+            conn.query_row(
+                "SELECT local_port FROM a_devices WHERE serial = ?1 AND local_port IS NOT NULL",
+                rusqlite::params![serial],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .ok()
+            .flatten()
+            .map(|p| p.clamp(1, u16::MAX as i64) as u16)
         })
         .await
         .ok()

@@ -1,4 +1,4 @@
-use crate::storage::{DailyStatRow, DailySummary, TaskRunStats};
+use crate::storage::{DailyStatRow, DailySummary, ResultRow, TaskRunStats};
 use crate::task_provider::{self, Task};
 use crate::{constants, AppState};
 
@@ -40,6 +40,16 @@ pub async fn get_task_run_stats(
     state: tauri::State<'_, AppState>,
 ) -> Result<TaskRunStats, String> {
     Ok(state.db.query_task_run_stats(&task_id).await)
+}
+
+#[tauri::command]
+pub async fn get_keyword_results(
+    task_id: String,
+    city_name: String,
+    keyword_name: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<ResultRow>, String> {
+    Ok(state.db.get_keyword_results(&task_id, &city_name, &keyword_name).await)
 }
 
 #[tauri::command]

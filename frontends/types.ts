@@ -75,6 +75,13 @@ export interface DeviceRow {
   updated_at: number;
 }
 
+/** 关键词采集结果条目（与后端 ResultRow 对应） */
+export interface ResultRow {
+  shop_name: string;
+  captured_at: string;
+  round_id: number;
+}
+
 /** 任务执行统计（与后端 TaskRunStats 对应） */
 export interface TaskRunStats {
   last_run_at: number | null;

@@ -558,6 +558,56 @@ pub async fn connect_wifi_via_adb_async(address: &str) -> Result<String, String>
     }
 }
 
+// ─── ADB Port Forward ─────────────────────────────────────────────────────────
+
+/// 建立 ADB TCP 端口转发：`adb -s {serial} forward tcp:{local_port} tcp:{PHONE_PORT_ON_DEVICE}`
+///
+/// 幂等：若转发已存在，ADB 会静默覆盖（同样参数）或返回端口号。
+/// 失败不应阻断任务启动——调用方记录日志后继续即可。
+pub async fn adb_forward_setup(serial: &str, local_port: u16) -> Result<(), String> {
+    let remote_port = crate::constants::phone_client::PHONE_PORT_ON_DEVICE;
+    let local_spec = format!("tcp:{}", local_port);
+    let remote_spec = format!("tcp:{}", remote_port);
+    run_adb_async(
+        serial,
+        &["forward", &local_spec, &remote_spec],
+        crate::constants::timing::ADB_COMMAND_TIMEOUT_SECS,
+    )
+    .await
+    .map(|out| {
+        eprintln!(
+            "[adb] forward 已建立: localhost:{} → {}:{} (device={})",
+            local_port, remote_port, remote_port, serial
+        );
+        let _ = out; // ADB 成功时输出已分配的端口号，无需使用
+    })
+}
+
+/// 移除 ADB TCP 端口转发：`adb -s {serial} forward --remove tcp:{local_port}`
+///
+/// 失败静默忽略（设备可能已断开，端口已自动释放）。
+#[allow(dead_code)]
+pub async fn adb_forward_remove(serial: &str, local_port: u16) {
+    let local_spec = format!("tcp:{}", local_port);
+    match run_adb_async(
+        serial,
+        &["forward", "--remove", &local_spec],
+        crate::constants::timing::ADB_COMMAND_TIMEOUT_SECS,
+    )
+    .await
+    {
+        Ok(_) => {
+            eprintln!("[adb] forward 已移除: localhost:{} (device={})", local_port, serial);
+        },
+        Err(e) => {
+            eprintln!(
+                "[adb] forward 移除失败 (device={}, port={})，设备可能已离线: {}",
+                serial, local_port, e
+            );
+        },
+    }
+}
+
 pub async fn disconnect_wifi_via_adb_async(serial: &str) -> Result<String, String> {
     if !serial.contains(':') {
         return Ok(format!("USB 设备无需断开 WiFi: {}", serial));

@@ -66,14 +66,14 @@ window.addEventListener('beforeunload', () => {
 function initTheme() {
   // 先从 localStorage 快速应用（避免开屏期间白屏闪烁）
   const saved = localStorage.getItem('theme');
-  if (saved !== 'light') {
+  if (saved === 'dark') {
     document.documentElement.classList.add('dark');
   }
 
   // 异步从数据库读取真实主题设置并同步（同时预加载账号计数避免显示延迟）
   invoke<Record<string, string>>('get_settings')
     .then(settings => {
-      const dbTheme = settings.theme || 'dark';
+      const dbTheme = settings.theme || 'light';
       const currentIsDark = document.documentElement.classList.contains('dark');
       const dbIsDark = dbTheme === 'dark';
       if (currentIsDark !== dbIsDark) {

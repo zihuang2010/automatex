@@ -133,13 +133,23 @@ function renderDeviceCards(devs: DeviceRow[]) {
     const progress = devTask?.progress ?? 0;
     const presentation = devTask ? getPresentationState(devTask) : TaskPresentationStatus.RUNNING;
     const statusLabel =
-      presentation === TaskPresentationStatus.WAITING_NEXT_ROUND ? '等待中' : '执行中';
+      presentation === TaskPresentationStatus.WAITING_NEXT_ROUND
+        ? '等待中'
+        : presentation === TaskPresentationStatus.ERROR_PAUSED
+          ? '任务异常'
+          : '执行中';
     const statusTextClass =
       presentation === TaskPresentationStatus.WAITING_NEXT_ROUND
         ? 'text-violet-600'
-        : 'text-blue-600';
+        : presentation === TaskPresentationStatus.ERROR_PAUSED
+          ? 'text-red-600'
+          : 'text-blue-600';
     const statusDotClass =
-      presentation === TaskPresentationStatus.WAITING_NEXT_ROUND ? 'bg-violet-500' : 'bg-blue-500';
+      presentation === TaskPresentationStatus.WAITING_NEXT_ROUND
+        ? 'bg-violet-500'
+        : presentation === TaskPresentationStatus.ERROR_PAUSED
+          ? 'bg-red-500 animate-pulse'
+          : 'bg-blue-500';
     const progressLabel =
       devTask && devTask.keyword_total > 0
         ? `${devTask.keyword_done}/${devTask.keyword_total}`
@@ -182,6 +192,9 @@ function renderDeviceCards(devs: DeviceRow[]) {
             <span class="material-symbols-outlined icon-sm">device_thermostat</span>${temp}°C
           </span>
         </div>
+        <button class="dev-mirror-btn" data-mirror="${esc(d.serial)}" title="投屏观察">
+          <span class="material-symbols-outlined">cast</span>
+        </button>
       </div>
     </div>`;
   };
@@ -200,18 +213,44 @@ function renderDeviceCards(devs: DeviceRow[]) {
     const isSel = d.serial === selectedDevice;
     const flagged = d.is_flagged;
 
-    const badgeCls = flagged
-      ? 'bg-orange-50 text-orange-600 border-orange-200'
-      : 'bg-blue-50 text-blue-600 border-blue-100';
-    const badgeText = flagged ? '风控' : '就绪';
-    const iconBorderCls = flagged
-      ? 'bg-orange-50 border-orange-200 text-orange-400'
-      : 'bg-s50 border-s100 text-s400';
-    const opacityCls = flagged ? 'opacity-70' : '';
-    const ringCls = isSel ? (flagged ? 'ring-2 ring-orange-300' : 'ring-2 ring-blue-200') : '';
+    // 检查是否有 ERROR_PAUSED 任务绑定了这台设备（致命错误后释放但保留 serial）
+    // 注意：FatalError 会同时 flag 设备，此处 hasError 不排除 flagged 情况
+    const errorTask = globalQueue.find(
+      t =>
+        t.assigned_device === d.serial &&
+        getPresentationState(t) === TaskPresentationStatus.ERROR_PAUSED,
+    );
+    const hasError = !!errorTask;
 
-    return `<div class="dev-card device-card-ready border rounded-md p-2.5 transition-all hover:border-blue-200 cursor-pointer relative ${opacityCls} ${ringCls}" data-s="${esc(d.serial)}" data-state="ready" data-flagged="${flagged ? '1' : '0'}">
-      <div class="absolute top-2.5 right-2.5 px-1.5 py-0.5 ${badgeCls} text-[12px] font-black rounded border uppercase tracking-normal">${badgeText}</div>
+    const badgeCls = hasError
+      ? 'bg-red-50 text-red-600 border-red-200'
+      : flagged
+        ? 'bg-orange-50 text-orange-600 border-orange-200'
+        : 'bg-blue-50 text-blue-600 border-blue-100';
+    const badgeText = hasError ? '任务异常' : flagged ? '风控' : '就绪';
+    const iconBorderCls = hasError
+      ? 'bg-red-50 border-red-200 text-red-400'
+      : flagged
+        ? 'bg-orange-50 border-orange-200 text-orange-400'
+        : 'bg-s50 border-s100 text-s400';
+    const opacityCls = flagged && !hasError ? 'opacity-70' : '';
+    const ringCls = isSel
+      ? hasError
+        ? 'ring-2 ring-red-200'
+        : flagged
+          ? 'ring-2 ring-orange-300'
+          : 'ring-2 ring-blue-200'
+      : '';
+    const errorBanner =
+      hasError && errorTask
+        ? `<div class="mt-2 flex items-center gap-1.5 px-2 py-1 bg-red-50 rounded border border-red-100">
+          <span class="material-symbols-outlined text-red-400" style="font-size:12px">error</span>
+          <span class="text-[10px] text-red-600 font-semibold truncate">${esc(errorTask.name)}</span>
+        </div>`
+        : '';
+
+    return `<div class="dev-card device-card-ready border rounded-md p-2.5 transition-all hover:border-blue-200 cursor-pointer relative ${opacityCls} ${ringCls}" data-s="${esc(d.serial)}" data-state="ready" data-flagged="${flagged ? '1' : '0'}" data-error="${hasError ? '1' : '0'}">
+      <div class="absolute top-2.5 right-2.5 px-1.5 py-0.5 ${badgeCls} text-[10px] font-black rounded border uppercase tracking-normal">${badgeText}</div>
       <div class="flex items-start gap-3">
         <div class="h-9 w-9 rounded-lg ${iconBorderCls} border flex items-center justify-center shrink-0">
           <span class="material-symbols-outlined text-xl fill-1">smartphone</span>
@@ -234,6 +273,7 @@ function renderDeviceCards(devs: DeviceRow[]) {
           <span class="material-symbols-outlined">cast</span>
         </button>
       </div>
+      ${errorBanner}
     </div>`;
   };
 
@@ -339,9 +379,7 @@ function renderDeviceCards(devs: DeviceRow[]) {
       const s = (el as HTMLElement).dataset.s!;
       const state = (el as HTMLElement).dataset.state;
 
-      const flagged = (el as HTMLElement).dataset.flagged === '1';
-
-      if (state === 'running' || state === 'offline' || (state === 'ready' && flagged)) {
+      if (state === 'running' || state === 'offline' || state === 'ready') {
         el.addEventListener('click', e => {
           e.stopPropagation();
           selectDevice(s);
@@ -394,16 +432,25 @@ export function selectDevice(serial: string) {
   const card = document.querySelector(`.dev-card[data-s="${serial}"]`) as HTMLElement | null;
   const isOffline = card?.dataset.state === 'offline';
   const isFlagged = card?.dataset.flagged === '1';
+  const isError = card?.dataset.error === '1';
   if (removeBtn) {
     removeBtn.disabled = !isOffline;
   }
   if (unflagBtn) {
-    unflagBtn.disabled = !isFlagged;
+    // 风控标记 或 任务异常标记 都可以解除
+    unflagBtn.disabled = !(isFlagged || isError);
   }
 
-  if (!isOffline && !isFlagged) {
+  // 有任务异常时仍加载任务（即使设备被 flag），纯风控设备不加载
+  if (!isOffline && (!isFlagged || isError)) {
     _onLoadTasksForDevice?.(serial);
   }
+}
+
+/** 清除设备异常标记（将 ERROR_PAUSED 任务的 assigned_device 解除关联） */
+export function clearDeviceErrorMark(serial: string) {
+  // 找到绑定该设备的 ERROR_PAUSED 任务，切换到该任务让用户操作
+  _onLoadTasksForDevice?.(serial);
 }
 
 export function updateCardSelection() {
@@ -420,8 +467,11 @@ export function updateCardSelection() {
       'ring-s400',
     );
     if (s === selectedDevice) {
+      const isErr = (el as HTMLElement).dataset.error === '1';
       if (state === 'offline') {
         el.classList.add('ring-2', 'ring-s400');
+      } else if (state === 'ready' && isErr) {
+        el.classList.add('ring-2', 'ring-red-200');
       } else if (state === 'ready' && flagged) {
         el.classList.add('ring-2', 'ring-orange-300');
       } else if (state === 'ready') {
