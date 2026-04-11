@@ -10,6 +10,8 @@ use std::sync::Arc;
 use std::time::Instant;
 use tauri::Emitter;
 
+use tracing::{debug, info, warn, error};
+
 use crate::{constants, engine::TaskEngine, http, storage, task_sync, utils};
 
 fn emit_startup_status(app_handle: &tauri::AppHandle, phase: &str, detail: Option<&str>) {
@@ -25,13 +27,13 @@ pub(crate) async fn ensure_client_id(db: &storage::Database) -> String {
     use constants::setting_key;
     if let Some(existing) = db.get_setting(setting_key::MQTT_CLIENT_ID).await {
         if !existing.is_empty() {
-            eprintln!("[client_id] 使用已有: {}", existing);
+            info!(client_id = %existing, "使用已有 client_id");
             return existing;
         }
     }
     let id = utils::generate_machine_client_id();
     db.set_setting(setting_key::MQTT_CLIENT_ID, &id).await;
-    eprintln!("[client_id] 首次生成并持久化: {}", id);
+    info!(client_id = %id, "首次生成并持久化 client_id");
     id
 }
 
@@ -56,10 +58,10 @@ pub(crate) async fn ensure_mqtt_defaults(db: &storage::Database) {
         let has_value = existing.get(*key).map(|v| !v.is_empty()).unwrap_or(false);
         if !has_value {
             db.set_setting(key, default_val).await;
-            eprintln!(
-                "[startup] 默认配置写入: {}={}",
-                key,
-                if *key == setting_key::MQTT_PASSWORD { "***" } else { default_val }
+            debug!(
+                key = %key,
+                value = %if *key == setting_key::MQTT_PASSWORD { "***" } else { default_val },
+                "默认配置写入"
             );
         }
     }
@@ -74,14 +76,14 @@ pub(crate) async fn check_daily_reset(db: &storage::Database) {
         .unwrap_or_default();
 
     if last_date == today {
-        eprintln!("[startup] 日期未变 ({}), 跳过跨日重置", today);
+        debug!(date = %today, "日期未变, 跳过跨日重置");
         return;
     }
 
-    eprintln!(
-        "[startup] 检测到跨日: {} → {}, 执行重置...",
-        if last_date.is_empty() { "首次" } else { &last_date },
-        today
+    info!(
+        from = %if last_date.is_empty() { "首次" } else { &last_date },
+        to = %today,
+        "检测到跨日, 执行重置"
     );
 
     db.close_all_running_rounds().await;
@@ -91,7 +93,7 @@ pub(crate) async fn check_daily_reset(db: &storage::Database) {
     db.cleanup_synced_progress().await;
     db.cleanup_old_results(3).await; // 只保留近 3 天的采集结果
     db.set_setting(constants::setting_key::LAST_ACTIVE_DATE, &today).await;
-    eprintln!("[startup] 跨日重置完成, last_active_date={}", today);
+    info!(last_active_date = %today, "跨日重置完成");
 }
 
 /// 启动时自动同步：验证已绑定手机号 → 拉取最新任务 / 处理冲突
@@ -112,11 +114,11 @@ pub(crate) async fn startup_sync_tasks(
     let normalized_synced_phones_json = serde_json::to_string(&synced_phones).unwrap_or_default();
     if normalized_synced_phones_json != raw_synced_phones {
         db.set_setting(setting_key::SYNCED_PHONES, &normalized_synced_phones_json).await;
-        eprintln!("[startup] 已同步手机号已归一化去重: {:?}", synced_phones);
+        debug!(phones = ?synced_phones, "已同步手机号已归一化去重");
     }
 
     if synced_phones.is_empty() {
-        eprintln!("[startup] 无已绑定手机号，通知前端跳转绑定页面");
+        info!("无已绑定手机号, 通知前端跳转绑定页面");
         emit_startup_status(app_handle, "ready", Some("no-phones"));
         let _ = app_handle.emit(
             tauri_event::REQUIRE_PHONE_BIND,
@@ -128,7 +130,7 @@ pub(crate) async fn startup_sync_tasks(
         return;
     }
 
-    eprintln!("[startup] 检测到已绑定手机号: {:?}, 验证有效性...", synced_phones);
+    info!(phones = ?synced_phones, "检测到已绑定手机号, 验证有效性");
     emit_startup_status(app_handle, "syncing", Some("binding"));
 
     let bind_req = http::PhoneBindRequest {
@@ -142,9 +144,9 @@ pub(crate) async fn startup_sync_tasks(
             if !bind_resp.conflicts.is_empty() {
                 emit_startup_status(app_handle, "syncing", Some("conflicts"));
                 let conflict_phones = task_sync::bind_conflict_phones(&bind_resp);
-                eprintln!(
-                    "[startup] 检测到异地登录冲突: {:?}, 清理冲突任务并保留无冲突任务",
-                    conflict_phones
+                warn!(
+                    conflicts = ?conflict_phones,
+                    "检测到异地登录冲突, 清理冲突任务并保留无冲突任务"
                 );
                 engine.handle_phones_unbind(conflict_phones).await;
                 let count = match task_sync::load_remote_tasks_by_ids(
@@ -156,7 +158,7 @@ pub(crate) async fn startup_sync_tasks(
                 {
                     Ok(count) => count,
                     Err(e) => {
-                        eprintln!("[startup] 冲突态任务拉取失败: {}", e);
+                        error!(error = %e, "冲突态任务拉取失败");
                         emit_startup_status(app_handle, "error", Some("conflict-fetch"));
                         return;
                     },
@@ -172,10 +174,10 @@ pub(crate) async fn startup_sync_tasks(
                         "conflicts": bind_resp.conflicts,
                     }),
                 );
-                eprintln!("[startup] 冲突态任务同步完成，保留 {} 个无冲突任务", count);
-                eprintln!(
-                    "[startup] 启动同步结束: elapsed_ms={}",
-                    started_at.elapsed().as_millis()
+                info!(tasks = count, "冲突态任务同步完成, 保留无冲突任务");
+                info!(
+                    elapsed_ms = %started_at.elapsed().as_millis(),
+                    "启动同步结束"
                 );
                 emit_startup_status(app_handle, "done", Some("conflicts"));
                 return;
@@ -187,7 +189,7 @@ pub(crate) async fn startup_sync_tasks(
                 .map(|task_items| task_items.is_empty())
                 .unwrap_or(true)
             {
-                eprintln!("[startup] 所有手机号已失效，通知前端跳转绑定页面");
+                warn!("所有手机号已失效, 通知前端跳转绑定页面");
                 emit_startup_status(app_handle, "ready", Some("all-expired"));
                 let _ = app_handle.emit(
                     tauri_event::REQUIRE_PHONE_BIND,
@@ -197,7 +199,7 @@ pub(crate) async fn startup_sync_tasks(
                     }),
                 );
             } else {
-                eprintln!("[startup] 有效手机号: {:?}, 拉取最新任务...", synced_phones);
+                info!(phones = ?synced_phones, "有效手机号, 拉取最新任务");
                 emit_startup_status(app_handle, "syncing", Some("fetching"));
 
                 match task_sync::load_remote_tasks_by_ids(
@@ -213,19 +215,19 @@ pub(crate) async fn startup_sync_tasks(
                             serde_json::json!({ "phones": synced_phones }),
                         );
                         engine.reload_tasks().await;
-                        eprintln!(
-                            "[startup] 同步完成: {} 个手机号, {} 个任务, elapsed_ms={}",
-                            bind_req.mobiles.len(),
-                            count,
-                            started_at.elapsed().as_millis()
+                        info!(
+                            phones = bind_req.mobiles.len(),
+                            tasks = count,
+                            elapsed_ms = %started_at.elapsed().as_millis(),
+                            "同步完成"
                         );
                         emit_startup_status(app_handle, "done", Some("synced"));
                     },
                     Err(e) => {
-                        eprintln!(
-                            "[startup] 拉取任务失败: {}, 使用本地缓存, elapsed_ms={}",
-                            e,
-                            started_at.elapsed().as_millis()
+                        error!(
+                            error = %e,
+                            elapsed_ms = %started_at.elapsed().as_millis(),
+                            "拉取任务失败, 使用本地缓存"
                         );
                         emit_startup_status(app_handle, "error", Some("fetch"));
                     },
@@ -233,10 +235,10 @@ pub(crate) async fn startup_sync_tasks(
             }
         },
         Err(e) => {
-            eprintln!(
-                "[startup] 验证绑定失败(网络?): {}, 使用本地缓存, elapsed_ms={}",
-                e,
-                started_at.elapsed().as_millis()
+            error!(
+                error = %e,
+                elapsed_ms = %started_at.elapsed().as_millis(),
+                "验证绑定失败(网络?), 使用本地缓存"
             );
             emit_startup_status(app_handle, "error", Some("bind"));
         },

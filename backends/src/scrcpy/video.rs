@@ -4,6 +4,7 @@
 
 use byteorder::{BigEndian, ByteOrder};
 use tokio::io::AsyncReadExt;
+use tracing::debug;
 use tokio::net::TcpStream;
 
 // Q-3: 协议常量
@@ -90,7 +91,7 @@ pub async fn read_device_name(stream: &mut TcpStream) -> Result<String, String> 
         .map_err(|e| format!("读取设备名失败: {}", e))?;
 
     let name = String::from_utf8_lossy(&name_buf).trim_end_matches('\0').to_string();
-    eprintln!("[scrcpy] 设备名: {}", name);
+    debug!(device_name = %name, "设备名");
     Ok(name)
 }
 
@@ -118,6 +119,6 @@ pub async fn read_video_header(stream: &mut TcpStream) -> Result<VideoHeader, St
     let width = BigEndian::read_u32(&header[5..9]);
     let height = BigEndian::read_u32(&header[9..13]);
 
-    eprintln!("[scrcpy] 视频 header: codec={}, {}x{}", codec, width, height);
+    debug!(codec = %codec, width = width, height = height, "视频 header");
     Ok(VideoHeader { codec, width, height })
 }

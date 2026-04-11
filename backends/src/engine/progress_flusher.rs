@@ -14,6 +14,8 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use tracing::{debug, info, warn};
+
 use crate::http;
 use crate::http::types::ProgressReportRequest;
 use crate::storage::Database;
@@ -29,7 +31,7 @@ pub fn spawn(
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        eprintln!("[flusher] 后台进度上报协程已启动");
+        info!("协程已启动");
 
         loop {
             // 响应取消信号
@@ -41,7 +43,7 @@ pub fn spawn(
             let has_pending = !pending.is_empty();
 
             if has_pending {
-                eprintln!("[flusher] 发现 {} 条 pending 上报记录", pending.len());
+                debug!(count = pending.len(), "发现 pending 记录");
             }
 
             for row in &pending {
@@ -59,9 +61,11 @@ pub fn spawn(
                     )
                     .await
                 else {
-                    eprintln!(
-                        "[flusher] 跳过: 无法加载上下文 task={} city={} kw={}",
-                        row.task_id, row.city_name, row.keyword_name
+                    warn!(
+                        task_id = %row.task_id,
+                        city = %row.city_name,
+                        keyword = %row.keyword_name,
+                        "跳过: 无法加载上下文"
                     );
                     continue;
                 };
@@ -88,15 +92,20 @@ pub fn spawn(
                                 row.round_id,
                             )
                             .await;
-                        eprintln!(
-                            "[flusher] 上报成功: task={} city={} kw={}",
-                            row.task_id, row.city_name, row.keyword_name
+                        debug!(
+                            task_id = %row.task_id,
+                            city = %row.city_name,
+                            keyword = %row.keyword_name,
+                            "上报成功"
                         );
                     },
                     Err(e) => {
-                        eprintln!(
-                            "[flusher] 上报失败 (下轮重试): task={} city={} kw={} err={}",
-                            row.task_id, row.city_name, row.keyword_name, e
+                        warn!(
+                            task_id = %row.task_id,
+                            city = %row.city_name,
+                            keyword = %row.keyword_name,
+                            error = %e,
+                            "上报失败, 下轮重试"
                         );
                         // 单条失败后跳出本轮，避免对不可用服务端连续请求
                         break;
@@ -112,6 +121,6 @@ pub fn spawn(
             }
         }
 
-        eprintln!("[flusher] 后台进度上报协程已退出");
+        info!("协程已退出");
     })
 }

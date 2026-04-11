@@ -151,6 +151,7 @@ impl TaskEngine {
     pub async fn new(
         storage: Arc<Database>,
         http: Arc<dyn http::ApiClient>,
+        mqtt: Arc<crate::mqtt::MqttManager>,
         app_handle: tauri::AppHandle,
     ) -> Arc<Self> {
         let tasks = task_provider::load_tasks(&storage).await;
@@ -159,7 +160,7 @@ impl TaskEngine {
         let (snapshot_tx, snapshot_rx) = watch::channel(summaries);
 
         // 启动事件循环
-        event_loop::spawn(rx, tx.clone(), snapshot_tx, tasks, storage, http, app_handle);
+        event_loop::spawn(rx, tx.clone(), snapshot_tx, tasks, storage, http, mqtt, app_handle);
 
         Arc::new(Self { tx, snapshot_rx })
     }
@@ -216,6 +217,16 @@ impl TaskEngine {
     pub async fn stop_task(self: &Arc<Self>, task_id: &str) -> Result<(), String> {
         self.send_and_recv(|reply| EngineMsg::StopTask { task_id: task_id.to_string(), reply })
             .await?
+    }
+
+    /// 停止所有执行中的任务（广播下线时使用）
+    pub async fn stop_all_tasks(self: &Arc<Self>) {
+        let tasks = self.get_tasks().await;
+        for t in tasks {
+            if t.status == crate::constants::task_status::EXECUTING {
+                let _ = self.stop_task(&t.id).await;
+            }
+        }
     }
 
     pub async fn retry_task(self: &Arc<Self>, task_id: &str) -> Result<(), String> {

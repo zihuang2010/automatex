@@ -16,6 +16,7 @@ use tauri::ipc::{Channel, Response};
 use tauri::Emitter;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{oneshot, Mutex, RwLock};
+use tracing::{debug, error, info, warn};
 use tokio_util::sync::CancellationToken;
 
 // 类型别名：pump_handle 使用 Arc<Mutex<Option>> 以支持先 insert session 再填充句柄（C-1 修复）
@@ -274,7 +275,7 @@ async fn control_actor(
             },
         };
         if let Err(e) = result {
-            eprintln!("[control-actor] 发送失败: {}", e);
+            warn!(error = %e, "发送失败");
             cancel.cancel();
             break;
         }
@@ -309,11 +310,11 @@ async fn control_reader_actor(
                         }
                     }
                     Ok(DeviceMessage::UhidOutput { id, data }) => {
-                        eprintln!("[scrcpy] 忽略 UHID 输出: serial={}, id={}, len={}", serial, id, data.len());
+                        debug!(serial = %serial, id = id, len = data.len(), "忽略 UHID 输出");
                     }
                     Err(e) => {
                         if !cancel.is_cancelled() {
-                            eprintln!("[control-reader] 读取失败: {}", e);
+                            warn!(error = %e, "控制流读取失败");
                         }
                         cancel.cancel();
                         break;
@@ -475,7 +476,7 @@ impl SessionManager {
                     .await;
                 },
             );
-            eprintln!("[scrcpy] shutdown: stopped {}", serial);
+            info!(serial = %serial, "shutdown completed");
         }
     }
 
@@ -630,7 +631,7 @@ impl SessionManager {
                     .await;
                 },
             );
-            eprintln!("[scrcpy] 停止投屏: {}", serial);
+            info!(serial = %serial, "停止投屏");
         }
         // pump 可能已先于用户操作退出并清理，不报错
         Ok(())
@@ -733,10 +734,7 @@ impl SessionManager {
             match adb::adb_keyboard_input_text(serial, text).await {
                 Ok(()) => return Ok(TextRoute::AdbImeText),
                 Err(err) => {
-                    eprintln!(
-                        "[scrcpy] ADB IME 输入失败，回退到剪贴板路径: serial={}, error={}",
-                        serial, err
-                    );
+                    warn!(serial = %serial, error = %err, "ADB IME 输入失败，回退到剪贴板路径");
                 },
             }
         }
@@ -800,7 +798,7 @@ impl SessionManager {
         cancel: CancellationToken,
         sessions: Arc<RwLock<HashMap<String, ScrcpySession>>>,
     ) {
-        eprintln!("[scrcpy] 帧推送启动: {}", serial);
+        debug!(serial = %serial, "帧推送启动");
         let start = std::time::Instant::now();
         // P1 优化：预分配帧缓冲池
         let mut pool = super::video::FramePool::new();
@@ -812,7 +810,7 @@ impl SessionManager {
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => {
-                    eprintln!("[scrcpy] 帧推送取消: {}", serial);
+                    debug!(serial = %serial, "帧推送取消");
                     break;
                 }
                 // SG-3: 帧读取加超时 — 120s 无帧视为 server 挂死
@@ -824,7 +822,7 @@ impl SessionManager {
                         Ok(Ok(Some(payload))) => {
                             // P2 优化：payload 已含 9B 头 + 帧数据（仅一次拷贝）
                             if channel.send(Response::new(payload)).is_err() {
-                                eprintln!("[scrcpy] channel 已关闭: {}", serial);
+                                warn!(serial = %serial, "channel 已关闭");
                                 break;
                             }
                             let now_ms = start.elapsed().as_millis() as u64;
@@ -858,7 +856,7 @@ impl SessionManager {
                             continue;
                         }
                         Ok(Err(e)) => {
-                            eprintln!("[scrcpy] 帧读取失败: {} - {}", serial, e);
+                            error!(serial = %serial, error = %e, "帧读取失败");
                             emit_session_state(
                                 &app_handle,
                                 &serial,
@@ -871,7 +869,7 @@ impl SessionManager {
                             break;
                         }
                         Err(_) => {
-                            eprintln!("[scrcpy] 帧读取超时 {}s，断开: {}", FRAME_READ_TIMEOUT_SECS, serial);
+                            warn!(serial = %serial, timeout_secs = FRAME_READ_TIMEOUT_SECS, "帧读取超时，断开");
                             emit_session_state(
                                 &app_handle,
                                 &serial,
@@ -895,6 +893,6 @@ impl SessionManager {
         // L-2 修复：移除冗余的 "scrcpy-stopped" 裸事件，统一由 session_state("stopped") 承载，
         // 避免前端需要同时监听两个语义重叠的事件。
         emit_session_state(&app_handle, &serial, "stopped", width, height, None, last_frame_at_ms);
-        eprintln!("[scrcpy] 帧推送结束: {}", serial);
+        debug!(serial = %serial, "帧推送结束");
     }
 }

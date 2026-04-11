@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tauri::Emitter;
+use tracing::{debug, error, info};
 
 use crate::connection;
 use crate::constants;
@@ -148,19 +149,20 @@ fn fetch_device_row(serial: &str, state: &str) -> DeviceRow {
                 String::from_utf8_lossy(&output.stdout).to_string()
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                eprintln!(
-                    "[monitor] adb shell 命令失败 (serial={}): exit={}, stderr={}",
-                    serial,
-                    output.status,
-                    stderr.trim()
+                error!(
+                    serial = serial,
+                    exit_code = %output.status,
+                    stderr = %stderr.trim(),
+                    "adb shell 命令失败"
                 );
                 String::new()
             }
         },
         Err(e) => {
-            eprintln!(
-                "[monitor] ⚠ adb 进程启动失败 (serial={}): {} — 请检查 adb 二进制是否完整 (Windows 需要 AdbWinApi.dll)",
-                serial, e
+            error!(
+                serial = serial,
+                error = %e,
+                "adb 进程启动失败 — 请检查 adb 二进制是否完整 (Windows 需要 AdbWinApi.dll)"
             );
             String::new()
         },
@@ -391,7 +393,7 @@ pub fn spawn_device_monitor(
                                 );
                             },
                             Ok(Err(_)) => {
-                                eprintln!("[monitor] fetch_device_row panic");
+                                error!(serial = %serial, "fetch_device_row panic");
                                 let row = placeholder_device_row(
                                     &serial,
                                     state,
@@ -405,7 +407,7 @@ pub fn spawn_device_monitor(
                                 );
                             },
                             Err(e) => {
-                                eprintln!("[monitor] spawn_blocking join 失败: {}", e);
+                                error!(error = %e, "spawn_blocking join 失败");
                                 let row = placeholder_device_row(
                                     &serial,
                                     state,
@@ -432,14 +434,14 @@ pub fn spawn_device_monitor(
         }));
 
         if result.is_err() {
-            eprintln!(
-                "[monitor] track_devices panic, {}s 后重连...",
-                constants::timing::ADB_RECONNECT_WAIT_SECS
+            error!(
+                delay_secs = constants::timing::ADB_RECONNECT_WAIT_SECS,
+                "track_devices panic, 即将重连..."
             );
         } else {
-            eprintln!(
-                "[monitor] track_devices 连接断开, {}s 后重连...",
-                constants::timing::ADB_RECONNECT_WAIT_SECS
+            info!(
+                delay_secs = constants::timing::ADB_RECONNECT_WAIT_SECS,
+                "track_devices 连接断开, 即将重连..."
             );
         }
         std::thread::sleep(Duration::from_secs(constants::timing::ADB_RECONNECT_WAIT_SECS));
@@ -490,10 +492,10 @@ pub fn spawn_device_monitor(
                     );
                 },
                 Ok(Err(e)) => {
-                    eprintln!("[monitor] devices() 查询失败: {}", e);
+                    error!(error = %e, "devices() 查询失败");
                 },
                 Err(e) => {
-                    eprintln!("[monitor] devices() 阻塞任务失败: {}", e);
+                    error!(error = %e, "devices() 阻塞任务失败");
                 },
             }
         }
@@ -621,7 +623,7 @@ pub fn spawn_device_monitor(
                     match result {
                         Ok(_) => {
                             wifi_reconnect.remove(&serial);
-                            eprintln!("[wifi-reconnect] 重连成功: {}", serial);
+                            info!(serial = %serial, "WiFi 重连成功");
                         },
                         Err(err) => {
                             let next_state = {
@@ -633,9 +635,11 @@ pub fn spawn_device_monitor(
                                     Instant::now() + next_reconnect_delay(entry.failure_count);
                                 *entry
                             };
-                            eprintln!(
-                                "[wifi-reconnect] 重连失败: {} ({}), 下次尝试于 {:?}",
-                                serial, err, next_state.next_allowed_at
+                            debug!(
+                                serial = %serial,
+                                error = %err,
+                                next_attempt_at = ?next_state.next_allowed_at,
+                                "WiFi 重连失败"
                             );
                         },
                     }

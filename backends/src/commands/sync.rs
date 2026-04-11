@@ -1,5 +1,6 @@
 use crate::{constants, http, task_sync, utils, AppState};
 use tauri::Emitter;
+use tracing::info;
 
 fn parse_synced_phones(raw: String) -> Vec<String> {
     let phones: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
@@ -34,7 +35,7 @@ pub async fn sync_tasks_by_phones(
 
     if phones.is_empty() {
         if !old_phones.is_empty() {
-            eprintln!("[sync] 收到空手机号同步请求，执行本地清理: {:?}", old_phones);
+            info!(old_phones = ?old_phones, "收到空手机号同步请求，执行本地清理");
             engine.handle_phones_unbind(old_phones).await;
         }
 
@@ -73,7 +74,7 @@ pub async fn sync_tasks_by_phones(
     let removed_phones: Vec<String> =
         old_phones.into_iter().filter(|phone| !phones.contains(phone)).collect();
     if !removed_phones.is_empty() {
-        eprintln!("[sync] 检测到被移除的手机号: {:?}，清理旧任务数据", removed_phones);
+        info!(removed_phones = ?removed_phones, "检测到被移除的手机号，清理旧任务数据");
         engine.handle_phones_unbind(removed_phones).await;
     }
 
@@ -96,7 +97,7 @@ pub async fn sync_tasks_by_phones(
     engine.reload_tasks().await;
     engine.force_emit_update().await;
 
-    eprintln!("[sync] 同步完成: {} 个手机号, {} 个任务", bind_req.mobiles.len(), count);
+    info!(phone_count = bind_req.mobiles.len(), task_count = count, "同步完成");
 
     Ok(serde_json::json!({
         "status": constants::response::OK,

@@ -7,6 +7,7 @@ use crate::connection::adb::{adb_command, run_adb_timed};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Mutex;
+use tracing::{debug, info, warn};
 use tokio::net::TcpStream;
 
 /// 全局端口池：回收已释放的端口，避免端口耗尽
@@ -65,7 +66,7 @@ async fn kill_with_timeout(
                         .args(["/F", "/PID", &pid.to_string()])
                         .output();
                 }
-                eprintln!("[scrcpy] watchdog: 进程 {} 超时，已强制终止", pid);
+                warn!(pid = pid, "watchdog: 进程超时，已强制终止");
             }
             Err("进程终止超时，已强制杀死".into())
         },
@@ -164,9 +165,14 @@ impl ScrcpyServer {
                 .unwrap_or((header.width, header.height))
         };
 
-        eprintln!(
-            "[scrcpy] server 启动成功: serial={}, port={}, screen={}x{}, video={}x{}",
-            serial, port, screen_w, screen_h, header.width, header.height
+        debug!(
+            serial = %serial,
+            port = port,
+            screen_width = screen_w,
+            screen_height = screen_h,
+            video_width = header.width,
+            video_height = header.height,
+            "server 启动成功"
         );
 
         Ok(Self {
@@ -191,9 +197,9 @@ impl ScrcpyServer {
         // P1 watchdog: 带超时的进程终止（防僵尸 adb 进程）
         if let Some(mut child) = self.child.take() {
             if let Err(e) = kill_with_timeout(&mut child, std::time::Duration::from_secs(5)).await {
-                eprintln!("[scrcpy] watchdog: {}: {}", self.serial, e);
+                warn!(serial = %self.serial, error = %e, "watchdog: 进程终止失败");
             }
-            eprintln!("[scrcpy] 已终止 server 进程: {}", self.serial);
+            info!(serial = %self.serial, "已终止 server 进程");
         }
 
         // 关闭 streams（drop 即可）
@@ -216,7 +222,7 @@ impl ScrcpyServer {
         // C-1: 归还端口到池中
         release_port(self.port);
 
-        eprintln!("[scrcpy] 清理完成: {}", self.serial);
+        info!(serial = %self.serial, "清理完成");
     }
 
     // ── 内部方法 ──
@@ -244,18 +250,15 @@ impl ScrcpyServer {
             // 如果返回的是数字（文件大小），比较是否与本地一致
             if let Ok(remote_size) = stdout.parse::<u64>() {
                 if remote_size == local_size && local_size > 0 {
-                    eprintln!("[scrcpy] JAR 已存在且大小一致 ({}B)，跳过推送", local_size);
+                    debug!(size = local_size, "JAR 已存在且大小一致，跳过推送");
                     return Ok(());
                 }
-                eprintln!(
-                    "[scrcpy] JAR 大小不一致 (本地={}B, 设备={}B)，重新推送",
-                    local_size, remote_size
-                );
+                debug!(local_size = local_size, remote_size = remote_size, "JAR 大小不一致，重新推送");
             }
             // 否则 stdout 是 "MISSING" 或其他，需要推送
         }
 
-        eprintln!("[scrcpy] 推送 JAR: {} -> {}", jar_path, DEVICE_JAR_PATH);
+        debug!(src = %jar_path, dst = DEVICE_JAR_PATH, "推送 JAR");
         run_adb_timed(adb_command().args(["-s", serial, "push", jar_path, DEVICE_JAR_PATH]), 30)?;
         Ok(())
     }
@@ -263,7 +266,7 @@ impl ScrcpyServer {
     fn forward_port(serial: &str, port: u16) -> Result<(), String> {
         let local = format!("tcp:{}", port);
         let remote = "localabstract:scrcpy";
-        eprintln!("[scrcpy] 端口转发: {} -> {}", local, remote);
+        debug!(local = %local, remote = %remote, "端口转发");
         run_adb_timed(adb_command().args(["-s", serial, "forward", &local, remote]), 10)?;
         Ok(())
     }
@@ -307,7 +310,7 @@ impl ScrcpyServer {
         let mut lines = reader.lines();
 
         while let Ok(Some(line)) = lines.next_line().await {
-            eprintln!("[scrcpy-server] {}", line);
+            debug!(line = %line, "server 进程 stdout");
         }
     }
 
@@ -332,7 +335,7 @@ impl ScrcpyServer {
                         .await
                         {
                             Ok(Ok(n)) if n > 0 => {
-                                eprintln!("[scrcpy] {} socket 已连接 (尝试 {})", label, i + 1);
+                                debug!(label = %label, attempt = i + 1, "socket 已连接");
                                 return Ok(stream);
                             },
                             _ => {
@@ -346,7 +349,7 @@ impl ScrcpyServer {
                         }
                     } else {
                         // control: TCP 连上即可
-                        eprintln!("[scrcpy] {} socket 已连接 (尝试 {})", label, i + 1);
+                        debug!(label = %label, attempt = i + 1, "socket 已连接");
                         return Ok(stream);
                     }
                 },

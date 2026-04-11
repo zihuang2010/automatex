@@ -457,6 +457,60 @@ function initAccountPanel() {
   }
 }
 
+/* ===== Unbind Notify Modal ===== */
+
+function showUnbindNotifyModal(mobiles: string[], reason?: string) {
+  const modal = document.getElementById('unbind-notify-modal') as HTMLElement;
+  if (!modal) return;
+
+  const reasonWrap = document.getElementById('unbind-notify-reason') as HTMLElement;
+  const reasonText = document.getElementById('unbind-notify-reason-text') as HTMLElement;
+  const phonesList = document.getElementById('unbind-notify-phones') as HTMLElement;
+  const okBtn = document.getElementById('unbind-notify-ok') as HTMLElement;
+
+  // 显示原因
+  if (reason && reasonWrap && reasonText) {
+    reasonText.textContent = reason;
+    reasonWrap.style.display = 'flex';
+  } else if (reasonWrap) {
+    reasonWrap.style.display = 'none';
+  }
+
+  // 渲染手机号列表
+  if (phonesList) {
+    phonesList.innerHTML = mobiles
+      .map(
+        phone => `
+      <div class="flex items-center gap-3 rounded-xl border border-amber-100 bg-amber-50/50 px-4 py-2.5">
+        <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-amber-200 bg-white">
+          <span class="material-symbols-outlined text-base text-amber-400">smartphone</span>
+        </div>
+        <div class="text-s800 text-[13px] font-bold tracking-wide" style="font-feature-settings:'tnum'">${maskPhone(phone)}</div>
+      </div>`,
+      )
+      .join('');
+  }
+
+  modal.style.display = 'flex';
+
+  const cleanup = () => {
+    modal.style.display = 'none';
+    okBtn?.removeEventListener('click', onOk);
+    modal.removeEventListener('click', onMask);
+    document.removeEventListener('keydown', onKey);
+  };
+  const onOk = () => cleanup();
+  const onMask = (e: MouseEvent) => {
+    if (e.target === e.currentTarget) cleanup();
+  };
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Escape' || e.key === 'Enter') cleanup();
+  };
+  okBtn?.addEventListener('click', onOk);
+  modal.addEventListener('click', onMask);
+  document.addEventListener('keydown', onKey);
+}
+
 /* ===== Init ===== */
 
 window.addEventListener('DOMContentLoaded', () => {
@@ -663,6 +717,22 @@ window.addEventListener('DOMContentLoaded', () => {
     appUnlisteners.push(
       await listen<string>('mqtt-status', event => {
         updateMqttStatusUI(event.payload);
+      }),
+    );
+
+    // ── 监听手机号解绑通知 ──
+    appUnlisteners.push(
+      await listen<{ mobiles: string[]; reason?: string }>('mqtt-phones-unbind', event => {
+        const { mobiles, reason } = event.payload;
+        showUnbindNotifyModal(mobiles, reason);
+      }),
+    );
+
+    // ── 监听广播下线 → 退出应用 ──
+    appUnlisteners.push(
+      await listen('mqtt-broadcast-offline', () => {
+        // 后端已完成 stop_all_tasks + MQTT disconnect，前端关闭窗口释放资源
+        getCurrentWindow().close();
       }),
     );
   })();

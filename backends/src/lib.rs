@@ -19,6 +19,7 @@ use startup::{check_daily_reset, ensure_client_id, ensure_mqtt_defaults, startup
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{Emitter, Listener, Manager};
+use tracing::{debug, error, info, warn};
 
 // ─── State ─────────────────────────────────────────────────────
 
@@ -44,6 +45,22 @@ impl AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // ── 日志初始化（必须最先执行）──
+    let default_level = if cfg!(debug_assertions) { "debug" } else { "info" };
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        tracing_subscriber::EnvFilter::new(format!(
+            "{default_level},automatex_lib={default_level},hyper=warn,reqwest=warn,rumqttc=info"
+        ))
+    });
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(true)
+        .with_thread_ids(false)
+        .with_file(false)
+        .with_line_number(false)
+        .with_writer(std::io::stderr)
+        .init();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
@@ -69,6 +86,7 @@ pub fn run() {
                 let db_init = Arc::clone(&db);
                 let engine_cell = Arc::clone(&engine);
                 let http_cell = Arc::clone(&http);
+                let mqtt_init = Arc::clone(&mqtt);
                 let app_handle = app.handle().clone();
                 let device_ready_clone = Arc::clone(&device_ready);
                 tauri::async_runtime::spawn(async move {
@@ -139,12 +157,13 @@ pub fn run() {
                     let eng = TaskEngine::new(
                         Arc::clone(&db_init),
                         Arc::clone(&http_client),
+                        Arc::clone(&mqtt_init),
                         app_handle.clone(),
                     )
                     .await;
                     let _ = engine_cell.set(Arc::clone(&eng));
 
-                    eprintln!("[startup] 异步初始化完成，引擎已就绪");
+                    info!("异步初始化完成，引擎已就绪");
                     let _ = app_handle
                         .emit(constants::tauri_event::STARTUP_SYNC_STATUS, "booting:engine-ready");
 
@@ -157,10 +176,7 @@ pub fn run() {
                             task_provider::sync_task_cache(&db_cache).await;
                             let after = db_cache.load_all_task_defs().await.len();
                             if after > before {
-                                eprintln!(
-                                    "[startup] 后台 mock 任务缓存写入完成: before={}, after={}",
-                                    before, after
-                                );
+                                debug!(before, after, "后台 mock 任务缓存写入完成");
                                 eng_cache.reload_tasks().await;
                                 eng_cache.force_emit_update().await;
                             }
@@ -181,17 +197,14 @@ pub fn run() {
                             let config =
                                 crate::commands::build_mqtt_config_from(&startup_settings_for_mqtt);
                             tokio::time::sleep(Duration::from_millis(500)).await;
-                            eprintln!(
-                                "[startup] MQTT 自动连接: {}:{}",
-                                config.broker_host, config.broker_port
-                            );
+                            info!(host = %config.broker_host, port = config.broker_port, "MQTT 自动连接");
                             let mqtt_state = app_mqtt.state::<AppState>();
                             match mqtt_state.mqtt.connect(config, app_mqtt.clone()).await {
-                                Ok(msg) => eprintln!("[startup] {}", msg),
-                                Err(e) => eprintln!("[startup] MQTT 自动连接失败: {}", e),
+                                Ok(msg) => info!("{}", msg),
+                                Err(e) => error!(error = %e, "MQTT 自动连接失败"),
                             }
                         } else {
-                            eprintln!("[startup] MQTT 未配置主机或已禁用自动连接，跳过");
+                            info!("MQTT 未配置主机或已禁用自动连接，跳过");
                         }
                     };
 
@@ -210,7 +223,7 @@ pub fn run() {
                     let engine = Arc::clone(&engine_kick);
                     tauri::async_runtime::spawn(async move {
                         let Some(eng) = engine.get() else {
-                            eprintln!("[mqtt-listener] engine 未初始化，跳过 device-kick");
+                            warn!("engine 未初始化，跳过 device-kick");
                             return;
                         };
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(event.payload())
@@ -223,7 +236,7 @@ pub fn run() {
                                     .filter_map(|v| v.as_str().map(|s| s.to_string()))
                                     .collect();
                                 let n = eng.handle_device_kick(serials).await;
-                                eprintln!("[mqtt-listener] 踢设备完成: {} 台", n);
+                                info!(count = n, "踢设备完成");
                             }
                         }
                     });
@@ -234,14 +247,18 @@ pub fn run() {
                     let engine = Arc::clone(&engine_reload);
                     tauri::async_runtime::spawn(async move {
                         let Some(eng) = engine.get() else {
-                            eprintln!("[mqtt-listener] engine 未初始化，跳过 task-reload");
+                            warn!("engine 未初始化，跳过 task-reload");
                             return;
                         };
-                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(event.payload())
+                        if let Ok(msg) =
+                            serde_json::from_str::<mqtt::MsgTaskChanged>(event.payload())
                         {
-                            let action = val.get("action").and_then(|v| v.as_str()).unwrap_or("");
-                            let task_id = val.get("task_id").and_then(|v| v.as_str());
-                            eng.handle_task_reload(action, task_id).await;
+                            let task_id_ref = if msg.task_id.is_empty() {
+                                None
+                            } else {
+                                Some(msg.task_id.as_str())
+                            };
+                            eng.handle_task_reload(&msg.action, task_id_ref).await;
                         }
                     });
                 });
@@ -254,37 +271,42 @@ pub fn run() {
                     let engine = Arc::clone(&engine_unbind);
                     tauri::async_runtime::spawn(async move {
                         let Some(eng) = engine.get() else {
-                            eprintln!("[mqtt-listener] engine 未初始化，跳过 phones-unbind");
+                            warn!("engine 未初始化，跳过 phones-unbind");
                             return;
                         };
-                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(event.payload())
-                        {
-                            if let Some(phones) = val.get("phones").and_then(|v| v.as_array()) {
-                                let phone_list: Vec<String> = phones
-                                    .iter()
-                                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                    .collect();
-                                let n = eng.handle_phones_unbind(phone_list).await;
-                                eprintln!("[mqtt-listener] 手机号解绑完成: {} 个任务已移除", n);
-                            }
+                        if let Ok(msg) = serde_json::from_str::<mqtt::MsgUnbind>(event.payload()) {
+                            let n = eng.handle_phones_unbind(msg.mobiles).await;
+                            info!(removed = n, "手机号解绑完成");
                         }
                     });
                 });
+            }
+
+            // ── MQTT 广播下线监听 ──
+            {
+                let engine_broadcast = Arc::clone(&engine);
+                let mqtt_broadcast = Arc::clone(&mqtt);
+                app.listen(
+                    constants::tauri_event::MQTT_BROADCAST_OFFLINE,
+                    move |_event| {
+                        let engine = Arc::clone(&engine_broadcast);
+                        let mqtt = Arc::clone(&mqtt_broadcast);
+                        tauri::async_runtime::spawn(async move {
+                            warn!("收到广播下线，停止所有任务并断开 MQTT");
+                            if let Some(eng) = engine.get() {
+                                eng.stop_all_tasks().await;
+                            }
+                            let _ = mqtt.disconnect().await;
+                        });
+                    },
+                );
             }
 
             // ── MQTT 心跳定时器 ──
             {
                 let mqtt_hb = Arc::clone(&mqtt);
                 let db_hb = Arc::clone(&db);
-                let engine_hb = Arc::clone(&engine);
                 tauri::async_runtime::spawn(async move {
-                    loop {
-                        if engine_hb.get().is_some() {
-                            break;
-                        }
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                    }
-                    let eng = engine_hb.get().unwrap();
                     loop {
                         tokio::time::sleep(Duration::from_secs(
                             constants::mqtt_topic::HEARTBEAT_INTERVAL_SECS,
@@ -298,27 +320,20 @@ pub fn run() {
                             .map(|d| d.hw_serial.clone())
                             .collect();
 
-                        let tasks = eng.get_tasks().await;
-                        let executing: Vec<String> = tasks
-                            .iter()
-                            .filter(|t| t.status == constants::task_status::EXECUTING)
-                            .map(|t| t.id.clone())
-                            .collect();
-
                         let timeout_secs = constants::debug::HEARTBEAT_PUBLISH_TIMEOUT_SECS;
                         match tokio::time::timeout(
                             Duration::from_secs(timeout_secs),
-                            mqtt_hb.publish_heartbeat(hw_serials, executing),
+                            mqtt_hb.publish_heartbeat(hw_serials),
                         )
                         .await
                         {
                             Ok(Err(e)) => {
                                 if !e.contains("未连接") {
-                                    eprintln!("[heartbeat] 发送失败: {}", e);
+                                    debug!(error = %e, "心跳发送失败");
                                 }
                             },
                             Err(_) => {
-                                eprintln!("[heartbeat] 发送超时 ({}s)", timeout_secs);
+                                warn!(timeout_secs, "心跳发送超时");
                             },
                             _ => {},
                         }
@@ -394,7 +409,7 @@ pub fn run() {
                     if let Some(eng) = engine.get() {
                         eng.shutdown().await;
                     }
-                    eprintln!("[exit] 资源清理完成");
+                    info!("资源清理完成");
                 });
             }
         });

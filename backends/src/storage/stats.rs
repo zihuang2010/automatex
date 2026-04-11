@@ -1,6 +1,7 @@
 use super::{log_exec, now_unix, today_str, Database};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
+use tracing::{error, info};
 
 // ─── 数据结构 ──────────────────────────────────────────────────
 
@@ -128,8 +129,8 @@ impl Database {
                     params![paused, executing],
                 );
                 match affected {
-                    Ok(n) if n > 0 => eprintln!("[db] 清理了 {} 条残留 EXECUTING 任务", n),
-                    Err(e) => eprintln!("[db] cleanup_stale_assignments 失败: {}", e),
+                    Ok(n) if n > 0 => info!(count = n, "清理残留 EXECUTING 任务"),
+                    Err(e) => error!(op = "cleanup_stale_assignments", error = %e, "数据库操作失败"),
                     _ => {},
                 }
             })
@@ -155,8 +156,8 @@ impl Database {
                 params![now, stopped, running],
             );
             match affected {
-                Ok(n) if n > 0 => eprintln!("[db] 清理了 {} 条孤儿 run 记录 (running → stopped)", n),
-                Err(e) => eprintln!("[db] cleanup_orphan_runs 失败: {}", e),
+                Ok(n) if n > 0 => info!(count = n, "清理孤儿 run 记录 (running -> stopped)"),
+                Err(e) => error!(op = "cleanup_orphan_runs", error = %e, "数据库操作失败"),
                 _ => {},
             }
         }).await;

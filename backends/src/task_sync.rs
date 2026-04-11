@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::sync::Arc;
+use tracing::{debug, info};
 
 use crate::constants;
 use crate::http::{self, ApiClient, BatchTaskItem, BatchTasksRequest};
@@ -55,11 +56,11 @@ pub(crate) async fn fetch_batch_task_items(
     for (index, chunk) in
         task_ids.chunks(constants::limits::MAX_BATCH_TASK_IDS_PER_REQUEST).enumerate()
     {
-        eprintln!(
-            "[task_sync] 拉取任务详情分片: chunk={}/{}, task_ids={}",
-            index + 1,
-            total_chunks,
-            chunk.len()
+        debug!(
+            chunk = index + 1,
+            total_chunks = total_chunks,
+            task_ids_count = chunk.len(),
+            "拉取任务详情分片"
         );
         let chunk_items =
             http.batch_fetch_tasks(&BatchTasksRequest { task_ids: chunk.to_vec() }).await?;
@@ -94,7 +95,7 @@ pub(crate) async fn merge_batch_task_items(
         .collect();
 
     if !stale_ids.is_empty() {
-        eprintln!("[task_sync] 清理 {} 个本地过期任务: {:?}", stale_ids.len(), stale_ids);
+        info!(count = stale_ids.len(), stale_ids = ?stale_ids, "清理本地过期任务");
         db.batch_cleanup_tasks(&stale_ids).await;
     }
 

@@ -58,6 +58,8 @@ pub mod tauri_event {
     pub const MQTT_DEVICE_KICK: &str = "mqtt-device-kick";
     pub const MQTT_TASK_RELOAD: &str = "mqtt-task-reload";
     pub const MQTT_PHONES_UNBIND: &str = "mqtt-phones-unbind";
+    /// 服务端广播下线（截止工作时间到达）
+    pub const MQTT_BROADCAST_OFFLINE: &str = "mqtt-broadcast-offline";
     pub const MQTT_MESSAGE: &str = "mqtt-message";
     pub const TASK_UPDATE: &str = "task://update";
     pub const RISK_CONTROL: &str = "risk-control";
@@ -243,43 +245,42 @@ pub mod settings {
 
 /// MQTT Topic 常量
 pub mod mqtt_topic {
-    // ── 上行（客户端 → 服务端）──
-    /// 设备上线事件
-    pub const UP_DEVICE_ONLINE: &str = "upstream/device/online";
-    /// 设备下线事件
-    pub const UP_DEVICE_OFFLINE: &str = "upstream/device/offline";
-    /// 心跳上报
-    pub const UP_HEARTBEAT: &str = "upstream/heartbeat";
-    /// 任务状态事件
-    pub const UP_TASK_EVENT: &str = "upstream/task/event";
+    // ── 上行（客户端 → 服务端）── 对照 docs/MQTT.md §2.3
+    /// 设备上线事件: mt/client/{id}/online
+    pub const UP_DEVICE_ONLINE: &str = "online";
+    /// 设备下线事件: mt/client/{id}/offline
+    pub const UP_DEVICE_OFFLINE: &str = "offline";
+    /// 心跳上报: mt/client/{id}/heartbeat
+    pub const UP_HEARTBEAT: &str = "heartbeat";
+    /// 任务状态事件: mt/client/{id}/task/event
+    pub const UP_TASK_EVENT: &str = "task/event";
 
-    // ── 下行（服务端 → 客户端）──
-    /// 踢设备下线
-    pub const DOWN_DEVICE_KICK: &str = "downstream/device/kick";
-    /// 任务数据变更通知
-    pub const DOWN_TASK_RELOAD: &str = "downstream/task/reload";
-    /// 手机号被抢占/解绑通知
-    pub const DOWN_PHONES_UNBIND: &str = "downstream/phones/unbind";
-    /// 下行通配订阅
-    pub const DOWN_WILDCARD: &str = "downstream/#";
+    // ── 下行（服务端 → 客户端）── 对照 docs/MQTT.md §2.4
+    /// 任务数据变更通知: mt/client/{id}/taskChanged
+    pub const DOWN_TASK_RELOAD: &str = "taskChanged";
+    /// 手机号被抢占/解绑通知: mt/client/{id}/unbind
+    pub const DOWN_PHONES_UNBIND: &str = "unbind";
+    /// 客户端通配订阅（接收所有下行消息）
+    pub const DOWN_WILDCARD: &str = "#";
 
-    // ── 广播 ──
-    /// 全局任务变更广播
-    pub const BROADCAST_TASK_UPDATE: &str = "broadcast/task/update";
+    // ── 广播 ── 对照 docs/MQTT.md §2.4.3
+    /// 截止工作时间到达 — 服务端通知所有客户端停止工作
+    pub const BROADCAST_OFFLINE: &str = "broadcast/offline";
     /// 广播通配订阅
     pub const BROADCAST_WILDCARD: &str = "broadcast/#";
 
-    // ── LWT 遗嘱 ──
-    pub const UP_OFFLINE: &str = "upstream/offline";
+    // ── LWT 遗嘱 ── 对照 docs/MQTT.md §2.3.5
+    /// 异常断开自动发布: mt/client/{id}/lwt
+    pub const UP_OFFLINE: &str = "lwt";
 
-    /// 拼接客户端专属 Topic: automatex/{client_id}/{suffix}
+    /// 拼接客户端专属 Topic: mt/client/{client_id}/{suffix}
     pub fn client_topic(client_id: &str, suffix: &str) -> String {
-        format!("automatex/{}/{}", client_id, suffix)
+        format!("mt/client/{}/{}", client_id, suffix)
     }
 
-    /// 拼接广播 Topic: automatex/{suffix}
+    /// 拼接广播 Topic: mt/client/{suffix}
     pub fn broadcast_topic(suffix: &str) -> String {
-        format!("automatex/{}", suffix)
+        format!("mt/client/{}", suffix)
     }
 
     /// 心跳间隔（秒）

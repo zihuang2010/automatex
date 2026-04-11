@@ -8,6 +8,7 @@ pub mod types;
 pub use types::*;
 
 use std::collections::HashSet;
+use tracing::debug;
 
 use crate::constants::{city_status, keyword_status, task_status};
 use crate::storage::{Database, TaskStateRow};
@@ -24,7 +25,7 @@ pub fn mock_enabled() -> bool {
 /// 有绑定手机号时由 startup_sync_tasks 从服务端拉取真实数据
 pub async fn sync_task_cache(db: &Database) {
     if !mock_enabled() {
-        eprintln!("[task_provider] 生产模式禁用 mock 写入");
+        debug!("生产模式禁用 mock 写入");
         return;
     }
 
@@ -33,13 +34,13 @@ pub async fn sync_task_cache(db: &Database) {
         .await
         .unwrap_or_default();
     if !synced_phones.is_empty() && synced_phones != "[]" {
-        eprintln!("[task_provider] 已有绑定手机号，跳过 mock 写入（由 startup_sync 拉取）");
+        debug!("已有绑定手机号，跳过 mock 写入（由 startup_sync 拉取）");
         return;
     }
 
     let existing = db.load_all_task_defs().await;
     if !existing.is_empty() {
-        eprintln!("[task_provider] DB 已有 {} 条任务定义，跳过 mock 写入", existing.len());
+        debug!(count = existing.len(), "DB 已有任务定义，跳过 mock 写入");
         return;
     }
     let defs: Vec<TaskDef> = load_mock_definitions();
@@ -58,7 +59,7 @@ pub async fn load_tasks(db: &Database) -> Vec<Task> {
             if mock_enabled() {
                 (load_mock_definitions(), Default::default())
             } else {
-                eprintln!("[task_provider] 任务缓存为空，生产模式不再回退到 mock");
+                debug!("任务缓存为空，生产模式不再回退到 mock");
                 (Vec::new(), Default::default())
             }
         } else {

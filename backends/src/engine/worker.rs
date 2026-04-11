@@ -17,6 +17,8 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use tracing::{debug, error};
+
 use crate::connection::phone_client::{BatchTask, PhoneClient, PhoneMsg, ScanError};
 use crate::storage::Database;
 
@@ -55,10 +57,7 @@ pub(super) fn spawn_worker(
             biased;
             // 取消优先：CancellationToken 触发时立即中止
             _ = cancel.cancelled() => {
-                eprintln!(
-                    "[worker] 已取消 (task={}, seq={})",
-                    task_id, worker_seq
-                );
+                debug!(task_id = %task_id, worker_seq, "已取消");
                 ExecutionOutcome::Cancelled
             }
             // 正常执行路径
@@ -102,7 +101,7 @@ async fn run_phone_scan(
 ) -> ExecutionOutcome {
     // ── 快速路径：无待扫描项时直接返回完成 ──
     if tasks.is_empty() {
-        eprintln!("[worker] task={} 无待扫描关键词，批次视为已完成", task_id);
+        debug!(task_id = %task_id, "无待扫描关键词，批次视为已完成");
         return ExecutionOutcome::BatchDone { completed: Vec::new(), stopped: false };
     }
 
@@ -112,21 +111,27 @@ async fn run_phone_scan(
     // ── 1. 建立连接并发送批次请求 ──
     let mut stream = match client.open(batch_id, tasks, max_pages).await {
         Ok(s) => {
-            eprintln!(
-                "[worker] 已连接手机 (task={}, device={}, port={}, keywords={})",
-                task_id, device_serial, local_port, total_keywords
+            debug!(
+                task_id = %task_id,
+                device = %device_serial,
+                port = local_port,
+                keywords = total_keywords,
+                "已连接手机"
             );
             s
         },
         Err(ScanError::ConnectionFailed(e)) => {
-            eprintln!(
-                "[worker] 连接手机失败 (task={}, device={}, port={}): {}",
-                task_id, device_serial, local_port, e
+            error!(
+                task_id = %task_id,
+                device = %device_serial,
+                port = local_port,
+                error = %e,
+                "连接手机失败"
             );
             return ExecutionOutcome::DeviceOffline;
         },
         Err(e) => {
-            eprintln!("[worker] 建立流失败 (task={}, device={}): {}", task_id, device_serial, e);
+            error!(task_id = %task_id, device = %device_serial, error = %e, "建立流失败");
             return ExecutionOutcome::DeviceOffline;
         },
     };
@@ -168,14 +173,14 @@ async fn run_phone_scan(
                         items.iter().map(|it| (it.name.clone(), it.captured_at.clone())).collect();
                     db.save_keyword_results(task_id, round_id, &city, &keyword, &pairs).await;
                 }
-                eprintln!(
-                    "[worker] 关键词完成 [{}/{}] task={} city={} keyword={} items={}",
-                    completed.len() + 1,
-                    total_keywords,
-                    task_id,
-                    city,
-                    keyword,
-                    item_count,
+                debug!(
+                    task_id = %task_id,
+                    city = %city,
+                    keyword = %keyword,
+                    items = item_count,
+                    progress = completed.len() + 1,
+                    total = total_keywords,
+                    "关键词完成"
                 );
                 // 通知引擎实时更新内存状态 + 推送前端
                 let _ = tx
@@ -191,31 +196,31 @@ async fn run_phone_scan(
 
             // ── 手机端致命错误：立即终止，释放设备 ──
             Ok(Some(PhoneMsg::FatalError { city, reason, .. })) => {
-                eprintln!("[worker] 致命错误 task={} city={} reason={}", task_id, city, reason);
+                error!(task_id = %task_id, city = %city, reason = %reason, "致命错误");
                 return ExecutionOutcome::FatalError { completed, city, reason };
             },
 
             // ── 批次全部结束 ──
             Ok(Some(PhoneMsg::Done(info))) => {
-                eprintln!(
-                    "[worker] 批次结束 task={} total_items={} completed={}/{} stopped={} fatal={:?}",
-                    task_id,
-                    info.total_items,
-                    info.completed_tasks,
-                    info.total_tasks,
-                    info.stopped,
-                    info.fatal_reason,
+                debug!(
+                    task_id = %task_id,
+                    total_items = info.total_items,
+                    completed_tasks = info.completed_tasks,
+                    total_tasks = info.total_tasks,
+                    stopped = info.stopped,
+                    fatal_reason = ?info.fatal_reason,
+                    "批次结束"
                 );
                 return ExecutionOutcome::BatchDone { completed, stopped: info.stopped };
             },
 
             // ── EOF：连接关闭但未收到 done ──
             Ok(None) => {
-                eprintln!(
-                    "[worker] 连接提前关闭，未收到 done (task={}, completed={}/{})",
-                    task_id,
-                    completed.len(),
-                    total_keywords,
+                error!(
+                    task_id = %task_id,
+                    completed = completed.len(),
+                    total = total_keywords,
+                    "连接提前关闭，未收到 done"
                 );
                 // 已有部分结果：作为「提前停止」处理，保留已完成进度
                 if !completed.is_empty() {
@@ -226,12 +231,12 @@ async fn run_phone_scan(
 
             // ── IO 错误：流中断 ──
             Err(ScanError::StreamBroken(e)) => {
-                eprintln!(
-                    "[worker] 流中断 (task={}, completed={}/{}): {}",
-                    task_id,
-                    completed.len(),
-                    total_keywords,
-                    e
+                error!(
+                    task_id = %task_id,
+                    completed = completed.len(),
+                    total = total_keywords,
+                    error = %e,
+                    "流中断"
                 );
                 if !completed.is_empty() {
                     return ExecutionOutcome::BatchDone { completed, stopped: true };
@@ -241,7 +246,7 @@ async fn run_phone_scan(
 
             // ── 其他错误（序列化等内部问题）──
             Err(e) => {
-                eprintln!("[worker] 读取错误 (task={}): {}", task_id, e);
+                error!(task_id = %task_id, error = %e, "读取错误");
                 return ExecutionOutcome::DeviceOffline;
             },
         }

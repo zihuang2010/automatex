@@ -10,4 +10,4 @@ mod router;
 pub mod types;
 
 pub use manager::MqttManager;
-pub use types::{MqttConfig, MqttStatus};
+pub use types::*;

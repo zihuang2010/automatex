@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use reqwest::Method;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
+use tracing::{debug, error, info, warn};
 
 use super::types::*;
 use super::ApiClient;
@@ -21,7 +22,7 @@ static NEXT_HTTP_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 impl RealApiClient {
     pub fn new(base_url: &str) -> Self {
-        eprintln!("[http] 真实模式启用: {}", base_url);
+        info!(base_url = %base_url, "真实模式启用");
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(
                 constants::timing::HTTP_CONNECT_TIMEOUT_SECS,
@@ -33,7 +34,7 @@ impl RealApiClient {
             .user_agent(format!("automatex/{}", env!("CARGO_PKG_VERSION")))
             .build()
             .unwrap_or_else(|e| {
-                eprintln!("[http] 构建 reqwest client 失败，退回默认配置: {}", e);
+                error!(error = %e, "构建 reqwest client 失败，退回默认配置");
                 reqwest::Client::new()
             });
         Self { client, base_url: base_url.trim_end_matches('/').to_string() }
@@ -56,15 +57,23 @@ impl RealApiClient {
             let url = format!("{}/{}", self.base_url, path.trim_start_matches('/'));
             let mut request = self.client.request(method.clone(), &url);
             if let Some(ref payload) = body {
-                eprintln!(
-                    "[http][{}] {} 请求: method={}, url={}, body={}",
-                    request_id, action, method, url, payload
+                debug!(
+                    request_id,
+                    action,
+                    method = %method,
+                    url = %url,
+                    body = %payload,
+                    "请求"
                 );
                 request = request.json(payload);
             } else {
-                eprintln!(
-                    "[http][{}] {} 请求: method={}, url={}, body=<empty>",
-                    request_id, action, method, url
+                debug!(
+                    request_id,
+                    action,
+                    method = %method,
+                    url = %url,
+                    body = "<empty>",
+                    "请求"
                 );
             }
 
@@ -78,15 +87,15 @@ impl RealApiClient {
                         let backoff_ms = constants::timing::HTTP_RETRY_BASE_DELAY_MS
                             * attempt as u64
                             * attempt as u64;
-                        eprintln!(
-                            "[http][{}] {} 服务端错误，准备重试: status={}, attempt={}/{}, elapsed_ms={}, backoff_ms={}",
+                        warn!(
                             request_id,
                             action,
-                            status,
+                            status = %status,
                             attempt,
-                            MAX_ATTEMPTS,
-                            started_at.elapsed().as_millis(),
-                            backoff_ms
+                            max_attempts = MAX_ATTEMPTS,
+                            elapsed_ms = started_at.elapsed().as_millis() as u64,
+                            backoff_ms,
+                            "服务端错误，准备重试"
                         );
                         tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                         continue;
@@ -94,13 +103,13 @@ impl RealApiClient {
 
                     let text =
                         resp.text().await.map_err(|e| format!("{} 读取响应失败: {}", action, e))?;
-                    eprintln!(
-                        "[http][{}] {} 响应: status={}, elapsed_ms={}, body={}",
+                    debug!(
                         request_id,
                         action,
-                        status,
-                        started_at.elapsed().as_millis(),
-                        text
+                        status = %status,
+                        elapsed_ms = started_at.elapsed().as_millis() as u64,
+                        body = %text,
+                        "响应"
                     );
                     if !status.is_success() {
                         return Err(format!(
@@ -115,7 +124,7 @@ impl RealApiClient {
                         return Err(format!("{} 失败: {}", action, envelope.msg));
                     }
                     if envelope.data.is_none() {
-                        eprintln!("[http] {} 响应 data 为 null，使用默认值兼容", action);
+                        warn!(action, "响应 data 为 null，使用默认值兼容");
                     }
                     return Ok(envelope.data.unwrap_or_default());
                 },
@@ -130,15 +139,15 @@ impl RealApiClient {
                         let backoff_ms = constants::timing::HTTP_RETRY_BASE_DELAY_MS
                             * attempt as u64
                             * attempt as u64;
-                        eprintln!(
-                            "[http][{}] {} 传输失败，准备重试: err={}, attempt={}/{}, elapsed_ms={}, backoff_ms={}",
+                        warn!(
                             request_id,
                             action,
-                            err,
+                            error = %err,
                             attempt,
-                            MAX_ATTEMPTS,
-                            started_at.elapsed().as_millis(),
-                            backoff_ms
+                            max_attempts = MAX_ATTEMPTS,
+                            elapsed_ms = started_at.elapsed().as_millis() as u64,
+                            backoff_ms,
+                            "传输失败，准备重试"
                         );
                         tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                         continue;

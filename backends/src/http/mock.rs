@@ -4,6 +4,7 @@
 //! 支持从 `~/.automatex/mock/scenarios/{name}.json` 加载自定义场景。
 
 use async_trait::async_trait;
+use tracing::{debug, info, warn};
 
 use super::types::*;
 use super::ApiClient;
@@ -17,14 +18,14 @@ pub struct MockApiClient {
 
 impl MockApiClient {
     pub fn new() -> Self {
-        eprintln!("[http] Mock 模式启用（服务端 URL 未配置）");
+        info!("Mock 模式启用（服务端 URL 未配置）");
         Self { mock_scenario: std::sync::Mutex::new("default".to_string()) }
     }
 
     /// 设置 mock 场景（运行时切换）
     pub fn set_mock_scenario(&self, name: &str) {
         if let Ok(mut s) = self.mock_scenario.lock() {
-            eprintln!("[http-mock] 切换场景: {} → {}", *s, name);
+            info!(from = %*s, to = %name, "切换场景");
             *s = name.to_string();
         }
     }
@@ -38,7 +39,7 @@ impl MockApiClient {
             .unwrap_or_default();
         let user_path = format!("{}/.automatex/mock/scenarios/{}.json", home, name);
         if let Ok(content) = std::fs::read_to_string(&user_path) {
-            eprintln!("[http-mock] 加载用户场景: {}", user_path);
+            debug!(path = %user_path, "加载用户场景");
             return serde_json::from_str(&content).ok();
         }
 
@@ -46,11 +47,11 @@ impl MockApiClient {
         let resource_path =
             format!("{}/resources/mock/scenarios/{}.json", env!("CARGO_MANIFEST_DIR"), name);
         if let Ok(content) = std::fs::read_to_string(&resource_path) {
-            eprintln!("[http-mock] 加载内置场景: {}", resource_path);
+            debug!(path = %resource_path, "加载内置场景");
             return serde_json::from_str(&content).ok();
         }
 
-        eprintln!("[http-mock] 场景文件未找到: {}, 使用内置默认", name);
+        debug!(name = %name, "场景文件未找到，使用内置默认");
         None
     }
 }
@@ -58,22 +59,24 @@ impl MockApiClient {
 #[async_trait]
 impl ApiClient for MockApiClient {
     async fn bind_phones(&self, req: &PhoneBindRequest) -> Result<PhoneBindResponse, String> {
-        eprintln!(
-            "[http-mock] bind_phones: client={}, mobiles={:?}, force_bind={}",
-            req.client_id, req.mobiles, req.force_bind
+        debug!(
+            client_id = %req.client_id,
+            mobiles = ?req.mobiles,
+            force_bind = %req.force_bind,
+            "bind_phones 请求"
         );
 
         if let Some(scenario) = self.load_mock_scenario() {
             if let Some(bind_data) = scenario.get("bind_phones") {
                 let resp: PhoneBindResponse = serde_json::from_value(bind_data.clone())
                     .unwrap_or_else(|e| {
-                        eprintln!("[http-mock] 解析 bind_phones 场景失败: {}", e);
+                        warn!(error = %e, "解析 bind_phones 场景失败");
                         PhoneBindResponse { task_items: Some(Vec::new()), conflicts: Vec::new() }
                     });
-                eprintln!(
-                    "[http-mock] bind_phones 场景响应: task_items={}, conflicts={}",
-                    resp.task_items.as_ref().map(|items| items.len()).unwrap_or(0),
-                    resp.conflicts.len()
+                debug!(
+                    task_items = resp.task_items.as_ref().map(|items| items.len()).unwrap_or(0),
+                    conflicts = resp.conflicts.len(),
+                    "bind_phones 场景响应"
                 );
                 return Ok(resp);
             }
@@ -88,7 +91,7 @@ impl ApiClient for MockApiClient {
         &self,
         req: &BatchTasksRequest,
     ) -> Result<Vec<BatchTaskItem>, String> {
-        eprintln!("[http-mock] batch_fetch_tasks: task_ids={:?}", req.task_ids);
+        debug!(task_ids = ?req.task_ids, "batch_fetch_tasks 请求");
 
         let mut items = self.batch_items_for_all();
         if !req.task_ids.is_empty() {
@@ -98,18 +101,21 @@ impl ApiClient for MockApiClient {
     }
 
     async fn report_progress(&self, req: &ProgressReportRequest) -> Result<ApiResponse, String> {
-        eprintln!(
-            "[http-mock] report_progress: task={}, city={}, kw={}, round={}",
-            req.task_id, req.city_name, req.keyword, req.round_no
+        debug!(
+            task_id = %req.task_id,
+            city_name = %req.city_name,
+            keyword = %req.keyword,
+            round_no = %req.round_no,
+            "report_progress 请求"
         );
         Ok(ApiResponse::default())
     }
 
     async fn unbind_phones(&self, req: &UnbindPhonesRequest) -> Result<ApiResponse, String> {
-        eprintln!(
-            "[http-mock] unbind_phones: client={}, mobiles={}",
-            req.client_id,
-            req.mobiles.len()
+        debug!(
+            client_id = %req.client_id,
+            mobiles_count = req.mobiles.len(),
+            "unbind_phones 请求"
         );
         Ok(ApiResponse::default())
     }

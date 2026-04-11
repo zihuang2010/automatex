@@ -2,6 +2,7 @@
 
 use chrono::TimeZone;
 use std::collections::HashMap;
+use tracing::info;
 
 // 时间工具
 /// 当前 Unix 时间戳（秒）
@@ -59,6 +60,6 @@ pub fn generate_machine_client_id() -> String {
         .or_else(|_| std::env::var("USERNAME"))
         .unwrap_or_else(|_| "unknown-user".to_string());
 
-    eprintln!("[client_id] 生成新 ID: {} (host={}, user={})", short_id, hostname, username);
+    info!(client_id = short_id, hostname = %hostname, username = %username, "生成新 ID");
     short_id.to_string()
 }

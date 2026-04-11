@@ -29,8 +29,15 @@ use std::time::Duration;
 use tauri::Emitter;
 use tokio::sync::Mutex;
 
+use tracing::{error, info, warn};
+
 use super::router::route_message;
-use super::types::{MqttConfig, MqttStatus};
+use super::types::*;
+
+/// 当前时间格式化为 "yyyy-MM-dd HH:mm:ss"
+fn now_event_at() -> String {
+    crate::utils::format_datetime(crate::constants::now_unix())
+}
 
 /// 真实 MQTT 连接管理器
 pub struct MqttManager {
@@ -85,7 +92,7 @@ impl MqttManager {
             'reconnect: loop {
                 // ── 代数守卫 ──
                 if generation_arc.load(Ordering::SeqCst) != my_generation {
-                    eprintln!("[mqtt] 代数 {} 已被替换，EventLoop 退出", my_generation);
+                    info!(generation = my_generation, "代数已被替换，EventLoop 退出");
                     break 'reconnect;
                 }
 
@@ -105,11 +112,11 @@ impl MqttManager {
 
                 let will_topic =
                     mqtt_topic::client_topic(&config.client_id, mqtt_topic::UP_OFFLINE);
-                let will_payload = serde_json::json!({
-                    "client_id": config.client_id,
-                    "reason": "unexpected_disconnect"
+                let will_payload = serde_json::to_string(&MsgLwt {
+                    client_id: &config.client_id,
+                    reason: "unexpected_disconnect",
                 })
-                .to_string();
+                .unwrap();
                 opts.set_last_will(LastWill::new(
                     will_topic,
                     will_payload.into_bytes(),
@@ -159,29 +166,57 @@ impl MqttManager {
                                             .subscribe(&sub_downstream, QoS::AtLeastOnce)
                                             .await
                                         {
-                                            eprintln!(
-                                                "[mqtt] 订阅 downstream 失败 (gen={}): {}",
-                                                gen_for_sub, e
+                                            error!(
+                                                generation = gen_for_sub,
+                                                error = %e,
+                                                "订阅 downstream 失败"
                                             );
                                         } else {
-                                            eprintln!("[mqtt] 已订阅: {}", sub_downstream);
+                                            info!(topic = %sub_downstream, "已订阅");
                                         }
                                         if let Err(e) = client_sub
                                             .subscribe(&sub_broadcast, QoS::AtLeastOnce)
                                             .await
                                         {
-                                            eprintln!(
-                                                "[mqtt] 订阅 broadcast 失败 (gen={}): {}",
-                                                gen_for_sub, e
+                                            error!(
+                                                generation = gen_for_sub,
+                                                error = %e,
+                                                "订阅 broadcast 失败"
                                             );
                                         } else {
-                                            eprintln!("[mqtt] 已订阅: {}", sub_broadcast);
+                                            info!(topic = %sub_broadcast, "已订阅");
                                         }
                                     });
 
-                                    eprintln!(
-                                        "[mqtt] 连接成功 (gen={}), connect_ts={}",
-                                        my_generation, connect_ts
+                                    // 发布上线事件
+                                    let client_online = client.clone();
+                                    let online_topic = mqtt_topic::client_topic(
+                                        &config.client_id,
+                                        mqtt_topic::UP_DEVICE_ONLINE,
+                                    );
+                                    let online_payload = serde_json::to_string(&MsgOnline {
+                                        client_id: &config.client_id,
+                                        event_at: now_event_at(),
+                                    })
+                                    .unwrap();
+                                    tokio::spawn(async move {
+                                        if let Err(e) = client_online
+                                            .publish(
+                                                online_topic,
+                                                QoS::AtLeastOnce,
+                                                false,
+                                                online_payload.into_bytes(),
+                                            )
+                                            .await
+                                        {
+                                            error!(error = %e, "上线事件发布失败");
+                                        }
+                                    });
+
+                                    info!(
+                                        generation = my_generation,
+                                        connect_ts = connect_ts,
+                                        "连接成功"
                                     );
                                 },
                                 Event::Incoming(Incoming::Publish(publish)) => {
@@ -203,7 +238,7 @@ impl MqttManager {
                                         tauri_event::MQTT_STATUS,
                                         mqtt_emit_status::CONNECTING,
                                     );
-                                    eprintln!("[mqtt] Broker 主动断开，3s 后重连");
+                                    warn!("Broker 主动断开，3s 后重连");
                                     tokio::time::sleep(Duration::from_secs(3)).await;
                                     break 'poll; // 退出内层，外层用全新 EventLoop 重连
                                 },
@@ -218,7 +253,7 @@ impl MqttManager {
                                 *status.lock().await = MqttStatus::Connecting;
                                 let _ = app_handle
                                     .emit(tauri_event::MQTT_STATUS, mqtt_emit_status::CONNECTING);
-                                eprintln!("[mqtt] 连接中断，3s 后重连: {}", err_msg);
+                                warn!(error = %err_msg, "连接中断，3s 后重连");
                                 tokio::time::sleep(Duration::from_secs(3)).await;
                                 backoff_secs = 5; // 曾经成功过，重置退避计数
                             } else {
@@ -226,7 +261,7 @@ impl MqttManager {
                                 *status.lock().await = MqttStatus::Error(err_msg.clone());
                                 let _ = app_handle
                                     .emit(tauri_event::MQTT_STATUS, format!("error:{}", err_msg));
-                                eprintln!("[mqtt] 连接错误，{}s 后重试: {}", backoff_secs, err_msg);
+                                error!(error = %err_msg, backoff_secs = backoff_secs, "连接错误，稍后重试");
                                 tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
                                 backoff_secs = (backoff_secs * 2).min(60);
                             }
@@ -243,8 +278,32 @@ impl MqttManager {
         Ok("MQTT 连接中...".to_string())
     }
 
-    /// 断开连接：递增代数（让 EventLoop 感知退出）→ 断开 TCP → 等待 loop 退出
+    /// 断开连接：发送下线事件 → 递增代数 → 断开 TCP → 等待 loop 退出
     pub async fn disconnect(&self) -> Result<String, String> {
+        // 先发送下线事件（在 take 之前 borrow client）
+        {
+            let cid = self.client_id.lock().await.clone();
+            if !cid.is_empty() {
+                let guard = self.client.lock().await;
+                if let Some(client) = guard.as_ref() {
+                    let topic =
+                        mqtt_topic::client_topic(&cid, mqtt_topic::UP_DEVICE_OFFLINE);
+                    let payload = serde_json::to_string(&MsgOffline {
+                        client_id: &cid,
+                        event_at: now_event_at(),
+                        reason: "user_logout",
+                    })
+                    .unwrap();
+                    // 尽力发送，超时不阻塞
+                    let _ = tokio::time::timeout(
+                        Duration::from_secs(2),
+                        client.publish(topic, QoS::AtLeastOnce, false, payload.into_bytes()),
+                    )
+                    .await;
+                }
+            }
+        }
+
         self.generation.fetch_add(1, Ordering::SeqCst);
 
         if let Some(client) = self.client.lock().await.take() {
@@ -285,19 +344,18 @@ impl MqttManager {
     pub async fn publish_heartbeat(
         &self,
         device_hw_serials: Vec<String>,
-        tasks_executing: Vec<String>,
     ) -> Result<(), String> {
         let cid = self.client_id.lock().await.clone();
         if cid.is_empty() {
             return Ok(());
         }
         let topic = mqtt_topic::client_topic(&cid, mqtt_topic::UP_HEARTBEAT);
-        let payload = serde_json::json!({
-            "ts": crate::constants::now_unix(),
-            "devices": device_hw_serials,
-            "tasks_executing": tasks_executing,
+        let payload = serde_json::to_string(&MsgHeartbeat {
+            client_id: &cid,
+            event_at: now_event_at(),
+            devices: &device_hw_serials,
         })
-        .to_string();
+        .unwrap();
 
         let client = {
             let guard = self.client.lock().await;
@@ -308,6 +366,43 @@ impl MqttManager {
             .await
             .map_err(|e| format!("心跳发布失败: {}", e))?;
         Ok(())
+    }
+
+    /// 发布任务状态事件（fire-and-forget，失败仅记录日志）
+    ///
+    /// `event_type`: started / paused / continue / stopped / restart
+    pub async fn publish_task_event(&self, task_id: &str, event_type: &str) {
+        let cid = self.client_id.lock().await.clone();
+        if cid.is_empty() {
+            return;
+        }
+        let topic = mqtt_topic::client_topic(&cid, mqtt_topic::UP_TASK_EVENT);
+        let payload = serde_json::to_string(&MsgTaskEvent {
+            client_id: &cid,
+            task_id,
+            event_type,
+            event_at: now_event_at(),
+        })
+        .unwrap();
+
+        let client = {
+            let guard = self.client.lock().await;
+            match guard.as_ref() {
+                Some(c) => c.clone(),
+                None => return,
+            }
+        };
+        if let Err(e) = client
+            .publish(topic, QoS::AtLeastOnce, false, payload.into_bytes())
+            .await
+        {
+            error!(
+                task_id = task_id,
+                event_type = event_type,
+                error = %e,
+                "任务事件发布失败"
+            );
+        }
     }
 
     pub async fn get_status(&self) -> MqttStatus {

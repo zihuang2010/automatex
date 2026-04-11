@@ -1,5 +1,6 @@
 use super::{log_exec, now_unix, Database, TaskStateRow};
 use rusqlite::params;
+use tracing::{debug, error, info};
 
 impl Database {
     // ─── 任务定义操作（a_task_defs）─────────────────────────────────
@@ -115,7 +116,7 @@ impl Database {
                 .map_err(|e| format!("[db] batch_upsert row 失败: {}", e))?;
             }
             tx.commit().map_err(|e| format!("[db] batch_upsert_task_defs commit 失败: {}", e))?;
-            eprintln!("[db] batch_upsert: {} 条任务定义", count);
+            debug!(count = count, "batch_upsert 任务定义完成");
             Ok::<usize, String>(count)
         })
         .await
@@ -129,7 +130,7 @@ impl Database {
             let mut stmt = match conn.prepare("SELECT task_id FROM a_task_defs WHERE phone = ?1") {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("[db] get_tasks_by_phone prepare 失败: {}", e);
+                    error!(op = "get_tasks_by_phone", error = %e, "prepare 失败");
                     return Vec::new();
                 },
             };
@@ -330,8 +331,8 @@ impl Database {
                     [],
                 );
                 match result {
-                    Ok(n) => eprintln!("[db] 跨日重置: 重置了 {} 个任务状态", n),
-                    Err(e) => eprintln!("[db] daily_reset_tasks 失败: {}", e),
+                    Ok(n) => info!(count = n, "跨日重置: 重置任务状态"),
+                    Err(e) => error!(op = "daily_reset_tasks", error = %e, "数据库操作失败"),
                 }
             })
             .await;
@@ -348,8 +349,8 @@ impl Database {
                     params![now],
                 );
                 match result {
-                    Ok(n) if n > 0 => eprintln!("[db] 跨日重置: 关闭了 {} 个 running 轮次", n),
-                    Err(e) => eprintln!("[db] close_all_running_rounds 失败: {}", e),
+                    Ok(n) if n > 0 => info!(count = n, "跨日重置: 关闭 running 轮次"),
+                    Err(e) => error!(op = "close_all_running_rounds", error = %e, "数据库操作失败"),
                     _ => {},
                 }
             })
@@ -371,8 +372,8 @@ impl Database {
                     params![now],
                 );
                 match result {
-                    Ok(n) if n > 0 => eprintln!("[db] 跨日重置: 关闭了 {} 条未结束 run", n),
-                    Err(e) => eprintln!("[db] close_all_unfinished_runs 失败: {}", e),
+                    Ok(n) if n > 0 => info!(count = n, "跨日重置: 关闭未结束 run"),
+                    Err(e) => error!(op = "close_all_unfinished_runs", error = %e, "数据库操作失败"),
                     _ => {},
                 }
             })
@@ -387,8 +388,8 @@ impl Database {
                 let result =
                     conn.execute("DELETE FROM a_task_progress WHERE sync_status = 'synced'", []);
                 match result {
-                    Ok(n) if n > 0 => eprintln!("[db] 跨日重置: 清理了 {} 条已同步进度", n),
-                    Err(e) => eprintln!("[db] cleanup_synced_progress 失败: {}", e),
+                    Ok(n) if n > 0 => info!(count = n, "跨日重置: 清理已同步进度"),
+                    Err(e) => error!(op = "cleanup_synced_progress", error = %e, "数据库操作失败"),
                     _ => {},
                 }
             })

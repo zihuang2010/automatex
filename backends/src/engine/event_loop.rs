@@ -24,6 +24,8 @@ use crate::connection::{
     phone_client::{BatchTask, PhoneClient},
 };
 
+use tracing::{debug, error, info, warn};
+
 use super::worker::spawn_worker;
 use super::{EngineMsg, ExecutionOutcome, TaskSummarySnapshotRef};
 
@@ -76,6 +78,7 @@ struct EngineState {
     reloading: HashSet<String>,
     storage: Arc<Database>,
     http: Arc<dyn http::ApiClient>,
+    mqtt: Arc<crate::mqtt::MqttManager>,
     app_handle: tauri::AppHandle,
     tx: mpsc::Sender<EngineMsg>,
     snapshot_tx: watch::Sender<Vec<TaskSummary>>,
@@ -451,7 +454,7 @@ fn spawn_task_worker(s: &mut EngineState, task_id: &str) {
 
     if pending_tasks.is_empty() {
         // 无待扫描项：可能所有关键词已完成，由引擎在下一次 handle_worker_result 时处理
-        eprintln!("[engine] spawn_task_worker: task={} 无待扫描关键词，跳过", task_id);
+        debug!(task_id = %task_id, "spawn_task_worker: 无待扫描关键词，跳过");
         return;
     }
 
@@ -520,6 +523,7 @@ pub(super) fn spawn(
     tasks: Vec<Task>,
     storage: Arc<Database>,
     http: Arc<dyn http::ApiClient>,
+    mqtt: Arc<crate::mqtt::MqttManager>,
     app_handle: tauri::AppHandle,
 ) {
     let state = EngineState {
@@ -529,6 +533,7 @@ pub(super) fn spawn(
         reloading: HashSet::new(),
         storage,
         http,
+        mqtt,
         app_handle,
         tx,
         snapshot_tx,
@@ -570,23 +575,53 @@ async fn engine_loop(mut s: EngineState, mut rx: mpsc::Receiver<EngineMsg>) {
 
         match msg {
             EngineMsg::StartTask { task_id, reply } => {
-                let _ = reply.send(handle_start(&mut s, &task_id).await);
+                let result = handle_start(&mut s, &task_id).await;
+                if result.is_ok() {
+                    let mqtt = Arc::clone(&s.mqtt);
+                    let tid = task_id.clone();
+                    tokio::spawn(async move { mqtt.publish_task_event(&tid, "started").await });
+                }
+                let _ = reply.send(result);
                 should_force_emit = true;
             },
             EngineMsg::PauseTask { task_id, reply } => {
-                let _ = reply.send(handle_pause(&mut s, &task_id).await);
+                let result = handle_pause(&mut s, &task_id).await;
+                if result.is_ok() {
+                    let mqtt = Arc::clone(&s.mqtt);
+                    let tid = task_id.clone();
+                    tokio::spawn(async move { mqtt.publish_task_event(&tid, "paused").await });
+                }
+                let _ = reply.send(result);
                 should_force_emit = true;
             },
             EngineMsg::ResumeTask { task_id, reply } => {
-                let _ = reply.send(handle_resume(&mut s, &task_id).await);
+                let result = handle_resume(&mut s, &task_id).await;
+                if result.is_ok() {
+                    let mqtt = Arc::clone(&s.mqtt);
+                    let tid = task_id.clone();
+                    tokio::spawn(async move { mqtt.publish_task_event(&tid, "continue").await });
+                }
+                let _ = reply.send(result);
                 should_force_emit = true;
             },
             EngineMsg::StopTask { task_id, reply } => {
-                let _ = reply.send(handle_stop(&mut s, &task_id).await);
+                let result = handle_stop(&mut s, &task_id).await;
+                if result.is_ok() {
+                    let mqtt = Arc::clone(&s.mqtt);
+                    let tid = task_id.clone();
+                    tokio::spawn(async move { mqtt.publish_task_event(&tid, "stopped").await });
+                }
+                let _ = reply.send(result);
                 should_force_emit = true;
             },
             EngineMsg::RetryTask { task_id, reply } => {
-                let _ = reply.send(handle_retry(&mut s, &task_id).await);
+                let result = handle_retry(&mut s, &task_id).await;
+                if result.is_ok() {
+                    let mqtt = Arc::clone(&s.mqtt);
+                    let tid = task_id.clone();
+                    tokio::spawn(async move { mqtt.publish_task_event(&tid, "restart").await });
+                }
+                let _ = reply.send(result);
                 should_force_emit = true;
             },
             EngineMsg::GetTasks { reply } => {
@@ -706,7 +741,7 @@ async fn engine_loop(mut s: EngineState, mut rx: mpsc::Receiver<EngineMsg>) {
                     tokio::spawn(async move {
                         adb_forward_remove(&serial, port).await;
                     });
-                    eprintln!("[engine] shutdown: cancelled runtime {}", task_id);
+                    info!(task_id = %task_id, "shutdown: cancelled runtime");
                 }
                 // 等待所有 worker 完成（最多 3 秒），确保正在进行的 DB 写入不被中断
                 if !worker_handles.is_empty() {
@@ -771,7 +806,7 @@ async fn dispatch_due_wakeups(s: &mut EngineState) {
                     .start_task_run(&wakeup.task_id, &runtime.device_serial, runtime.round_id)
                     .await;
             }
-            eprintln!("[engine] interval_waiting 唤醒: task={}", wakeup.task_id);
+            debug!(task_id = %wakeup.task_id, "interval_waiting 唤醒");
         }
 
         spawn_task_worker(s, &wakeup.task_id);
@@ -843,16 +878,13 @@ async fn handle_start(s: &mut EngineState, task_id: &str) -> Result<(), String> 
     // 分配（或复用）PC 本地端口，并建立 ADB forward
     let local_port = s.storage.assign_device_port(&serial).await;
     if let Err(e) = adb_forward_setup(&serial, local_port).await {
-        eprintln!(
-            "[engine] start: ADB forward 设置失败 (device={}, port={})，继续尝试（forward 可能已存在）: {}",
-            serial, local_port, e
-        );
+        warn!(device = %serial, port = local_port, error = %e, "start: ADB forward 设置失败，继续尝试（forward 可能已存在）");
     }
 
     // ── 无障碍服务健康检测：调度前主动确认 App 在线 ──
     let probe = PhoneClient::new(local_port);
     if let Err(e) = probe.ping().await {
-        eprintln!("[engine] 无障碍服务不可用 (device={}, port={}): {}", serial, local_port, e);
+        error!(device = %serial, port = local_port, error = %e, "无障碍服务不可用");
         s.storage.flag_device(&serial).await;
         crate::connection::adb::vibrate_device_alert(&serial);
         let _ = s.app_handle.emit(constants::tauri_event::DEVICES_CHANGED, ());
@@ -1011,10 +1043,7 @@ async fn handle_resume(s: &mut EngineState, task_id: &str) -> Result<(), String>
     // 复用已分配端口（或首次分配），重建 ADB forward（设备重连后 forward 可能已失效）
     let local_port = s.storage.assign_device_port(&serial).await;
     if let Err(e) = adb_forward_setup(&serial, local_port).await {
-        eprintln!(
-            "[engine] resume: ADB forward 设置失败 (device={}, port={}): {}",
-            serial, local_port, e
-        );
+        warn!(device = %serial, port = local_port, error = %e, "resume: ADB forward 设置失败");
     }
 
     let saved_state = s.storage.load_task_state(task_id).await;
@@ -1078,11 +1107,11 @@ async fn handle_resume(s: &mut EngineState, task_id: &str) -> Result<(), String>
     // 智能恢复策略：从 interval_waiting 暂停的任务
     if still_waiting {
         let remaining_secs = (saved_wakeup_at.unwrap() - constants::now_unix()) as u64;
-        eprintln!("[engine] interval_paused 恢复: task={}, 剩余等待 {}s", task_id, remaining_secs);
+        debug!(task_id = %task_id, remaining_secs = remaining_secs, "interval_paused 恢复");
         schedule_task(s, task_id, remaining_secs * 1000);
     } else {
         if was_interval_paused {
-            eprintln!("[engine] interval_paused 恢复: task={}, 等待已过期, 立即执行", task_id);
+            debug!(task_id = %task_id, "interval_paused 恢复: 等待已过期, 立即执行");
         }
         spawn_task_worker(s, task_id);
     }
@@ -1108,10 +1137,7 @@ async fn handle_retry(s: &mut EngineState, task_id: &str) -> Result<(), String> 
     // 复用已分配端口，重建 ADB forward
     let local_port = s.storage.assign_device_port(&serial).await;
     if let Err(e) = adb_forward_setup(&serial, local_port).await {
-        eprintln!(
-            "[engine] retry: ADB forward 设置失败 (device={}, port={}): {}",
-            serial, local_port, e
-        );
+        warn!(device = %serial, port = local_port, error = %e, "retry: ADB forward 设置失败");
     }
 
     if let Some(mut fresh) = fresh {
@@ -1480,18 +1506,18 @@ async fn handle_batch_done(
     } else {
         // 部分完成：手机端提前停止或意外断开 — 调度下一轮继续扫描剩余关键词
         if stopped {
-            eprintln!(
-                "[engine] task={} 手机端提前停止，已完成 {}/{} 关键词，调度继续",
-                task_id,
-                completed.len(),
-                s.tasks
+            warn!(
+                task_id = %task_id,
+                completed = completed.len(),
+                total = s.tasks
                     .iter()
                     .find(|t| t.id == task_id)
                     .map(|t| t.cities.iter().map(|c| c.total).sum::<i32>())
                     .unwrap_or(0),
+                "手机端提前停止，调度继续",
             );
         } else {
-            eprintln!("[engine] task={} 批次未完全执行（未收到 done），调度继续", task_id);
+            warn!(task_id = %task_id, "批次未完全执行（未收到 done），调度继续");
         }
 
         if let Some(runtime) = s.running.get_mut(task_id) {
@@ -1513,10 +1539,7 @@ async fn handle_batch_done(
 fn apply_completed_to_task(task: &mut crate::task_provider::Task, completed: &[(String, String)]) {
     for (city_name, keyword_name) in completed {
         let Some(city) = task.cities.iter_mut().find(|c| c.name == *city_name) else {
-            eprintln!(
-                "[engine] apply_completed: 城市 '{}' 不存在于任务 '{}'，跳过",
-                city_name, task.id
-            );
+            warn!(city_name = %city_name, task_id = %task.id, "apply_completed: 城市不存在于任务，跳过");
             continue;
         };
 
@@ -1606,7 +1629,7 @@ async fn complete_round_with_interval(
     // 4. 创建新轮次
     let new_round_id = s.storage.create_round(task_id).await.unwrap_or(0);
     if new_round_id == 0 {
-        eprintln!("[engine] 创建新轮次失败: task={}, 标记为 error", task_id);
+        error!(task_id = %task_id, "创建新轮次失败，标记为 error");
         mark_task_error(
             s,
             task_id,
@@ -1641,16 +1664,16 @@ async fn complete_round_with_interval(
     // 7. 持久化 — runtime_status 将被 persist_runtime_state 推断为 "interval_waiting"
     persist_runtime_state(s, task_id).await;
 
-    eprintln!(
-        "[engine] task={} 第 {} 轮完成，等待 {} 分钟后开始下一轮 (round_id={})",
-        task_id,
-        s.tasks
+    debug!(
+        task_id = %task_id,
+        round_no = s.tasks
             .iter()
             .find(|t| t.id == task_id)
             .map(|t| t.round_no.saturating_sub(1))
             .unwrap_or(0),
-        interval_minutes,
-        new_round_id,
+        interval_minutes = interval_minutes,
+        new_round_id = new_round_id,
+        "轮次完成，等待后开始下一轮",
     );
 }
 

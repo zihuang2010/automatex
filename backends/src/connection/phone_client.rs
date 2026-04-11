@@ -40,6 +40,8 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
+use tracing::{debug, warn};
+
 use crate::constants::phone_client as cfg;
 
 // ─── 请求结构 ─────────────────────────────────────────────────────────────────
@@ -246,10 +248,10 @@ impl PhoneStream {
                 },
                 Err(e) => {
                     // 协议容错：跳过无法解析的行，记录诊断信息
-                    eprintln!(
-                        "[phone_client] 跳过无法解析的消息 ({}): {}",
-                        e,
-                        trimmed.chars().take(160).collect::<String>()
+                    warn!(
+                        error = %e,
+                        raw = %trimmed.chars().take(160).collect::<String>(),
+                        "跳过无法解析的消息"
                     );
                     continue;
                 },
@@ -363,7 +365,7 @@ impl PhoneClient {
 
         // TCP_NODELAY：减少小包延迟（请求行仅几百字节）
         if let Err(e) = stream.set_nodelay(true) {
-            eprintln!("[phone_client] 设置 TCP_NODELAY 失败 (非致命): {}", e);
+            debug!(error = %e, "设置 TCP_NODELAY 失败 (非致命)");
         }
 
         let (reader_half, mut writer_half) = stream.into_split();
@@ -385,11 +387,11 @@ impl PhoneClient {
             .await
             .map_err(|e| ScanError::StreamBroken(format!("flush 失败: {}", e)))?;
 
-        eprintln!(
-            "[phone_client] 批次请求已发送: batch_id={} tasks={} port={}",
-            batch_id,
-            tasks.len(),
-            self.local_port
+        debug!(
+            batch_id = batch_id,
+            task_count = tasks.len(),
+            port = self.local_port,
+            "批次请求已发送"
         );
 
         Ok(PhoneStream {

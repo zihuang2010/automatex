@@ -1,5 +1,6 @@
 use super::{log_exec, Database};
 use rusqlite::params;
+use tracing::error;
 
 impl Database {
     pub async fn set_setting(&self, key: &str, value: &str) {
@@ -29,7 +30,7 @@ impl Database {
                 let tx = match conn.transaction() {
                     Ok(tx) => tx,
                     Err(e) => {
-                        eprintln!("[db] set_settings_batch 事务开始失败: {}", e);
+                        error!(op = "set_settings_batch", error = %e, "事务开始失败");
                         return;
                     },
                 };
@@ -43,7 +44,7 @@ impl Database {
                     );
                 }
                 if let Err(e) = tx.commit() {
-                    eprintln!("[db] set_settings_batch 事务提交失败: {}", e);
+                    error!(op = "set_settings_batch", error = %e, "事务提交失败");
                 }
             })
             .await;
@@ -58,7 +59,7 @@ impl Database {
                 let tx = match conn.transaction() {
                     Ok(tx) => tx,
                     Err(e) => {
-                        eprintln!("[db] batch_cleanup_tasks 事务开始失败: {}", e);
+                        error!(op = "batch_cleanup_tasks", error = %e, "事务开始失败");
                         return;
                     },
                 };
@@ -72,7 +73,7 @@ impl Database {
                     let _ = tx.execute("DELETE FROM a_task_defs WHERE task_id = ?1", params![tid]);
                 }
                 if let Err(e) = tx.commit() {
-                    eprintln!("[db] batch_cleanup_tasks 事务提交失败: {}", e);
+                    error!(op = "batch_cleanup_tasks", error = %e, "事务提交失败");
                 }
             })
             .await;

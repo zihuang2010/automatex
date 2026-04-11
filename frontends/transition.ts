@@ -5,6 +5,7 @@
  * 在开屏动画结束后显示，让用户输入手机号并开始同步任务。
  */
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import { $ } from './utils';
 
@@ -102,6 +103,7 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
     const submitTextEl = el.querySelector('#transition-submit-text') as HTMLElement | null;
     const resetBtn = el.querySelector('#btn-sync-reset') as HTMLButtonElement | null;
     const submitBtn = el.querySelector('#btn-sync-start') as HTMLButtonElement | null;
+    const closeBtn = el.querySelector('#btn-transition-close') as HTMLButtonElement | null;
     const initialPhones = options.prefillPhones ?? [];
     const forceSync = options.forceSync ?? false;
     const conflictDetails = options.conflictDetails ?? [];
@@ -182,6 +184,7 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
       textarea.removeEventListener('input', onInput);
       submitBtn?.removeEventListener('click', onSubmit);
       resetBtn?.removeEventListener('click', onReset);
+      closeBtn?.removeEventListener('click', onClose);
     }
 
     activePhoneBindCleanup = cleanup;
@@ -189,6 +192,10 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
     const onInput = () => {
       hideError();
       updateCounter();
+    };
+
+    const onClose = () => {
+      getCurrentWindow().close();
     };
 
     const onReset = () => {
@@ -259,6 +266,7 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
     textarea.addEventListener('input', onInput);
     submitBtn?.addEventListener('click', onSubmit);
     resetBtn?.addEventListener('click', onReset);
+    closeBtn?.addEventListener('click', onClose);
     updateCounter();
     textarea.focus();
   });

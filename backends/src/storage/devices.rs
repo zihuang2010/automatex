@@ -1,5 +1,6 @@
 use super::{log_exec, now_unix, row_to_device, Database, DeviceRow};
 use rusqlite::params;
+use tracing::{debug, error, info};
 
 impl Database {
     // ─── 设备写操作 ────────────────────────────────────────────
@@ -270,7 +271,7 @@ impl Database {
             let tx = match conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate) {
                 Ok(tx) => tx,
                 Err(e) => {
-                    eprintln!("[db] assign_device_port 事务开始失败: {}", e);
+                    error!(op = "assign_device_port", error = %e, "事务开始失败");
                     return port_base;
                 },
             };
@@ -306,16 +307,16 @@ impl Database {
                 "UPDATE a_devices SET local_port = ?1 WHERE serial = ?2",
                 rusqlite::params![new_port as i64, serial],
             ) {
-                eprintln!("[db] 设备端口写入失败 ({}, {}): {}", serial, new_port, e);
+                error!(op = "assign_device_port", serial = %serial, port = new_port, error = %e, "设备端口写入失败");
                 return port_base;
             }
 
             if let Err(e) = tx.commit() {
-                eprintln!("[db] assign_device_port 事务提交失败: {}", e);
+                error!(op = "assign_device_port", error = %e, "事务提交失败");
                 return port_base;
             }
 
-            eprintln!("[db] 设备 {} 分配本地端口: {}", serial, new_port);
+            debug!(serial = %serial, port = new_port, "设备分配本地端口");
             new_port
         })
         .await
@@ -349,8 +350,8 @@ impl Database {
             .interact(|conn| {
                 let result = conn.execute("DELETE FROM a_devices", []);
                 match result {
-                    Ok(n) => eprintln!("[db] 跨日重置: 删除了 {} 台设备", n),
-                    Err(e) => eprintln!("[db] delete_all_devices 失败: {}", e),
+                    Ok(n) => info!(count = n, "跨日重置: 删除设备"),
+                    Err(e) => error!(op = "delete_all_devices", error = %e, "数据库操作失败"),
                 }
             })
             .await;

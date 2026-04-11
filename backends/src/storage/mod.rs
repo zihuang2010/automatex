@@ -11,6 +11,7 @@ use deadpool_sqlite::{Config, Hook, Pool, Runtime};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use tracing::{error, info};
 
 /// 数据库中的设备行（包含静态 + 动态属性）
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,7 +70,7 @@ pub struct SaveTaskStateParams<'a> {
 
 pub(crate) fn log_exec(result: rusqlite::Result<usize>, op: &str) {
     if let Err(e) = result {
-        eprintln!("[db] {} 失败: {}", op, e);
+        error!(op = %op, error = %e, "数据库操作失败");
     }
 }
 
@@ -267,7 +268,7 @@ impl Database {
                             "INSERT OR IGNORE INTO _schema_version (version, applied_at, description) VALUES (?1, ?2, ?3)",
                             rusqlite::params![version, now_ts, description],
                         );
-                        eprintln!("[db] 迁移 v{} ({}) 已应用", version, description);
+                        info!(version = version, description = description, "迁移已应用");
                     },
                     Err(e) => {
                         let err_msg = e.to_string();

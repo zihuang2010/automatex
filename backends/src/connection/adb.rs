@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::OnceLock;
 use tauri::{path::BaseDirectory, AppHandle, Manager};
+use tracing::{debug, info, warn, error};
 
 include!(concat!(env!("OUT_DIR"), "/embedded_assets.rs"));
 
@@ -134,7 +135,7 @@ pub fn prepare_packaged_sidecars(app: &AppHandle) {
     let runtime_dir = match embedded_runtime_dir(app) {
         Ok(dir) => dir,
         Err(err) => {
-            eprintln!("[integrity] 初始化运行时资源目录失败: {}", err);
+            error!(reason = %err, "初始化运行时资源目录失败");
             return;
         },
     };
@@ -144,12 +145,12 @@ pub fn prepare_packaged_sidecars(app: &AppHandle) {
         match write_embedded_asset(&target, bytes, true) {
             Ok(()) => {
                 let _ = EMBEDDED_ADB_PATH.set(target.to_string_lossy().to_string());
-                eprintln!("[integrity] ✓ 已准备内嵌 adb: {}", target.display());
+                info!(path = %target.display(), "✓ 已准备内嵌 adb");
             },
-            Err(err) => eprintln!("[integrity] 准备 adb 失败: {}", err),
+            Err(err) => error!(reason = %err, "准备 adb 失败"),
         }
     } else {
-        eprintln!("[integrity] ⚠ 当前目标未内嵌 adb，将继续尝试 sidecar / PATH");
+        warn!("当前目标未内嵌 adb，将继续尝试 sidecar / PATH");
     }
 
     if let Some(bytes) = EMBEDDED_SCRCPY_SERVER_BYTES {
@@ -157,12 +158,12 @@ pub fn prepare_packaged_sidecars(app: &AppHandle) {
         match write_embedded_asset(&target, bytes, false) {
             Ok(()) => {
                 let _ = EMBEDDED_SCRCPY_SERVER_PATH.set(target.to_string_lossy().to_string());
-                eprintln!("[integrity] ✓ 已准备内嵌 scrcpy-server: {}", target.display());
+                info!(path = %target.display(), "✓ 已准备内嵌 scrcpy-server");
             },
-            Err(err) => eprintln!("[integrity] 准备 scrcpy-server 失败: {}", err),
+            Err(err) => error!(reason = %err, "准备 scrcpy-server 失败"),
         }
     } else {
-        eprintln!("[integrity] ⚠ 当前目标未内嵌 scrcpy-server");
+        warn!("当前目标未内嵌 scrcpy-server");
     }
 
     #[cfg(windows)]
@@ -171,13 +172,13 @@ pub fn prepare_packaged_sidecars(app: &AppHandle) {
         ("AdbWinUsbApi.dll", EMBEDDED_ADB_WIN_USB_BYTES),
     ] {
         let Some(bytes) = bytes else {
-            eprintln!("[integrity] Windows 运行时依赖未内嵌: {}", dll);
+            warn!(dll = dll, "Windows 运行时依赖未内嵌");
             continue;
         };
         let dst = runtime_dir.join(dll);
         match write_embedded_asset(&dst, bytes, false) {
-            Ok(()) => eprintln!("[integrity] ✓ 已准备 Windows ADB 依赖: {}", dll),
-            Err(err) => eprintln!("[integrity] 同步 {} 失败: {}", dll, err),
+            Ok(()) => info!(dll = dll, "✓ 已准备 Windows ADB 依赖"),
+            Err(err) => error!(dll = dll, reason = %err, "同步 Windows ADB 依赖失败"),
         }
     }
 }
@@ -218,19 +219,16 @@ pub fn resolve_adb_port() {
                             // 确认是 ADB server
                             ADB_PORT.store(port, Ordering::Relaxed);
                             if port != default_port {
-                                eprintln!(
-                                    "[adb] 使用已有 ADB server: 端口 {} (默认 {} 不可用)",
-                                    port, default_port
-                                );
+                                info!(port = port, default_port = default_port, "使用已有 ADB server (默认端口不可用)");
                             } else {
-                                eprintln!("[adb] ADB server 已在端口 {} 运行", port);
+                                info!(port = port, "ADB server 已在运行");
                             }
                             return;
                         }
                     }
                 }
                 // 端口被非 ADB 进程占用，跳过
-                eprintln!("[adb] 端口 {} 被非 ADB 进程占用，尝试下一个...", port);
+                warn!(port = port, "端口被非 ADB 进程占用，尝试下一个");
                 continue;
             },
             Err(_) => {
@@ -243,21 +241,18 @@ pub fn resolve_adb_port() {
                     Ok(output) if output.status.success() => {
                         ADB_PORT.store(port, Ordering::Relaxed);
                         if port != default_port {
-                            eprintln!(
-                                "[adb] 在端口 {} 启动 ADB server (默认 {} 不可用)",
-                                port, default_port
-                            );
+                            info!(port = port, default_port = default_port, "ADB server 已启动 (默认端口不可用)");
                         } else {
-                            eprintln!("[adb] ADB server 已在端口 {} 启动", port);
+                            info!(port = port, "ADB server 已启动");
                         }
                         return;
                     },
                     Ok(output) => {
                         let stderr = String::from_utf8_lossy(&output.stderr);
-                        eprintln!("[adb] 端口 {} 启动失败: {}", port, stderr.trim());
+                        error!(port = port, reason = %stderr.trim(), "端口启动失败");
                     },
                     Err(e) => {
-                        eprintln!("[adb] 端口 {} 启动失败: {}", port, e);
+                        error!(port = port, reason = %e, "端口启动失败");
                     },
                 }
             },
@@ -265,9 +260,11 @@ pub fn resolve_adb_port() {
     }
 
     // 所有端口均不可用，保持默认值并打印警告
-    eprintln!(
-        "[adb] ⚠ 端口 {}-{} 均不可用，使用默认端口 {}（可能无法正常工作）",
-        default_port, max_port, default_port
+    error!(
+        range_start = default_port,
+        range_end = max_port,
+        fallback_port = default_port,
+        "所有端口均不可用，使用默认端口（可能无法正常工作）"
     );
 }
 
@@ -284,18 +281,18 @@ pub fn verify_sidecar_integrity(app: Option<&AppHandle>) {
         .or_else(|| sidecar_dir().map(|dir| dir.join(adb_name)));
     match adb_path.and_then(|path| std::fs::metadata(&path).ok().map(|meta| (path, meta))) {
         Some((path, meta)) if meta.len() >= 100_000 => {
-            eprintln!("[integrity] ✓ {} ({} bytes) @ {}", adb_name, meta.len(), path.display());
+            info!(file = adb_name, size = meta.len(), path = %path.display(), "✓ 完整性检查通过");
         },
         Some((path, meta)) => {
-            eprintln!(
-                "[integrity] ⚠ {} 文件异常: 大小仅 {} 字节 (可能被截断/替换) @ {}",
-                adb_name,
-                meta.len(),
-                path.display()
+            warn!(
+                file = adb_name,
+                size = meta.len(),
+                path = %path.display(),
+                "文件异常: 大小过小 (可能被截断/替换)"
             );
         },
         None => {
-            eprintln!("[integrity] ⚠ {} 未找到（内嵌运行时 / sidecar / PATH）", adb_name);
+            warn!(file = adb_name, "未找到（内嵌运行时 / sidecar / PATH）");
         },
     }
 
@@ -314,17 +311,18 @@ pub fn verify_sidecar_integrity(app: Option<&AppHandle>) {
         .and_then(|path| std::fs::metadata(&path).ok().map(|meta| (path, meta)))
     {
         Some((path, meta)) if meta.len() >= 50_000 => {
-            eprintln!("[integrity] ✓ scrcpy-server ({} bytes) @ {}", meta.len(), path.display());
+            info!(file = "scrcpy-server", size = meta.len(), path = %path.display(), "✓ 完整性检查通过");
         },
         Some((path, meta)) => {
-            eprintln!(
-                "[integrity] ⚠ scrcpy-server 文件异常: 大小仅 {} 字节 @ {}",
-                meta.len(),
-                path.display()
+            warn!(
+                file = "scrcpy-server",
+                size = meta.len(),
+                path = %path.display(),
+                "文件异常: 大小过小"
             );
         },
         None => {
-            eprintln!("[integrity] ⚠ scrcpy-server 未找到（资源目录或 sidecar 同目录）");
+            warn!(file = "scrcpy-server", "未找到（资源目录或 sidecar 同目录）");
         },
     }
 
@@ -339,12 +337,9 @@ pub fn verify_sidecar_integrity(app: Option<&AppHandle>) {
                 .or_else(|| sidecar_dir().map(|dir| dir.join(dll)));
             if let Some(path) = path {
                 if path.exists() {
-                    eprintln!("[integrity] ✓ {}", dll);
+                    info!(dll = *dll, "✓ Windows DLL 完整性检查通过");
                 } else {
-                    eprintln!(
-                        "[integrity] ⚠ {} 未找到: {:?} — adb.exe 可能无法正常运行！",
-                        dll, path
-                    );
+                    warn!(dll = *dll, path = ?path, "未找到 — adb.exe 可能无法正常运行");
                 }
             }
         }
@@ -575,9 +570,11 @@ pub async fn adb_forward_setup(serial: &str, local_port: u16) -> Result<(), Stri
     )
     .await
     .map(|out| {
-        eprintln!(
-            "[adb] forward 已建立: localhost:{} → {}:{} (device={})",
-            local_port, remote_port, remote_port, serial
+        debug!(
+            local_port = local_port,
+            remote_port = remote_port,
+            device = serial,
+            "forward 已建立"
         );
         let _ = out; // ADB 成功时输出已分配的端口号，无需使用
     })
@@ -597,12 +594,14 @@ pub async fn adb_forward_remove(serial: &str, local_port: u16) {
     .await
     {
         Ok(_) => {
-            eprintln!("[adb] forward 已移除: localhost:{} (device={})", local_port, serial);
+            debug!(local_port = local_port, device = serial, "forward 已移除");
         },
         Err(e) => {
-            eprintln!(
-                "[adb] forward 移除失败 (device={}, port={})，设备可能已离线: {}",
-                serial, local_port, e
+            debug!(
+                device = serial,
+                local_port = local_port,
+                reason = %e,
+                "forward 移除失败，设备可能已离线"
             );
         },
     }
@@ -751,7 +750,7 @@ pub fn vibrate_device_alert(serial: &str) {
             if let Err(ref e) = result {
                 // 首次失败时打印日志，后续静默
                 if i == 0 {
-                    eprintln!("[adb] 设备 {} 震动命令失败（设备可能已离线）: {}", serial, e);
+                    debug!(device = %serial, reason = %e, "震动命令失败（设备可能已离线）");
                 }
                 return; // 设备不可达，提前退出避免无意义重试
             }
@@ -761,6 +760,6 @@ pub fn vibrate_device_alert(serial: &str) {
             }
         }
 
-        eprintln!("[adb] 设备 {} 震动警告完成 ({}次)", serial, REPEAT);
+        debug!(device = %serial, count = REPEAT, "震动警告完成");
     });
 }

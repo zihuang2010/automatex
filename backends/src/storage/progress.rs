@@ -2,6 +2,7 @@ use super::stats::ProgressRow;
 use super::{log_exec, now_unix, today_str, Database};
 use rusqlite::params;
 use serde::Serialize;
+use tracing::{debug, error, info};
 
 /// 关键词采集结果条目（从 a_task_results 查询）
 #[derive(Debug, Clone, Serialize)]
@@ -52,7 +53,7 @@ impl Database {
             ).ok()?;
             let id = tx.last_insert_rowid();
             tx.commit().ok()?;
-            eprintln!("[db] 创建轮次: task={}, date={}, round_no={}, id={}", task_id, today, round_no, id);
+            debug!(task_id = %task_id, date = %today, round_no = round_no, id = id, "创建轮次");
             Some(id)
         })
         .await
@@ -404,9 +405,9 @@ impl Database {
                 );
                 match result {
                     Ok(n) if n > 0 => {
-                        eprintln!("[db] 清理了 {} 条孤儿进度记录 (task={})", n, task_id);
+                        info!(count = n, task_id = %task_id, "清理孤儿进度记录");
                     },
-                    Err(e) => eprintln!("[db] cleanup_orphan_progress 失败: {}", e),
+                    Err(e) => error!(op = "cleanup_orphan_progress", error = %e, "数据库操作失败"),
                     _ => {},
                 }
 
@@ -459,9 +460,9 @@ impl Database {
                 );
                 match result {
                     Ok(n) if n > 0 => {
-                        eprintln!("[db] 清理过期采集结果: {} 条（保留 {} 天）", n, keep_days)
+                        info!(count = n, keep_days = keep_days, "清理过期采集结果")
                     },
-                    Err(e) => eprintln!("[db] cleanup_old_results 失败: {}", e),
+                    Err(e) => error!(op = "cleanup_old_results", error = %e, "数据库操作失败"),
                     _ => {},
                 }
             })

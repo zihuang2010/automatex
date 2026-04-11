@@ -757,7 +757,7 @@ function renderKwResultsPanel(city: string, keyword: string, rows: ResultRow[], 
   } else if (rows.length === 0) {
     listHtml = `<div class="flex flex-col items-center justify-center flex-1 min-h-[200px] text-s300">
         <span class="material-symbols-outlined mb-1.5" style="font-size:28px">inbox</span>
-        <span class="text-[10px] font-semibold">暂无采集数据</span>
+        <span class="text-[10px] font-bold">暂无采集数据</span>
        </div>`;
   } else {
     const groups = groupResultsByRound(rows);
