@@ -4,8 +4,8 @@
 
 use byteorder::{BigEndian, ByteOrder};
 use tokio::io::AsyncReadExt;
-use tracing::debug;
 use tokio::net::TcpStream;
+use tracing::debug;
 
 // Q-3: 协议常量
 const DEVICE_NAME_LEN: usize = 64;

@@ -286,8 +286,7 @@ impl MqttManager {
             if !cid.is_empty() {
                 let guard = self.client.lock().await;
                 if let Some(client) = guard.as_ref() {
-                    let topic =
-                        mqtt_topic::client_topic(&cid, mqtt_topic::UP_DEVICE_OFFLINE);
+                    let topic = mqtt_topic::client_topic(&cid, mqtt_topic::UP_DEVICE_OFFLINE);
                     let payload = serde_json::to_string(&MsgOffline {
                         client_id: &cid,
                         event_at: now_event_at(),
@@ -341,10 +340,7 @@ impl MqttManager {
     }
 
     /// 发布心跳（使用 QoS 0，心跳是时效性数据，无需保证投递，避免重连时 DUP 重发）
-    pub async fn publish_heartbeat(
-        &self,
-        device_hw_serials: Vec<String>,
-    ) -> Result<(), String> {
+    pub async fn publish_heartbeat(&self, device_hw_serials: Vec<String>) -> Result<(), String> {
         let cid = self.client_id.lock().await.clone();
         if cid.is_empty() {
             return Ok(());
@@ -392,10 +388,7 @@ impl MqttManager {
                 None => return,
             }
         };
-        if let Err(e) = client
-            .publish(topic, QoS::AtLeastOnce, false, payload.into_bytes())
-            .await
-        {
+        if let Err(e) = client.publish(topic, QoS::AtLeastOnce, false, payload.into_bytes()).await {
             error!(
                 task_id = task_id,
                 event_type = event_type,

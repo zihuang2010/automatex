@@ -16,8 +16,8 @@ use tauri::ipc::{Channel, Response};
 use tauri::Emitter;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{oneshot, Mutex, RwLock};
-use tracing::{debug, error, info, warn};
 use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn};
 
 // 类型别名：pump_handle 使用 Arc<Mutex<Option>> 以支持先 insert session 再填充句柄（C-1 修复）
 type PumpHandle = Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>;

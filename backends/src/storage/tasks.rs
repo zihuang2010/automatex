@@ -373,7 +373,9 @@ impl Database {
                 );
                 match result {
                     Ok(n) if n > 0 => info!(count = n, "跨日重置: 关闭未结束 run"),
-                    Err(e) => error!(op = "close_all_unfinished_runs", error = %e, "数据库操作失败"),
+                    Err(e) => {
+                        error!(op = "close_all_unfinished_runs", error = %e, "数据库操作失败")
+                    },
                     _ => {},
                 }
             })

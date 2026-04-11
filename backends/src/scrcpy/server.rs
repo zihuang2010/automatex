@@ -7,8 +7,8 @@ use crate::connection::adb::{adb_command, run_adb_timed};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Mutex;
-use tracing::{debug, info, warn};
 use tokio::net::TcpStream;
+use tracing::{debug, info, warn};
 
 /// 全局端口池：回收已释放的端口，避免端口耗尽
 static PORT_POOL: Mutex<VecDeque<u16>> = Mutex::new(VecDeque::new());
@@ -253,7 +253,11 @@ impl ScrcpyServer {
                     debug!(size = local_size, "JAR 已存在且大小一致，跳过推送");
                     return Ok(());
                 }
-                debug!(local_size = local_size, remote_size = remote_size, "JAR 大小不一致，重新推送");
+                debug!(
+                    local_size = local_size,
+                    remote_size = remote_size,
+                    "JAR 大小不一致，重新推送"
+                );
             }
             // 否则 stdout 是 "MISSING" 或其他，需要推送
         }

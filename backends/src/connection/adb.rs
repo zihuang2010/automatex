@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::OnceLock;
 use tauri::{path::BaseDirectory, AppHandle, Manager};
-use tracing::{debug, info, warn, error};
+use tracing::{debug, error, info, warn};
 
 include!(concat!(env!("OUT_DIR"), "/embedded_assets.rs"));
 
@@ -219,7 +219,11 @@ pub fn resolve_adb_port() {
                             // 确认是 ADB server
                             ADB_PORT.store(port, Ordering::Relaxed);
                             if port != default_port {
-                                info!(port = port, default_port = default_port, "使用已有 ADB server (默认端口不可用)");
+                                info!(
+                                    port = port,
+                                    default_port = default_port,
+                                    "使用已有 ADB server (默认端口不可用)"
+                                );
                             } else {
                                 info!(port = port, "ADB server 已在运行");
                             }
@@ -241,7 +245,11 @@ pub fn resolve_adb_port() {
                     Ok(output) if output.status.success() => {
                         ADB_PORT.store(port, Ordering::Relaxed);
                         if port != default_port {
-                            info!(port = port, default_port = default_port, "ADB server 已启动 (默认端口不可用)");
+                            info!(
+                                port = port,
+                                default_port = default_port,
+                                "ADB server 已启动 (默认端口不可用)"
+                            );
                         } else {
                             info!(port = port, "ADB server 已启动");
                         }

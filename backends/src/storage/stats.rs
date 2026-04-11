@@ -130,7 +130,9 @@ impl Database {
                 );
                 match affected {
                     Ok(n) if n > 0 => info!(count = n, "清理残留 EXECUTING 任务"),
-                    Err(e) => error!(op = "cleanup_stale_assignments", error = %e, "数据库操作失败"),
+                    Err(e) => {
+                        error!(op = "cleanup_stale_assignments", error = %e, "数据库操作失败")
+                    },
                     _ => {},
                 }
             })

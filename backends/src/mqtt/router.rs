@@ -28,12 +28,7 @@ pub(crate) fn route_message(
     // 过滤旧消息：如果消息携带 ts 字段且早于本次连接时间，跳过
     if let Some(ts) = json_value.get("ts").and_then(|v| v.as_i64()) {
         if ts < connect_ts {
-            debug!(
-                topic = topic,
-                msg_ts = ts,
-                connect_ts = connect_ts,
-                "过滤旧消息"
-            );
+            debug!(topic = topic, msg_ts = ts, connect_ts = connect_ts, "过滤旧消息");
             return;
         }
     }

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tauri::Emitter;
 
-use tracing::{debug, info, warn, error};
+use tracing::{debug, error, info, warn};
 
 use crate::{constants, engine::TaskEngine, http, storage, task_sync, utils};
 
