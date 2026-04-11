@@ -656,10 +656,8 @@ async fn engine_loop(mut s: EngineState, mut rx: mpsc::Receiver<EngineMsg>) {
                     let round_id = s.running.get(&task_id).map(|r| r.round_id).unwrap_or(0);
                     tokio::spawn(async move {
                         // 补全快速路径缺失的字段
-                        req.client_id = storage
-                            .get_setting("mqtt_client_id")
-                            .await
-                            .unwrap_or_default();
+                        req.client_id =
+                            storage.get_setting("mqtt_client_id").await.unwrap_or_default();
                         if let Some(ctx) = storage
                             .load_upload_context(
                                 &req.task_id,
@@ -854,17 +852,11 @@ async fn handle_start(s: &mut EngineState, task_id: &str) -> Result<(), String> 
     // ── 无障碍服务健康检测：调度前主动确认 App 在线 ──
     let probe = PhoneClient::new(local_port);
     if let Err(e) = probe.ping().await {
-        eprintln!(
-            "[engine] 无障碍服务不可用 (device={}, port={}): {}",
-            serial, local_port, e
-        );
+        eprintln!("[engine] 无障碍服务不可用 (device={}, port={}): {}", serial, local_port, e);
         s.storage.flag_device(&serial).await;
         crate::connection::adb::vibrate_device_alert(&serial);
         let _ = s.app_handle.emit(constants::tauri_event::DEVICES_CHANGED, ());
-        return Err(format!(
-            "设备 {} 无障碍服务未启动或未响应，已标记异常",
-            serial
-        ));
+        return Err(format!("设备 {} 无障碍服务未启动或未响应，已标记异常", serial));
     }
 
     // CON-1 修复：用 ok_or 替代 unwrap，避免 .await 点后内存状态变化导致意外 panic

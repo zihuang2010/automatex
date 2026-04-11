@@ -526,20 +526,16 @@ impl Database {
                 )
                 .ok()?;
             let store_list: Vec<String> = stmt
-                .query_map(params![task_id, round_id, city_name, keyword_name], |row| {
-                    row.get(0)
-                })
+                .query_map(params![task_id, round_id, city_name, keyword_name], |row| row.get(0))
                 .ok()?
                 .filter_map(|r| r.ok())
                 .collect();
 
             // 查 client_id
             let client_id: String = conn
-                .query_row(
-                    "SELECT value FROM a_settings WHERE key = 'mqtt_client_id'",
-                    [],
-                    |row| row.get(0),
-                )
+                .query_row("SELECT value FROM a_settings WHERE key = 'mqtt_client_id'", [], |row| {
+                    row.get(0)
+                })
                 .unwrap_or_default();
 
             Some(UploadContext { task_name, round_no, store_list, client_id })

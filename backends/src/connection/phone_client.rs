@@ -321,10 +321,7 @@ impl PhoneClient {
         )
         .await
         .map_err(|_| {
-            ScanError::ConnectionFailed(format!(
-                "ping ack 超时 ({}s)",
-                cfg::PING_TIMEOUT_SECS
-            ))
+            ScanError::ConnectionFailed(format!("ping ack 超时 ({}s)", cfg::PING_TIMEOUT_SECS))
         })?
         .map_err(|e| ScanError::StreamBroken(format!("ping read 失败: {}", e)))?;
 
