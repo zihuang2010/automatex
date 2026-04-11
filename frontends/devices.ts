@@ -160,7 +160,7 @@ function renderDeviceCards(devs: DeviceRow[]) {
 
     return `<div class="dev-card device-card-running border rounded-md p-2.5 transition-all hover:shadow-sm cursor-pointer ${isSel ? 'ring-2 ring-blue-300' : ''}" data-s="${esc(d.serial)}" data-state="running">
       <div class="flex items-start gap-3">
-        <div class="h-9 w-9 rounded-lg bg-white border border-blue-100 flex items-center justify-center text-blue-500 shrink-0">
+        <div class="h-9 w-9 rounded-md bg-white border border-blue-100 flex items-center justify-center text-blue-500 shrink-0">
           <span class="material-symbols-outlined text-xl fill-1">smartphone</span>
         </div>
         <div class="min-w-0 flex-1">
@@ -252,7 +252,7 @@ function renderDeviceCards(devs: DeviceRow[]) {
     return `<div class="dev-card device-card-ready border rounded-md p-2.5 transition-all hover:border-blue-200 cursor-pointer relative ${opacityCls} ${ringCls}" data-s="${esc(d.serial)}" data-state="ready" data-flagged="${flagged ? '1' : '0'}" data-error="${hasError ? '1' : '0'}">
       <div class="absolute top-2.5 right-2.5 px-1.5 py-0.5 ${badgeCls} text-[10px] font-black rounded border uppercase tracking-normal">${badgeText}</div>
       <div class="flex items-start gap-3">
-        <div class="h-9 w-9 rounded-lg ${iconBorderCls} border flex items-center justify-center shrink-0">
+        <div class="h-9 w-9 rounded-md ${iconBorderCls} border flex items-center justify-center shrink-0">
           <span class="material-symbols-outlined text-xl fill-1">smartphone</span>
         </div>
         <div class="min-w-0 flex-1">
@@ -288,7 +288,7 @@ function renderDeviceCards(devs: DeviceRow[]) {
     return `<div class="dev-card device-card-offline border rounded-md p-2.5 cursor-pointer relative ${isSel ? 'ring-2 ring-s400' : ''}" data-s="${esc(d.serial)}" data-state="offline">
       <div class="absolute top-2.5 right-2.5 px-1.5 py-0.5 bg-s200 text-s500 text-[10px] font-black rounded border border-s300 uppercase tracking-normal">离线</div>
       <div class="flex items-start gap-3">
-        <div class="h-9 w-9 rounded-lg bg-s200 border border-s300 flex items-center justify-center text-s400 shrink-0">
+        <div class="h-9 w-9 rounded-md bg-s200 border border-s300 flex items-center justify-center text-s400 shrink-0">
           <span class="material-symbols-outlined text-xl fill-1">smartphone</span>
         </div>
         <div class="min-w-0 flex-1">

@@ -152,7 +152,7 @@ export async function showDeviceInfo(serial: string) {
     const tempColor = tempVal > 40 ? 'text-orange-500' : 'text-s500';
 
     const flaggedBanner = i.is_flagged
-      ? `<div class="flex items-center gap-2 px-3 py-2 bg-orange-50 border border-orange-200 rounded-lg mb-4">
+      ? `<div class="flex items-center gap-2 px-3 py-2 bg-orange-50 border border-orange-200 rounded-md mb-4">
                 <span class="material-symbols-outlined text-orange-500 icon-sm text-base">warning</span>
                 <span class="text-[12px] font-bold text-orange-600">设备已被标记为风控，请检查后手动解除标记。</span>
                </div>`
@@ -162,7 +162,7 @@ export async function showDeviceInfo(serial: string) {
       ${flaggedBanner}
       <!-- Device Header -->
       <div class="flex items-center gap-3 mb-5">
-        <div class="w-12 h-12 rounded-lg bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center shrink-0 shadow-[0_4px_12px_rgba(37,99,235,.3)]">
+        <div class="w-12 h-12 rounded-md bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center shrink-0 shadow-[0_4px_12px_rgba(37,99,235,.3)]">
           <span class="material-symbols-outlined text-2xl text-white">smartphone</span>
         </div>
         <div>
@@ -177,22 +177,22 @@ export async function showDeviceInfo(serial: string) {
 
       <!-- Stats Row -->
       <div class="flex gap-2 mb-5">
-        <div class="flex-1 px-3 py-2.5 rounded-lg bg-s50 border border-s100 text-center">
+        <div class="flex-1 px-3 py-2.5 rounded-md bg-s50 border border-s100 text-center">
           <div class="text-[10px] font-bold text-s400 uppercase tracking-wider mb-1">电量</div>
           <div class="text-[16px] font-bold ${batteryColor}">${batteryPct}%</div>
         </div>
-        <div class="flex-1 px-3 py-2.5 rounded-lg bg-s50 border border-s100 text-center">
+        <div class="flex-1 px-3 py-2.5 rounded-md bg-s50 border border-s100 text-center">
           <div class="text-[10px] font-bold text-s400 uppercase tracking-wider mb-1">温度</div>
           <div class="text-[16px] font-bold ${tempColor}">${tempVal}°C</div>
         </div>
-        <div class="flex-1 px-3 py-2.5 rounded-lg bg-s50 border border-s100 text-center">
+        <div class="flex-1 px-3 py-2.5 rounded-md bg-s50 border border-s100 text-center">
           <div class="text-[10px] font-bold text-s400 uppercase tracking-wider mb-1">Android</div>
           <div class="text-[14px] font-bold text-s700">${esc(i.android_version)}</div>
         </div>
       </div>
 
       <!-- Detail Rows -->
-      <div class="flex flex-col gap-0 rounded-lg border border-s100 overflow-hidden">
+      <div class="flex flex-col gap-0 rounded-md border border-s100 overflow-hidden">
         <div class="flex items-center justify-between px-3.5 py-2.5 bg-white border-b border-s100">
           <span class="text-[11px] font-semibold text-s400 uppercase tracking-wide">序列号</span>
           <span class="text-[12px] font-mono font-medium text-s700">${esc(i.serial)}</span>

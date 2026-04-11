@@ -43,6 +43,10 @@ let _statsCache: { taskId: string; stats: TaskRunStats; taskStatus: string } | n
 let _lastPhoneCityName: string | null = null;
 let _manualCityOverride = false;
 
+// 当前选中的关键词（用于左右分栏详情模式）
+let _selectedKw: { city: string; keyword: string } | null = null;
+let _prevKwListHtml = '';
+
 export async function loadTasksForDevice(serial: string) {
   const task = globalQueue.find(t => t.assigned_device === serial);
   if (task && task !== activeTask) {
@@ -96,15 +100,26 @@ function ensureSkeleton(mid: HTMLElement): boolean {
   mid.innerHTML = `
     <div id="tv-header" class="shrink-0"></div>
     <div id="tv-metrics" class="shrink-0"></div>
-    <div class="flex-1 bg-white rounded-xl border border-s200 shadow-sm overflow-hidden flex flex-col min-h-0">
+    <div class="flex-1 bg-white rounded-md border border-s200 shadow-sm overflow-hidden flex flex-col min-h-0">
       <div class="px-4 pt-3 pb-0 shrink-0 border-b border-s100">
         <div id="tv-city-header" class="flex items-center justify-between mb-2.5"></div>
         <div id="tv-cities" class="flex gap-2 overflow-x-auto pb-3 scrollbar-hide"></div>
       </div>
-      <div class="flex-1 overflow-y-auto p-4 min-h-0">
-        <div id="tv-kw-info" class="flex items-center justify-between mb-3"></div>
-        <div id="tv-kw-grid" class="flex flex-wrap gap-2"></div>
-        <div id="tv-kw-results" class="hidden mt-4"></div>
+      <div id="tv-kw-body" class="flex-1 flex flex-col min-h-0 overflow-hidden">
+        <div class="px-4 pt-3 pb-2 shrink-0">
+          <div id="tv-kw-info" class="flex items-center justify-between"></div>
+        </div>
+        <div id="tv-kw-grid-wrap" class="flex-1 overflow-y-auto px-4 pb-4">
+          <div id="tv-kw-grid" class="flex flex-wrap gap-2"></div>
+        </div>
+        <div id="tv-kw-detail-wrap" class="hidden flex-1 flex min-h-0 overflow-hidden">
+          <div id="tv-kw-list-wrap" class="w-[240px] shrink-0 overflow-y-auto border-r border-s100 px-3 pb-3">
+            <div id="tv-kw-list"></div>
+          </div>
+          <div id="tv-kw-results-wrap" class="flex-1 flex flex-col overflow-y-auto px-4 pb-4">
+            <div id="tv-kw-results" class="flex-1 flex flex-col"></div>
+          </div>
+        </div>
       </div>
     </div>`;
   // 首次创建，清空缓存
@@ -113,6 +128,8 @@ function ensureSkeleton(mid: HTMLElement): boolean {
   _prevCityHtml = '';
   _prevKwHtml = '';
   _prevKwInfoHtml = '';
+  _prevKwListHtml = '';
+  _selectedKw = null;
   return true;
 }
 
@@ -123,6 +140,26 @@ function patchHtml(id: string, html: string, prev: string): string {
     if (el) el.innerHTML = html;
   }
   return html;
+}
+
+/* ===== 关键词区域模式切换 ===== */
+function switchToDetailMode() {
+  const gridWrap = document.getElementById('tv-kw-grid-wrap');
+  const detailWrap = document.getElementById('tv-kw-detail-wrap');
+  if (gridWrap) gridWrap.classList.add('hidden');
+  if (detailWrap) detailWrap.classList.remove('hidden');
+  // 确保 detail-wrap 使用 flex 布局
+  if (detailWrap) detailWrap.classList.add('flex');
+}
+
+function switchToGridMode() {
+  const gridWrap = document.getElementById('tv-kw-grid-wrap');
+  const detailWrap = document.getElementById('tv-kw-detail-wrap');
+  if (gridWrap) gridWrap.classList.remove('hidden');
+  if (detailWrap) detailWrap.classList.add('hidden');
+  // 清空结果面板
+  const resultsPanel = document.getElementById('tv-kw-results');
+  if (resultsPanel) resultsPanel.innerHTML = '';
 }
 
 /* ===== 主渲染函数 ===== */
@@ -141,13 +178,20 @@ export async function renderTaskView() {
   if (task.current_city_name && activeTask.presentation_status === TaskPresentationStatus.RUNNING) {
     const phoneCity = task.current_city_name;
     if (phoneCity !== _lastPhoneCityName) {
-      // 手机进入了新城市，清除手动覆盖并跟随
       _lastPhoneCityName = phoneCity;
-      _manualCityOverride = false;
-      const phoneIdx = task.cities.findIndex(c => c.name === phoneCity);
-      if (phoneIdx >= 0 && phoneIdx !== activeCityIdx) {
-        setActiveCityIdx(phoneIdx);
+      // 用户手动选择了城市时，跳过一次自动跟随（下次再恢复）
+      if (!_manualCityOverride) {
+        const phoneIdx = task.cities.findIndex(c => c.name === phoneCity);
+        if (phoneIdx >= 0 && phoneIdx !== activeCityIdx) {
+          setActiveCityIdx(phoneIdx);
+          // 城市自动跟随切换，退出详情模式
+          if (_selectedKw) {
+            _selectedKw = null;
+            _prevKwListHtml = '';
+          }
+        }
       }
+      _manualCityOverride = false;
     }
     // 手机仍在同一城市：不覆盖用户手动选择的城市
   }
@@ -217,9 +261,24 @@ export async function renderTaskView() {
     }
   }
 
-  // ── Keyword Grid ──
+  // ── Keyword Grid（始终更新，用于切回网格模式）──
   const kwGridHtml = buildKeywordGrid(city);
   _prevKwHtml = patchHtml('tv-kw-grid', kwGridHtml, _prevKwHtml);
+
+  // ── 详情模式检查：选中关键词与当前城市不匹配时自动退出 ──
+  if (_selectedKw && _selectedKw.city !== city.name) {
+    _selectedKw = null;
+    _prevKwListHtml = '';
+  }
+
+  if (_selectedKw) {
+    // 详情分栏模式：左侧关键词列表 + 右侧结果面板
+    const kwListHtml = buildKeywordList(city, _selectedKw.keyword);
+    _prevKwListHtml = patchHtml('tv-kw-list', kwListHtml, _prevKwListHtml);
+    switchToDetailMode();
+  } else {
+    switchToGridMode();
+  }
 
   // 恢复搜索过滤状态
   if (savedSearch) {
@@ -297,32 +356,32 @@ function buildHeader(
 
   const btnStart =
     presentation === TaskPresentationStatus.READY
-      ? `<button onclick="window.__taskStart('${task.id}')" class="flex items-center gap-2.5 px-5 py-2 bg-emerald-500 hover:bg-emerald-600 text-white font-medium rounded-xl transition-all shadow-lg shadow-emerald-500/20 text-xs"><span class="material-symbols-outlined text-base">play_arrow</span><span class="font-bold" style="letter-spacing:0.15em">启动</span></button>`
+      ? `<button onclick="window.__taskStart('${task.id}')" class="flex items-center gap-2.5 px-5 py-2 bg-emerald-500 hover:bg-emerald-600 text-white font-medium rounded-md transition-all shadow-lg shadow-emerald-500/20 text-xs"><span class="material-symbols-outlined text-base">play_arrow</span><span class="font-bold" style="letter-spacing:0.15em">启动</span></button>`
       : '';
   const btnPause =
     presentation === TaskPresentationStatus.RUNNING ||
     presentation === TaskPresentationStatus.WAITING_NEXT_ROUND
-      ? `<button onclick="window.__taskPause('${task.id}')" class="flex items-center gap-2.5 px-5 py-2 bg-amber-500 hover:bg-amber-600 text-white font-medium rounded-xl transition-all shadow-lg shadow-amber-500/20 text-xs"><span class="material-symbols-outlined text-base">pause</span><span class="font-bold" style="letter-spacing:0.15em">暂停</span></button>`
+      ? `<button onclick="window.__taskPause('${task.id}')" class="flex items-center gap-2.5 px-5 py-2 bg-amber-500 hover:bg-amber-600 text-white font-medium rounded-md transition-all shadow-lg shadow-amber-500/20 text-xs"><span class="material-symbols-outlined text-base">pause</span><span class="font-bold" style="letter-spacing:0.15em">暂停</span></button>`
       : '';
   const btnResume =
     presentation === TaskPresentationStatus.PAUSED_MANUAL ||
     presentation === TaskPresentationStatus.PAUSED_WAITING ||
     presentation === TaskPresentationStatus.ERROR_PAUSED
-      ? `<button onclick="window.__taskResume('${task.id}')" class="flex items-center gap-2.5 px-5 py-2 bg-emerald-500 hover:bg-emerald-600 text-white font-medium rounded-xl transition-all shadow-lg shadow-emerald-500/20 text-xs"><span class="material-symbols-outlined text-base">play_arrow</span><span class="font-bold" style="letter-spacing:0.15em">继续</span></button>`
+      ? `<button onclick="window.__taskResume('${task.id}')" class="flex items-center gap-2.5 px-5 py-2 bg-emerald-500 hover:bg-emerald-600 text-white font-medium rounded-md transition-all shadow-lg shadow-emerald-500/20 text-xs"><span class="material-symbols-outlined text-base">play_arrow</span><span class="font-bold" style="letter-spacing:0.15em">继续</span></button>`
       : '';
   const btnRetry =
     presentation === TaskPresentationStatus.ERROR_PAUSED ||
     presentation === TaskPresentationStatus.COMPLETED ||
     presentation === TaskPresentationStatus.PAUSED_MANUAL ||
     presentation === TaskPresentationStatus.PAUSED_WAITING
-      ? `<button onclick="window.__taskRetry('${task.id}')" class="flex items-center gap-2.5 px-5 py-2 bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-xl transition-all shadow-lg shadow-blue-500/20 text-xs"><span class="material-symbols-outlined text-base">replay</span><span class="font-bold" style="letter-spacing:0.15em">重跑</span></button>`
+      ? `<button onclick="window.__taskRetry('${task.id}')" class="flex items-center gap-2.5 px-5 py-2 bg-blue-500 hover:bg-blue-600 text-white font-medium rounded-md transition-all shadow-lg shadow-blue-500/20 text-xs"><span class="material-symbols-outlined text-base">replay</span><span class="font-bold" style="letter-spacing:0.15em">重跑</span></button>`
       : '';
   const btnStop =
     presentation === TaskPresentationStatus.RUNNING ||
     presentation === TaskPresentationStatus.WAITING_NEXT_ROUND ||
     presentation === TaskPresentationStatus.PAUSED_MANUAL ||
     presentation === TaskPresentationStatus.PAUSED_WAITING
-      ? `<button onclick="window.__taskStop('${task.id}')" class="flex items-center gap-2.5 px-5 py-2 bg-white text-rose-500 border border-rose-200 font-medium rounded-xl hover:bg-rose-50 transition-all text-xs"><span class="material-symbols-outlined text-base">stop</span><span class="font-bold" style="letter-spacing:0.15em">停止</span></button>`
+      ? `<button onclick="window.__taskStop('${task.id}')" class="flex items-center gap-2.5 px-5 py-2 bg-white text-rose-500 border border-rose-200 font-medium rounded-md hover:bg-rose-50 transition-all text-xs"><span class="material-symbols-outlined text-base">stop</span><span class="font-bold" style="letter-spacing:0.15em">停止</span></button>`
       : '';
 
   // interval_waiting 状态横幅
@@ -354,14 +413,14 @@ function buildHeader(
     const percent = countdown?.percent ?? 0;
 
     return `
-    <div class="interval-waiting-banner ${bannerCls} rounded-xl border px-5 py-3.5 mb-4 flex items-center justify-between">
+    <div class="interval-waiting-banner ${bannerCls} rounded-md border px-5 py-3.5 mb-4 flex items-center justify-between">
       <div class="flex items-center gap-3">
-        <div class="interval-waiting-icon w-9 h-9 ${iconBgCls} flex items-center justify-center rounded-lg">
+        <div class="interval-waiting-icon w-9 h-9 ${iconBgCls} flex items-center justify-center rounded-md">
           <span class="material-symbols-outlined ${iconTextCls}" style="font-size:20px">${isPausedState ? 'pause_circle' : 'hourglass_top'}</span>
         </div>
         <div>
           <div class="text-[12px] font-bold ${titleTextCls} tracking-tight">${title}</div>
-          <div class="text-[11px] ${subTextCls} mt-0.5">${subtitle}</div>
+          <div class="text-[11px] font-medium ${subTextCls} mt-0.5">${subtitle}</div>
         </div>
       </div>
       <div class="flex items-center gap-3">
@@ -382,9 +441,9 @@ function buildHeader(
   })();
 
   return `
-    <div class="bg-white rounded-2xl shadow-sm border border-s200 p-5 mb-4 flex items-center justify-between">
+    <div class="bg-white rounded-md shadow-sm border border-s200 p-5 mb-4 flex items-center justify-between">
       <div class="flex items-center gap-4 min-w-0">
-        <div class="w-12 h-12 bg-indigo-500/10 flex items-center justify-center rounded-xl shrink-0">
+        <div class="w-12 h-12 bg-indigo-500/10 flex items-center justify-center rounded-md shrink-0">
           <span class="material-symbols-outlined text-indigo-500 text-2xl">hub</span>
         </div>
         <div class="min-w-0">
@@ -441,9 +500,9 @@ async function buildMetrics(task: {
 
   return `
     <div class="grid grid-cols-4 gap-2.5 mb-4">
-      <div class="bg-emerald-50/50 rounded-md border border-emerald-100 p-3">
+      <div class="bg-emerald-50 rounded-md border border-emerald-200 p-3">
         <div class="flex items-center justify-between mb-1.5">
-          <span class="material-symbols-outlined icon-sm text-emerald-400">check_circle</span>
+          <span class="material-symbols-outlined icon-sm text-emerald-500">check_circle</span>
           <span class="text-[11px] font-black text-emerald-600 font-mono">${pctDone}%</span>
         </div>
         <div class="text-[13px] font-bold text-s800 font-mono">${kwDone} <span class="text-s400">/ ${kwTotal}</span></div>
@@ -452,25 +511,25 @@ async function buildMetrics(task: {
           <div class="h-full bg-emerald-500 rounded-full transition-all" style="width:${pctDone}%"></div>
         </div>
       </div>
-      <div class="bg-blue-50/50 rounded-md border border-blue-100 p-3">
+      <div class="bg-blue-50 rounded-md border border-blue-200 p-3">
         <div class="flex items-center justify-between mb-1.5">
-          <span class="material-symbols-outlined icon-sm text-blue-400">trending_up</span>
+          <span class="material-symbols-outlined icon-sm text-blue-500">trending_up</span>
           <span class="text-[11px] font-black text-blue-600 font-mono">${ratePerHour > 0 ? `${ratePerHour}/h` : '--'}</span>
         </div>
         <div class="text-[13px] font-bold text-s800 font-mono">${todayKeywords} <span class="text-s400 font-sans">词</span></div>
         <div class="text-[11px] text-s500 font-bold uppercase mt-1">今日采集</div>
       </div>
-      <div class="bg-violet-50/50 rounded-md border border-violet-100 p-3">
+      <div class="bg-violet-50 rounded-md border border-violet-200 p-3">
         <div class="flex items-center justify-between mb-1.5">
-          <span class="material-symbols-outlined icon-sm text-violet-400">timer</span>
+          <span class="material-symbols-outlined icon-sm text-violet-500">timer</span>
           <span class="text-[11px] font-black text-violet-600 font-mono">${todayRuns} 次</span>
         </div>
         <div class="text-[13px] font-bold text-s800 font-mono">${durationLabel}</div>
         <div class="text-[11px] text-s500 font-bold uppercase mt-1">今日时长</div>
       </div>
-      <div class="bg-amber-50/50 rounded-md border border-amber-100 p-3">
+      <div class="bg-s100 rounded-md border border-s200 p-3">
         <div class="flex items-center justify-between mb-1.5">
-          <span class="material-symbols-outlined icon-sm text-amber-400">schedule</span>
+          <span class="material-symbols-outlined icon-sm text-s500">schedule</span>
         </div>
         <div class="text-[13px] font-bold text-s800 font-mono">${lastRunLabel}</div>
         <div class="text-[11px] text-s500 font-bold uppercase mt-1">上次执行</div>
@@ -624,18 +683,46 @@ function buildKeywordGrid(city: TaskCity): string {
     .join('');
 }
 
+/* ===== 详情模式：紧凑关键词列表（左侧面板）===== */
+function buildKeywordList(city: TaskCity, selectedKw: string): string {
+  return city.keywords
+    .map((k: TaskKeyword) => {
+      const isSelected = k.name === selectedKw;
+      const selectedCls = isSelected
+        ? 'bg-blue-50 border-blue-200 shadow-sm kw-selected'
+        : 'border-transparent hover:bg-s50';
+
+      if (k.status === KeywordStatus.OK) {
+        return `<div class="kw-list-item flex items-center gap-2 px-2.5 py-1.5 rounded-md border ${selectedCls} cursor-pointer mb-0.5 transition-all" onclick="window.__showKwResults('${esc(city.name)}','${esc(k.name)}')">
+          <span class="material-symbols-outlined text-green-500 fill-1 shrink-0" style="font-size:14px">check_circle</span>
+          <span class="text-[11px] ${isSelected ? 'font-bold text-s800' : 'font-medium text-s600'} truncate flex-1">${k.name}</span>
+          ${isSelected ? '<span class="material-symbols-outlined text-blue-400 shrink-0" style="font-size:13px">chevron_right</span>' : ''}
+        </div>`;
+      } else if (k.status === KeywordStatus.RUN) {
+        return `<div class="kw-list-item flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-blue-50/50 border border-blue-200/50 mb-0.5">
+          <div class="h-1.5 w-1.5 rounded-full bg-blue-500 animate-pulse shrink-0"></div>
+          <span class="text-[11px] font-bold text-blue-700 truncate flex-1">${k.name}</span>
+        </div>`;
+      } else {
+        return `<div class="kw-list-item flex items-center gap-2 px-2.5 py-1.5 rounded-md border ${selectedCls} cursor-pointer mb-0.5 transition-all" onclick="window.__showKwResults('${esc(city.name)}','${esc(k.name)}')">
+          <span class="text-[11px] ${isSelected ? 'font-bold text-s800' : 'font-medium text-s500'} truncate flex-1">${k.name}</span>
+          ${isSelected ? '<span class="material-symbols-outlined text-blue-400 shrink-0" style="font-size:13px">chevron_right</span>' : ''}
+        </div>`;
+      }
+    })
+    .join('');
+}
+
 // ─── 关键词结果内联面板 ────────────────────────────────────────
 
 function closeKwResultsPanel() {
-  const panel = document.getElementById('tv-kw-results');
-  if (panel) {
-    panel.classList.add('hidden');
-    panel.innerHTML = '';
-  }
+  _selectedKw = null;
+  _prevKwListHtml = '';
+  switchToGridMode();
 }
 
 function buildResultItem(r: ResultRow, i: number): string {
-  return `<div class="flex items-start gap-1.5 px-2 py-2 rounded-lg bg-white border border-s100 hover:border-s200 transition-all">
+  return `<div class="flex items-start gap-1.5 px-2 py-2 rounded-md bg-white border border-s100 hover:border-s200 transition-all">
     <span class="inline-flex items-center justify-center w-4 h-4 rounded bg-s100 text-[9px] font-black text-s600 font-mono mt-0.5 shrink-0 leading-none">${i + 1}</span>
     <div class="min-w-0 flex-1">
       <div class="text-[11px] font-semibold text-s800 leading-tight truncate" title="${esc(r.shop_name)}">${esc(r.shop_name)}</div>
@@ -668,9 +755,9 @@ function renderKwResultsPanel(city: string, keyword: string, rows: ResultRow[], 
         <span class="text-[12px]">加载中...</span>
        </div>`;
   } else if (rows.length === 0) {
-    listHtml = `<div class="flex flex-col items-center justify-center py-8 text-s300">
+    listHtml = `<div class="flex flex-col items-center justify-center flex-1 min-h-[200px] text-s300">
         <span class="material-symbols-outlined mb-1.5" style="font-size:28px">inbox</span>
-        <span class="text-[10px]">暂无采集数据</span>
+        <span class="text-[10px] font-semibold">暂无采集数据</span>
        </div>`;
   } else {
     const groups = groupResultsByRound(rows);
@@ -688,7 +775,7 @@ function renderKwResultsPanel(city: string, keyword: string, rows: ResultRow[], 
               ${isLatest ? '<span class="px-1.5 py-0.5 bg-blue-50 text-blue-600 border border-blue-200 rounded text-[9px] font-bold">最新</span>' : ''}
               <span class="text-[10px] text-s400">${group.items.length} 条</span>
             </div>
-            <div class="grid grid-cols-3 gap-1.5">
+            <div class="grid grid-cols-2 gap-1.5">
               ${group.items.map((r, i) => buildResultItem(r, i)).join('')}
             </div>
           </div>`;
@@ -696,9 +783,10 @@ function renderKwResultsPanel(city: string, keyword: string, rows: ResultRow[], 
       .join('');
   }
 
-  panel.className = 'mt-4 rounded-xl border border-green-200 bg-green-50/30 overflow-hidden';
+  panel.className =
+    'flex-1 flex flex-col rounded-md border border-green-200 bg-green-50/30 overflow-hidden';
   panel.innerHTML = `
-    <div class="flex items-center justify-between px-3.5 py-2.5 border-b border-green-200/60 bg-green-50/50">
+    <div class="flex items-center justify-between px-3.5 py-2.5 border-b border-green-200/60 bg-green-50/50 shrink-0">
       <div class="flex items-center gap-2">
         <span class="material-symbols-outlined text-green-500 fill-1" style="font-size:15px">check_circle</span>
         <span class="text-[11px] text-s500 font-medium">${esc(city)}</span>
@@ -710,7 +798,7 @@ function renderKwResultsPanel(city: string, keyword: string, rows: ResultRow[], 
         <span class="material-symbols-outlined text-s400" style="font-size:16px">close</span>
       </button>
     </div>
-    <div class="p-3">${listHtml}</div>`;
+    <div class="flex-1 overflow-y-auto p-3">${listHtml}</div>`;
 }
 
 /** 注册全局视图切换回调 */
@@ -747,7 +835,8 @@ export function registerViewActions() {
 
     __filterKw: (val: unknown) => {
       const q = (val as string).toLowerCase();
-      document.querySelectorAll('#tv-kw-grid .kw-item').forEach(el => {
+      // 同时过滤网格视图和列表视图
+      document.querySelectorAll('#tv-kw-grid .kw-item, #tv-kw-list .kw-list-item').forEach(el => {
         const name = el.textContent?.toLowerCase() || '';
         (el as HTMLElement).style.display = name.includes(q) ? '' : 'none';
       });
@@ -757,14 +846,35 @@ export function registerViewActions() {
       const cityStr = city as string;
       const kwStr = keyword as string;
       if (!activeTask) return;
-      // 立即显示 loading 状态
-      renderKwResultsPanel(cityStr, kwStr, [], true);
-      // 滚动到结果面板
+
+      // 重复点击同一关键词，不重新请求
+      if (_selectedKw && _selectedKw.city === cityStr && _selectedKw.keyword === kwStr) return;
+
+      // 设置选中状态，切换到详情分栏模式
+      _selectedKw = { city: cityStr, keyword: kwStr };
+      switchToDetailMode();
+
+      // 更新关键词列表（高亮选中项）
+      const task = activeTaskDetail;
+      if (task) {
+        const cityObj = task.cities[activeCityIdx];
+        if (cityObj) {
+          const kwListHtml = buildKeywordList(cityObj, kwStr);
+          _prevKwListHtml = patchHtml('tv-kw-list', kwListHtml, _prevKwListHtml);
+        }
+      }
+
+      // 滚动选中的关键词到可视区域
       setTimeout(() => {
         document
-          .getElementById('tv-kw-results')
+          .querySelector('#tv-kw-list .kw-selected')
           ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       }, 50);
+
+      // 显示 loading 状态
+      renderKwResultsPanel(cityStr, kwStr, [], true);
+
+      // 加载结果数据
       try {
         const rows = await invoke<ResultRow[]>('get_keyword_results', {
           taskId: activeTask.id,

@@ -156,7 +156,7 @@ export function loadChainForDevice(_serial: string) {
         const countdownText = countdown?.text ?? '即将开始';
         const remainPct = countdown?.percent ?? 0;
         return `
-      <div class="task-queue-item bg-violet-50/40 border border-violet-100 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
+      <div class="task-queue-item bg-violet-50/40 border border-violet-100 rounded-md shadow-sm relative overflow-hidden flex cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
         <div class="w-1 self-stretch bg-violet-500"></div>
         <div class="flex-1 p-3 flex flex-col">
           <div class="flex items-center justify-between gap-3 mb-2">
@@ -184,7 +184,7 @@ export function loadChainForDevice(_serial: string) {
       } else if (presentation === TaskPresentationStatus.RUNNING) {
         const { pct, label: progressLabel } = getTaskCardProgress(q);
         return `
-      <div class="task-queue-item bg-blue-50/40 border border-blue-100 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
+      <div class="task-queue-item bg-blue-50/40 border border-blue-100 rounded-md shadow-sm relative overflow-hidden flex cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
         <div class="w-1 self-stretch bg-[#2563EB]"></div>
         <div class="flex-1 p-3 flex flex-col">
           <div class="flex items-center justify-between gap-3 mb-2">
@@ -213,7 +213,7 @@ export function loadChainForDevice(_serial: string) {
         const countdownText = countdown?.text ?? '可继续';
         const remainPct = countdown?.percent ?? 0;
         return `
-      <div class="task-queue-item bg-amber-50/50 border border-amber-100 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
+      <div class="task-queue-item bg-amber-50/50 border border-amber-100 rounded-md shadow-sm relative overflow-hidden flex cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
         <div class="w-1 self-stretch bg-amber-400"></div>
         <div class="flex-1 p-3 flex flex-col">
           <div class="flex items-center justify-between gap-3 mb-2">
@@ -249,7 +249,7 @@ export function loadChainForDevice(_serial: string) {
       } else if (presentation === TaskPresentationStatus.PAUSED_MANUAL) {
         const { pct, label: progressLabel } = getTaskCardProgress(q);
         return `
-      <div class="task-queue-item bg-amber-50/40 border border-amber-100 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
+      <div class="task-queue-item bg-amber-50/40 border border-amber-100 rounded-md shadow-sm relative overflow-hidden flex cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
         <div class="w-1 self-stretch bg-amber-400"></div>
         <div class="flex-1 p-3 flex flex-col">
           <div class="flex items-center justify-between gap-3 mb-2">
@@ -273,7 +273,7 @@ export function loadChainForDevice(_serial: string) {
       </div>`;
       } else if (presentation === TaskPresentationStatus.READY) {
         return `
-      <div class="task-queue-item bg-s50/60 border border-s200 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
+      <div class="task-queue-item bg-s50/60 border border-s200 rounded-md shadow-sm relative overflow-hidden flex cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
         <div class="w-1 self-stretch bg-[#64748B]"></div>
         <div class="flex-1 p-3">
           <div class="flex items-center justify-between gap-3 mb-2">
@@ -290,7 +290,7 @@ export function loadChainForDevice(_serial: string) {
       </div>`;
       } else if (presentation === TaskPresentationStatus.COMPLETED) {
         return `
-      <div class="task-queue-item bg-green-50/40 border border-green-100 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer opacity-80 transition-all duration-200 hover:opacity-100 hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
+      <div class="task-queue-item bg-green-50/40 border border-green-100 rounded-md shadow-sm relative overflow-hidden flex cursor-pointer opacity-80 transition-all duration-200 hover:opacity-100 hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
         <div class="w-1 self-stretch bg-[#10B981]"></div>
         <div class="flex-1 p-3">
           <div class="flex items-center justify-between gap-3 mb-2">
@@ -308,7 +308,7 @@ export function loadChainForDevice(_serial: string) {
       } else if (presentation === TaskPresentationStatus.ERROR_PAUSED) {
         const { pct, label: progressLabel } = getTaskCardProgress(q);
         return `
-      <div class="task-queue-item bg-red-50/40 border border-red-100 rounded-lg shadow-sm relative overflow-hidden flex cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
+      <div class="task-queue-item bg-red-50/40 border border-red-100 rounded-md shadow-sm relative overflow-hidden flex cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
         <div class="w-1 self-stretch bg-red-500"></div>
         <div class="flex-1 p-3 flex flex-col">
           <div class="flex items-center justify-between gap-3 mb-2">
