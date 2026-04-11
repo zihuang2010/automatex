@@ -21,7 +21,7 @@ use crate::task_sync;
 
 use crate::connection::{
     adb::{adb_forward_remove, adb_forward_setup},
-    phone_client::BatchTask,
+    phone_client::{BatchTask, PhoneClient},
 };
 
 use super::worker::spawn_worker;
@@ -541,6 +541,14 @@ pub(super) fn spawn(
 }
 
 async fn engine_loop(mut s: EngineState, mut rx: mpsc::Receiver<EngineMsg>) {
+    // 启动后台进度上报协程（Outbox Flusher）
+    let flusher_cancel = CancellationToken::new();
+    let _flusher = super::progress_flusher::spawn(
+        Arc::clone(&s.storage),
+        Arc::clone(&s.http),
+        flusher_cancel.clone(),
+    );
+
     loop {
         let next_due = next_due_at(&s);
 
@@ -640,6 +648,42 @@ async fn engine_loop(mut s: EngineState, mut rx: mpsc::Receiver<EngineMsg>) {
             },
             EngineMsg::KeywordDone { task_id, city, keyword, worker_seq } => {
                 handle_keyword_done(&mut s, &task_id, &city, &keyword, worker_seq);
+
+                // 快速路径：即时异步上报进度（失败由 flusher 兜底）
+                if let Some(mut req) = build_progress_report(&s, &task_id, &city, &keyword) {
+                    let http = Arc::clone(&s.http);
+                    let storage = Arc::clone(&s.storage);
+                    let round_id = s.running.get(&task_id).map(|r| r.round_id).unwrap_or(0);
+                    tokio::spawn(async move {
+                        // 补全快速路径缺失的字段
+                        req.client_id = storage
+                            .get_setting("mqtt_client_id")
+                            .await
+                            .unwrap_or_default();
+                        if let Some(ctx) = storage
+                            .load_upload_context(
+                                &req.task_id,
+                                round_id,
+                                &req.city_name,
+                                &req.keyword,
+                            )
+                            .await
+                        {
+                            req.store_list = ctx.store_list;
+                        }
+                        if http.report_progress(&req).await.is_ok() {
+                            storage
+                                .mark_progress_synced(
+                                    &req.task_id,
+                                    &req.city_name,
+                                    &req.keyword,
+                                    round_id,
+                                )
+                                .await;
+                        }
+                    });
+                }
+
                 should_force_emit = true;
             },
             EngineMsg::WorkerResult { task_id, worker_seq, outcome } => {
@@ -651,6 +695,7 @@ async fn engine_loop(mut s: EngineState, mut rx: mpsc::Receiver<EngineMsg>) {
                 let _ = reply.send(result);
             },
             EngineMsg::Shutdown { reply } => {
+                flusher_cancel.cancel();
                 // Fix-M2：收集 worker handle，等待它们完成 DB 写入后再退出
                 let mut worker_handles = Vec::new();
                 for (task_id, mut runtime) in s.running.drain() {
@@ -804,6 +849,22 @@ async fn handle_start(s: &mut EngineState, task_id: &str) -> Result<(), String> 
             "[engine] start: ADB forward 设置失败 (device={}, port={})，继续尝试（forward 可能已存在）: {}",
             serial, local_port, e
         );
+    }
+
+    // ── 无障碍服务健康检测：调度前主动确认 App 在线 ──
+    let probe = PhoneClient::new(local_port);
+    if let Err(e) = probe.ping().await {
+        eprintln!(
+            "[engine] 无障碍服务不可用 (device={}, port={}): {}",
+            serial, local_port, e
+        );
+        s.storage.flag_device(&serial).await;
+        crate::connection::adb::vibrate_device_alert(&serial);
+        let _ = s.app_handle.emit(constants::tauri_event::DEVICES_CHANGED, ());
+        return Err(format!(
+            "设备 {} 无障碍服务未启动或未响应，已标记异常",
+            serial
+        ));
     }
 
     // CON-1 修复：用 ok_or 替代 unwrap，避免 .await 点后内存状态变化导致意外 panic
@@ -1331,6 +1392,32 @@ fn handle_keyword_done(
     }
 }
 
+/// 从引擎内存状态构造进度上报请求（快速路径专用）。
+///
+/// store_list 需要从 DB 查询，此处留空——flusher 兜底时会补全。
+/// 返回 None 表示缺少必要上下文（任务不存在、无 runtime 等），由 flusher 兜底。
+fn build_progress_report(
+    s: &EngineState,
+    task_id: &str,
+    city: &str,
+    keyword: &str,
+) -> Option<crate::http::types::ProgressReportRequest> {
+    let task = s.tasks.iter().find(|t| t.id == task_id)?;
+    let runtime = s.running.get(task_id)?;
+
+    Some(crate::http::types::ProgressReportRequest {
+        client_id: String::new(), // flusher 从 DB 补全；快速路径先用空串，服务端可能不校验
+        task_id: task_id.to_string(),
+        task_name: task.name.clone(),
+        city_name: city.to_string(),
+        keyword: keyword.to_string(),
+        device_no: runtime.device_serial.clone(),
+        round_no: task.round_no,
+        store_list: Vec::new(), // 快速路径不额外查 DB，flusher 兜底补全
+        scan_finished_time: crate::utils::format_datetime(crate::storage::now_unix()),
+    })
+}
+
 /// 处理手机端批次完成（BatchDone）结果。
 ///
 /// ## 流程
@@ -1522,8 +1609,7 @@ async fn complete_round_with_interval(
         // status 保持 EXECUTING — 设备不释放
     }
 
-    // 3. 清除 DB 中本轮的关键词进度（新轮次从零开始）
-    s.storage.clear_task_progress(task_id).await;
+    // 3. 进度记录保留（各轮次通过 round_id 隔离，跨日统一清理）
 
     // 4. 创建新轮次
     let new_round_id = s.storage.create_round(task_id).await.unwrap_or(0);

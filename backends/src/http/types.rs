@@ -16,12 +16,36 @@ where
     Option::<Vec<T>>::deserialize(deserializer)
 }
 
+/// 兼容 `serviceCode` 为数字或字符串：`190000000` 和 `"190000000"` 均可解析
+fn deserialize_string_or_i64<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de;
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrI64 {
+        Num(i64),
+        Str(String),
+    }
+
+    match Option::<StringOrI64>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(StringOrI64::Num(n)) => Ok(Some(n)),
+        Some(StringOrI64::Str(s)) => s
+            .parse::<i64>()
+            .map(Some)
+            .map_err(|_| de::Error::custom(format!("serviceCode 无法解析为 i64: {}", s))),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ApiEnvelope<T> {
     pub code: i32,
     pub msg: String,
     pub data: Option<T>,
-    #[serde(rename = "serviceCode")]
+    #[serde(rename = "serviceCode", default, deserialize_with = "deserialize_string_or_i64")]
     pub service_code: Option<i64>,
 }
 
@@ -91,7 +115,6 @@ pub struct UnbindPhonesRequest {
     pub mobiles: Vec<String>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 pub struct ProgressReportRequest {
     #[serde(rename = "clientId")]
@@ -110,6 +133,7 @@ pub struct ProgressReportRequest {
     pub round_no: i32,
     #[serde(rename = "storeList")]
     pub store_list: Vec<String>,
+    /// 完成时间，格式 `yyyy-MM-dd HH:mm:ss`
     #[serde(rename = "scanFinishedTime")]
-    pub scan_finished_time: i64,
+    pub scan_finished_time: String,
 }

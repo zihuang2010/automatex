@@ -176,17 +176,17 @@
 
 #### 请求参数
 
-| 字段               | 类型       | 必填 | 说明                   |
-| ------------------ | ---------- | ---- | ---------------------- |
-| `clientId`         | `string`   | ✅   | 客户端 ID              |
-| `taskId`           | `string`   | ✅   | 任务 ID                |
-| `taskName`         | `string`   | ✅   | 任务名称               |
-| `cityName`         | `string`   | ✅   | 城市名称               |
-| `keyword`          | `string`   | ✅   | 关键词名称             |
-| `deviceNo`         | `string`   | ✅   | 执行设备的序列号       |
-| `roundNo`          | `int`      | ✅   | 轮次                   |
-| `storeList`        | `string[]` | ✅   | 识别店铺列表           |
-| `scanFinishedTime` | `int64`    | ✅   | 完成时间的 Unix 时间戳 |
+| 字段               | 类型       | 必填 | 说明                                 |
+| ------------------ | ---------- | ---- | ------------------------------------ |
+| `clientId`         | `string`   | ✅   | 客户端 ID                            |
+| `taskId`           | `string`   | ✅   | 任务 ID                              |
+| `taskName`         | `string`   | ✅   | 任务名称                             |
+| `cityName`         | `string`   | ✅   | 城市名称                             |
+| `keyword`          | `string`   | ✅   | 关键词名称                           |
+| `deviceNo`         | `string`   | ✅   | 执行设备的序列号                     |
+| `roundNo`          | `int`      | ✅   | 轮次                                 |
+| `storeList`        | `string[]` | ✅   | 识别店铺列表                         |
+| `scanFinishedTime` | `string`   | ✅   | 完成时间，格式 `yyyy-MM-dd HH:mm:ss` |
 
 ```json
 {
@@ -198,7 +198,7 @@
   "deviceNo": "123123",
   "roundNo": 12,
   "storeList": ["店铺名称1", "店铺名称2"],
-  "scanFinishedTime": "123123123"
+  "scanFinishedTime": "2026-04-11 14:30:00"
 }
 ```
 

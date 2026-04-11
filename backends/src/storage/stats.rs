@@ -20,6 +20,7 @@ pub struct ProgressRow {
     pub status: String,
     pub completed_at: i64,
     pub device_serial: String,
+    pub round_id: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

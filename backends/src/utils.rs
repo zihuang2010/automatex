@@ -1,5 +1,6 @@
 // 通用工具函数
 
+use chrono::TimeZone;
 use std::collections::HashMap;
 
 // 时间工具
@@ -14,6 +15,15 @@ pub fn now_unix() -> i64 {
 /// 今日日期字符串 (YYYY-MM-DD)
 pub fn today_str() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+/// 将 Unix 时间戳（秒）格式化为 `yyyy-MM-dd HH:mm:ss`（本地时区）
+pub fn format_datetime(unix_secs: i64) -> String {
+    chrono::Local
+        .timestamp_opt(unix_secs, 0)
+        .single()
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_default()
 }
 
 // HashMap 工具

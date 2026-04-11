@@ -1,4 +1,5 @@
 mod event_loop;
+mod progress_flusher;
 mod worker;
 
 use std::sync::Arc;

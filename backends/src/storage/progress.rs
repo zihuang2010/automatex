@@ -11,6 +11,15 @@ pub struct ResultRow {
     pub round_id: i64,
 }
 
+/// pending 上报记录的补充上下文（从 DB 查询拼装）
+#[derive(Debug)]
+pub struct UploadContext {
+    pub task_name: String,
+    pub round_no: i32,
+    pub store_list: Vec<String>,
+    pub client_id: String,
+}
+
 impl Database {
     // ─── 轮次操作（a_task_rounds）────────────────────────────────────
 
@@ -272,7 +281,7 @@ impl Database {
         let Ok(conn) = self.pool.get().await else { return Vec::new() };
         conn.interact(move |conn| {
             let mut stmt = conn.prepare(
-                "SELECT task_id, city_name, keyword_name, status, completed_at, device_serial
+                "SELECT task_id, city_name, keyword_name, status, completed_at, device_serial, round_id
                  FROM a_task_progress WHERE task_id = ?1 AND round_id = ?2",
             )?;
             let rows = stmt.query_map(params![task_id, round_id], |row| {
@@ -283,6 +292,7 @@ impl Database {
                     status: row.get(3)?,
                     completed_at: row.get(4)?,
                     device_serial: row.get(5)?,
+                    round_id: row.get(6)?,
                 })
             })?;
             Ok::<_, rusqlite::Error>(rows.filter_map(|r| r.ok()).collect())
@@ -306,7 +316,7 @@ impl Database {
                 let placeholders: Vec<String> =
                     (0..chunk.len()).map(|i| format!("?{}", i + 1)).collect();
                 let sql = format!(
-                    "SELECT task_id, city_name, keyword_name, status, completed_at, device_serial
+                    "SELECT task_id, city_name, keyword_name, status, completed_at, device_serial, round_id
                      FROM a_task_progress WHERE round_id IN ({})",
                     placeholders.join(",")
                 );
@@ -319,6 +329,7 @@ impl Database {
                         status: row.get(3)?,
                         completed_at: row.get(4)?,
                         device_serial: row.get(5)?,
+                        round_id: row.get(6)?,
                     })
                 })?;
                 all_rows.extend(rows.filter_map(|r| r.ok()));
@@ -330,6 +341,7 @@ impl Database {
         .unwrap_or_default()
     }
 
+    /// 清除已同步的进度记录，保留未上报的 pending 记录（防止丢失未上报数据）
     pub async fn clear_task_progress(&self, task_id: &str) {
         let task_id = task_id.to_string();
         let Ok(conn) = self.pool.get().await else { return };
@@ -337,7 +349,7 @@ impl Database {
             .interact(move |conn| {
                 log_exec(
                     conn.execute(
-                        "DELETE FROM a_task_progress WHERE task_id = ?1",
+                        "DELETE FROM a_task_progress WHERE task_id = ?1 AND sync_status = 'synced'",
                         params![task_id],
                     ),
                     "clear_task_progress",
@@ -403,12 +415,11 @@ impl Database {
             .await;
     }
 
-    #[allow(dead_code)]
     pub async fn load_pending_progress(&self) -> Vec<ProgressRow> {
         let Ok(conn) = self.pool.get().await else { return Vec::new() };
         conn.interact(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT task_id, city_name, keyword_name, status, completed_at, device_serial
+                "SELECT task_id, city_name, keyword_name, status, completed_at, device_serial, round_id
                  FROM a_task_progress WHERE sync_status = 'pending'",
             )?;
             let rows = stmt.query_map([], |row| {
@@ -419,6 +430,7 @@ impl Database {
                     status: row.get(3)?,
                     completed_at: row.get(4)?,
                     device_serial: row.get(5)?,
+                    round_id: row.get(6)?,
                 })
             })?;
             Ok::<_, rusqlite::Error>(rows.filter_map(|r| r.ok()).collect())
@@ -456,8 +468,13 @@ impl Database {
             .await;
     }
 
-    #[allow(dead_code)]
-    pub async fn mark_progress_synced(&self, task_id: &str, city_name: &str, keyword_name: &str) {
+    pub async fn mark_progress_synced(
+        &self,
+        task_id: &str,
+        city_name: &str,
+        keyword_name: &str,
+        round_id: i64,
+    ) {
         let task_id = task_id.to_string();
         let city_name = city_name.to_string();
         let keyword_name = keyword_name.to_string();
@@ -467,12 +484,67 @@ impl Database {
                 log_exec(
                     conn.execute(
                         "UPDATE a_task_progress SET sync_status = 'synced'
-                     WHERE task_id = ?1 AND city_name = ?2 AND keyword_name = ?3",
-                        params![task_id, city_name, keyword_name],
+                         WHERE task_id = ?1 AND city_name = ?2 AND keyword_name = ?3 AND round_id = ?4",
+                        params![task_id, city_name, keyword_name, round_id],
                     ),
                     "mark_progress_synced",
                 );
             })
             .await;
+    }
+
+    /// 为 pending 上报记录查询补充信息（task_name, round_no, store_list）
+    pub async fn load_upload_context(
+        &self,
+        task_id: &str,
+        round_id: i64,
+        city_name: &str,
+        keyword_name: &str,
+    ) -> Option<UploadContext> {
+        let task_id = task_id.to_string();
+        let city_name = city_name.to_string();
+        let keyword_name = keyword_name.to_string();
+        let conn = self.pool.get().await.ok()?;
+        conn.interact(move |conn| {
+            // 查 task_name + round_no
+            let (task_name, round_no): (String, i32) = conn
+                .query_row(
+                    "SELECT d.name, r.round_no
+                     FROM a_task_defs d
+                     JOIN a_task_rounds r ON r.id = ?2
+                     WHERE d.task_id = ?1",
+                    params![task_id, round_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .ok()?;
+
+            // 查 store_list
+            let mut stmt = conn
+                .prepare(
+                    "SELECT shop_name FROM a_task_results
+                     WHERE task_id = ?1 AND round_id = ?2 AND city_name = ?3 AND keyword_name = ?4",
+                )
+                .ok()?;
+            let store_list: Vec<String> = stmt
+                .query_map(params![task_id, round_id, city_name, keyword_name], |row| {
+                    row.get(0)
+                })
+                .ok()?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            // 查 client_id
+            let client_id: String = conn
+                .query_row(
+                    "SELECT value FROM a_settings WHERE key = 'mqtt_client_id'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or_default();
+
+            Some(UploadContext { task_name, round_no, store_list, client_id })
+        })
+        .await
+        .ok()?
     }
 }

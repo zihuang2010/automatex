@@ -274,6 +274,63 @@ impl PhoneClient {
         Self { local_port }
     }
 
+    /// 轻量健康检测：TCP 连接 + 发送 ping 请求 + 等待 ack 响应。
+    ///
+    /// 用于在调度前主动确认手机端无障碍 App 是否在线且正常响应。
+    /// 比 `open` 更轻量：不发送批次任务，只验证连通性。
+    ///
+    /// # 超时
+    /// 使用 `phone_client::PING_TIMEOUT_SECS`（3s），远短于正常连接超时。
+    pub async fn ping(&self) -> Result<(), ScanError> {
+        let addr = format!("127.0.0.1:{}", self.local_port);
+
+        // 1. TCP 连接（短超时）
+        let stream = tokio::time::timeout(
+            Duration::from_secs(cfg::PING_TIMEOUT_SECS),
+            TcpStream::connect(&addr),
+        )
+        .await
+        .map_err(|_| {
+            ScanError::ConnectionFailed(format!(
+                "ping 超时 ({}s): {}",
+                cfg::PING_TIMEOUT_SECS,
+                addr
+            ))
+        })?
+        .map_err(|e| ScanError::ConnectionFailed(format!("ping connect 失败 {}: {}", addr, e)))?;
+
+        let (reader_half, mut writer_half) = stream.into_split();
+
+        // 2. 发送 ping 请求
+        let payload = "{\"type\":\"ping\"}\n";
+        writer_half
+            .write_all(payload.as_bytes())
+            .await
+            .map_err(|e| ScanError::StreamBroken(format!("ping write 失败: {}", e)))?;
+        writer_half
+            .flush()
+            .await
+            .map_err(|e| ScanError::StreamBroken(format!("ping flush 失败: {}", e)))?;
+
+        // 3. 等待 ack 响应（带超时）
+        let mut reader = BufReader::new(reader_half);
+        let mut line = String::new();
+        tokio::time::timeout(
+            Duration::from_secs(cfg::PING_TIMEOUT_SECS),
+            reader.read_line(&mut line),
+        )
+        .await
+        .map_err(|_| {
+            ScanError::ConnectionFailed(format!(
+                "ping ack 超时 ({}s)",
+                cfg::PING_TIMEOUT_SECS
+            ))
+        })?
+        .map_err(|e| ScanError::StreamBroken(format!("ping read 失败: {}", e)))?;
+
+        Ok(())
+    }
+
     /// 建立 TCP 连接并发送批次请求，返回 NDJSON 流句柄。
     ///
     /// # 超时

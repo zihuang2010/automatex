@@ -116,6 +116,8 @@ pub mod phone_client {
     pub const DEFAULT_MAX_PAGES: u32 = 3;
     /// TCP 连接超时（秒）——超时即判定设备离线
     pub const CONNECT_TIMEOUT_SECS: u64 = 10;
+    /// 健康检测（ping）超时（秒）——比正常连接超时短，快速判定
+    pub const PING_TIMEOUT_SECS: u64 = 3;
 }
 
 /// 时间间隔常量（秒）
@@ -285,5 +287,6 @@ pub mod mqtt_topic {
 }
 
 // 时间工具函数已迁移至 utils.rs，此处为兼容性 re-export
+pub use crate::utils::format_datetime;
 pub use crate::utils::now_unix;
 pub use crate::utils::today_str;
