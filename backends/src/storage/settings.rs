@@ -50,33 +50,31 @@ impl Database {
             .await;
     }
 
-    /// 批量清理任务（单连接事务内完成）
-    pub async fn batch_cleanup_tasks(&self, task_ids: &[String]) {
+    /// 批量清理任务（单连接事务内完成，错误向上传播）
+    pub async fn batch_cleanup_tasks(&self, task_ids: &[String]) -> Result<(), String> {
         let task_ids = task_ids.to_vec();
-        let Ok(conn) = self.pool.get().await else { return };
-        let _ = conn
-            .interact(move |conn| {
-                let tx = match conn.transaction() {
-                    Ok(tx) => tx,
-                    Err(e) => {
-                        error!(op = "batch_cleanup_tasks", error = %e, "事务开始失败");
-                        return;
-                    },
-                };
-                for tid in &task_ids {
-                    let _ =
-                        tx.execute("DELETE FROM a_task_progress WHERE task_id = ?1", params![tid]);
-                    let _ = tx.execute("DELETE FROM a_task_runs WHERE task_id = ?1", params![tid]);
-                    let _ =
-                        tx.execute("DELETE FROM a_task_rounds WHERE task_id = ?1", params![tid]);
-                    let _ = tx.execute("DELETE FROM a_task_state WHERE task_id = ?1", params![tid]);
-                    let _ = tx.execute("DELETE FROM a_task_defs WHERE task_id = ?1", params![tid]);
-                }
-                if let Err(e) = tx.commit() {
-                    error!(op = "batch_cleanup_tasks", error = %e, "事务提交失败");
-                }
-            })
-            .await;
+        let conn = self.pool.get().await.map_err(|e| format!("获取连接失败: {}", e))?;
+        conn.interact(move |conn| {
+            let tx = conn.transaction().map_err(|e| format!("事务开始失败: {}", e))?;
+            for tid in &task_ids {
+                tx.execute("DELETE FROM a_task_progress WHERE task_id = ?1", params![tid])
+                    .map_err(|e| format!("删除 progress 失败 ({}): {}", tid, e))?;
+                tx.execute("DELETE FROM a_task_results WHERE task_id = ?1", params![tid])
+                    .map_err(|e| format!("删除 results 失败 ({}): {}", tid, e))?;
+                tx.execute("DELETE FROM a_task_runs WHERE task_id = ?1", params![tid])
+                    .map_err(|e| format!("删除 runs 失败 ({}): {}", tid, e))?;
+                tx.execute("DELETE FROM a_task_rounds WHERE task_id = ?1", params![tid])
+                    .map_err(|e| format!("删除 rounds 失败 ({}): {}", tid, e))?;
+                tx.execute("DELETE FROM a_task_state WHERE task_id = ?1", params![tid])
+                    .map_err(|e| format!("删除 state 失败 ({}): {}", tid, e))?;
+                tx.execute("DELETE FROM a_task_defs WHERE task_id = ?1", params![tid])
+                    .map_err(|e| format!("删除 defs 失败 ({}): {}", tid, e))?;
+            }
+            tx.commit().map_err(|e| format!("事务提交失败: {}", e))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| format!("interact 失败: {}", e))?
     }
 
     pub async fn get_setting(&self, key: &str) -> Option<String> {

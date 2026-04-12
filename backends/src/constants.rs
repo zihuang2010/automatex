@@ -166,12 +166,8 @@ pub mod limits {
     pub const MAX_BATCH_TASK_IDS_PER_REQUEST: usize = 50;
 }
 
-/// Mock / 调试开关
+/// 调试参数
 pub mod debug {
-    /// 模拟风控是否启用（正式版设为 false）
-    pub const MOCK_RISK_ENABLED: bool = false;
-    /// 模拟风控触发概率
-    pub const MOCK_RISK_PROBABILITY: f64 = 0.05;
     /// 心跳 publish 超时秒数
     pub const HEARTBEAT_PUBLISH_TIMEOUT_SECS: u64 = 5;
     /// emit_update 最小间隔毫秒（节流）
@@ -189,7 +185,6 @@ pub mod setting_key {
     pub const API_BASE_URL: &str = "api_base_url";
     pub const SYNCED_PHONES: &str = "synced_phones";
     pub const LAST_ACTIVE_DATE: &str = "last_active_date";
-    pub const MOCK_SCENARIO: &str = "mock_scenario";
     pub const THEME: &str = "theme";
 }
 
@@ -238,7 +233,6 @@ pub mod settings {
         setting_key::API_BASE_URL,
         setting_key::SYNCED_PHONES,
         setting_key::LAST_ACTIVE_DATE,
-        setting_key::MOCK_SCENARIO,
         setting_key::THEME,
     ];
 }

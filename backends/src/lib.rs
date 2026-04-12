@@ -121,25 +121,11 @@ pub fn run() {
                         .get(constants::setting_key::API_BASE_URL)
                         .cloned()
                         .unwrap_or_default();
-                    let http_client: Arc<dyn http::ApiClient> = if http_base_url.is_empty() {
-                        if task_provider::mock_enabled() {
-                            let mock = http::MockApiClient::new();
-                            if let Some(scenario) =
-                                startup_settings.get(constants::setting_key::MOCK_SCENARIO)
-                            {
-                                if !scenario.is_empty() {
-                                    mock.set_mock_scenario(scenario);
-                                }
-                            }
-                            Arc::new(mock)
-                        } else {
-                            Arc::new(http::DisabledApiClient::new(
-                                "未配置 api_base_url，生产模式不会自动回退到 MockApiClient",
-                            ))
-                        }
-                    } else {
-                        Arc::new(http::RealApiClient::new(&http_base_url))
-                    };
+                    if http_base_url.is_empty() {
+                        warn!("api_base_url 未配置，HTTP API 调用将失败");
+                    }
+                    let http_client: Arc<dyn http::ApiClient> =
+                        Arc::new(http::RealApiClient::new(&http_base_url));
                     let _ = http_cell.set(Arc::clone(&http_client));
 
                     // 设备监控尽早启动，与引擎构建和任务同步并行。
@@ -167,22 +153,6 @@ pub fn run() {
                     let _ = app_handle
                         .emit(constants::tauri_event::STARTUP_SYNC_STATUS, "booting:engine-ready");
 
-                    // mock 任务缓存仅用于开发/演示，不阻塞生产启动主链。
-                    {
-                        let db_cache = Arc::clone(&db_init);
-                        let eng_cache = Arc::clone(&eng);
-                        tauri::async_runtime::spawn(async move {
-                            let before = db_cache.load_all_task_defs().await.len();
-                            task_provider::sync_task_cache(&db_cache).await;
-                            let after = db_cache.load_all_task_defs().await.len();
-                            if after > before {
-                                debug!(before, after, "后台 mock 任务缓存写入完成");
-                                eng_cache.reload_tasks().await;
-                                eng_cache.force_emit_update().await;
-                            }
-                        });
-                    }
-
                     let startup_settings_for_mqtt = startup_settings.clone();
                     let app_mqtt = app_handle.clone();
                     let mqtt_connect = async move {
@@ -208,10 +178,10 @@ pub fn run() {
                         }
                     };
 
-                    tokio::join!(
-                        startup_sync_tasks(&db_init, &http_client, &eng, &client_id, &app_handle),
-                        mqtt_connect
-                    );
+                    // 任务同步优先完成，再建立 MQTT 连接，避免竞态：
+                    // MQTT 连接成功后立刻收到 taskChanged 通知时任务缓存尚未就绪
+                    startup_sync_tasks(&db_init, &http_client, &eng, &client_id, &app_handle).await;
+                    mqtt_connect.await;
                     let _ = app_handle.emit(constants::tauri_event::STARTUP_SYNC_STATUS, "ready");
                 });
             }

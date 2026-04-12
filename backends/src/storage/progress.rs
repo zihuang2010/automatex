@@ -442,6 +442,7 @@ impl Database {
     }
 
     /// 清理超过 N 天的采集结果（通过 a_task_rounds.run_date 判断）
+    /// 分批删除（每批 10000 行），避免长时间持锁阻塞 WAL checkpoint
     pub async fn cleanup_old_results(&self, keep_days: u32) {
         let cutoff = {
             let today = chrono::Local::now();
@@ -451,19 +452,29 @@ impl Database {
         let Ok(conn) = self.pool.get().await else { return };
         let _ = conn
             .interact(move |conn| {
-                let result = conn.execute(
-                    "DELETE FROM a_task_results
-                     WHERE round_id IN (
-                         SELECT id FROM a_task_rounds WHERE run_date < ?1
-                     )",
-                    rusqlite::params![cutoff],
-                );
-                match result {
-                    Ok(n) if n > 0 => {
-                        info!(count = n, keep_days = keep_days, "清理过期采集结果")
-                    },
-                    Err(e) => error!(op = "cleanup_old_results", error = %e, "数据库操作失败"),
-                    _ => {},
+                let mut total_deleted: usize = 0;
+                loop {
+                    let result = conn.execute(
+                        "DELETE FROM a_task_results
+                         WHERE rowid IN (
+                             SELECT a_task_results.rowid FROM a_task_results
+                             JOIN a_task_rounds ON a_task_rounds.id = a_task_results.round_id
+                             WHERE a_task_rounds.run_date < ?1
+                             LIMIT 10000
+                         )",
+                        rusqlite::params![cutoff],
+                    );
+                    match result {
+                        Ok(0) => break,
+                        Ok(n) => total_deleted += n,
+                        Err(e) => {
+                            error!(op = "cleanup_old_results", error = %e, "数据库操作失败");
+                            break;
+                        },
+                    }
+                }
+                if total_deleted > 0 {
+                    info!(count = total_deleted, keep_days = keep_days, "清理过期采集结果");
                 }
             })
             .await;
@@ -507,19 +518,20 @@ impl Database {
         let keyword_name = keyword_name.to_string();
         let conn = self.pool.get().await.ok()?;
         conn.interact(move |conn| {
-            // 查 task_name + round_no
-            let (task_name, round_no): (String, i32) = conn
+            // 单查询获取 task_name, round_no, client_id
+            let (task_name, round_no, client_id): (String, i32, String) = conn
                 .query_row(
-                    "SELECT d.name, r.round_no
+                    "SELECT d.name, r.round_no,
+                            COALESCE((SELECT value FROM a_settings WHERE key = 'mqtt_client_id'), '')
                      FROM a_task_defs d
                      JOIN a_task_rounds r ON r.id = ?2
                      WHERE d.task_id = ?1",
                     params![task_id, round_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
                 .ok()?;
 
-            // 查 store_list
+            // store_list 仍需独立查询（返回多行）
             let mut stmt = conn
                 .prepare(
                     "SELECT shop_name FROM a_task_results
@@ -531,13 +543,6 @@ impl Database {
                 .ok()?
                 .filter_map(|r| r.ok())
                 .collect();
-
-            // 查 client_id
-            let client_id: String = conn
-                .query_row("SELECT value FROM a_settings WHERE key = 'mqtt_client_id'", [], |row| {
-                    row.get(0)
-                })
-                .unwrap_or_default();
 
             Some(UploadContext { task_name, round_no, store_list, client_id })
         })

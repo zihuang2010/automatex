@@ -295,14 +295,18 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_task_defs_phone ON a_task_defs(phone);
             CREATE INDEX IF NOT EXISTS idx_rounds_task ON a_task_rounds(task_id);
             CREATE INDEX IF NOT EXISTS idx_rounds_date ON a_task_rounds(run_date);
+            CREATE INDEX IF NOT EXISTS idx_rounds_status ON a_task_rounds(status);
             CREATE INDEX IF NOT EXISTS idx_progress_task ON a_task_progress(task_id);
             CREATE INDEX IF NOT EXISTS idx_progress_round ON a_task_progress(round_id);
             CREATE INDEX IF NOT EXISTS idx_progress_sync ON a_task_progress(sync_status);
+            CREATE INDEX IF NOT EXISTS idx_progress_task_round ON a_task_progress(task_id, round_id);
             CREATE INDEX IF NOT EXISTS idx_runs_task ON a_task_runs(task_id);
             CREATE INDEX IF NOT EXISTS idx_runs_round ON a_task_runs(round_id);
             CREATE INDEX IF NOT EXISTS idx_runs_date ON a_task_runs(run_date, task_id);
             CREATE INDEX IF NOT EXISTS idx_runs_sync ON a_task_runs(sync_status);
+            CREATE INDEX IF NOT EXISTS idx_runs_status ON a_task_runs(status);
             CREATE INDEX IF NOT EXISTS idx_runs_device_date ON a_task_runs(device_serial, run_date);
+            CREATE INDEX IF NOT EXISTS idx_task_state_status ON a_task_state(status);
             CREATE INDEX IF NOT EXISTS idx_results_lookup ON a_task_results(task_id, city_name, keyword_name);
             CREATE INDEX IF NOT EXISTS idx_results_round ON a_task_results(task_id, round_id);
             CREATE INDEX IF NOT EXISTS idx_results_round_id ON a_task_results(round_id);",
@@ -315,7 +319,7 @@ impl Database {
         let pool = cfg
             .builder(Runtime::Tokio1)
             .map_err(|e| format!("创建连接池 builder 失败: {}", e))?
-            .max_size(8) // R7 优化：从 4 提升到 8，减少高并发 SQLITE_BUSY
+            .max_size(16) // R7 优化：支持高并发任务执行，减少 pool 争用
             .post_create(Hook::async_fn(|conn, _| {
                 Box::pin(async move {
                     conn.interact(|conn| {

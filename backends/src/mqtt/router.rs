@@ -16,7 +16,7 @@ pub(crate) fn route_message(
     client_id: &str,
     connect_ts: i64,
 ) {
-    // 先做通用 JSON 解析，用于 ts/source 过滤
+    // 先做通用 JSON 解析，用于 eventAt/source 过滤
     let json_value: serde_json::Value = match serde_json::from_str(payload) {
         Ok(v) => v,
         Err(e) => {
@@ -25,10 +25,10 @@ pub(crate) fn route_message(
         },
     };
 
-    // 过滤旧消息：如果消息携带 ts 字段且早于本次连接时间，跳过
-    if let Some(ts) = json_value.get("ts").and_then(|v| v.as_i64()) {
-        if ts < connect_ts {
-            debug!(topic = topic, msg_ts = ts, connect_ts = connect_ts, "过滤旧消息");
+    // 过滤旧消息：eventAt 字段必须存在且不早于本次连接时间
+    if let Some(event_at) = json_value.get("eventAt").and_then(|v| v.as_i64()) {
+        if event_at < connect_ts {
+            debug!(topic = topic, event_at, connect_ts, "过滤旧消息");
             return;
         }
     }
@@ -59,6 +59,10 @@ pub(crate) fn route_message(
             && msg.task_id.trim().is_empty()
         {
             warn!(topic = topic, "reload/delete 缺少 taskId");
+            return;
+        }
+        if msg.task_id.len() > 128 {
+            warn!(topic = topic, len = msg.task_id.len(), "task_id 超长，丢弃");
             return;
         }
         info!(msg = ?msg, "收到任务变更通知");

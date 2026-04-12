@@ -1,84 +1,35 @@
 //! 任务提供者模块
 //!
 //! - `types.rs` — Task、TaskDef 等数据结构
-//! - `mod.rs` — DB 加载、构建、Mock 函数
+//! - `mod.rs` — DB 加载、构建函数
 
 pub mod types;
 
 pub use types::*;
 
 use std::collections::HashSet;
-use tracing::debug;
 
 use crate::constants::{city_status, keyword_status, task_status};
 use crate::storage::{Database, TaskStateRow};
 
-// ─── 任务提供者 ─────────────────────────────────────────────────
-
-pub fn mock_enabled() -> bool {
-    cfg!(debug_assertions)
-        || std::env::var("AUTOMATEX_ENABLE_MOCK")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-}
-
-/// 有绑定手机号时由 startup_sync_tasks 从服务端拉取真实数据
-pub async fn sync_task_cache(db: &Database) {
-    if !mock_enabled() {
-        debug!("生产模式禁用 mock 写入");
-        return;
-    }
-
-    let synced_phones = db
-        .get_setting(crate::constants::setting_key::SYNCED_PHONES)
-        .await
-        .unwrap_or_default();
-    if !synced_phones.is_empty() && synced_phones != "[]" {
-        debug!("已有绑定手机号，跳过 mock 写入（由 startup_sync 拉取）");
-        return;
-    }
-
-    let existing = db.load_all_task_defs().await;
-    if !existing.is_empty() {
-        debug!(count = existing.len(), "DB 已有任务定义，跳过 mock 写入");
-        return;
-    }
-    let defs: Vec<TaskDef> = load_mock_definitions();
-    for def in defs {
-        let payload = serde_json::to_string(&def.cities).unwrap_or_default();
-        db.upsert_task_def(&def.id, &def.name, &payload, 1, "").await;
-    }
-}
-
 /// 从 DB 缓存加载任务定义，合并当前轮次进度，返回 Task 列表
-/// 优先从 a_task_defs 读取，若 DB 为空则 fallback 到 mock
 pub async fn load_tasks(db: &Database) -> Vec<Task> {
     let cached = db.load_all_task_defs().await;
-    let (defs, all_orders): (Vec<TaskDef>, std::collections::HashMap<String, Vec<String>>) =
-        if cached.is_empty() {
-            if mock_enabled() {
-                (load_mock_definitions(), Default::default())
-            } else {
-                debug!("任务缓存为空，生产模式不再回退到 mock");
-                (Vec::new(), Default::default())
-            }
-        } else {
-            let mut defs = Vec::new();
-            let mut orders = std::collections::HashMap::new();
-            for (id, name, payload, city_order) in cached {
-                let def = match parse_task_def_payload(&id, &name, &payload) {
-                    Ok(c) => c,
-                    Err(_) => continue,
-                };
-                if let Some(co) = city_order {
-                    if let Ok(order) = serde_json::from_str::<Vec<String>>(&co) {
-                        orders.insert(id.clone(), order);
-                    }
-                }
-                defs.push(def);
-            }
-            (defs, orders)
+    let mut defs = Vec::new();
+    let mut all_orders: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for (id, name, payload, city_order) in cached {
+        let def = match parse_task_def_payload(&id, &name, &payload) {
+            Ok(c) => c,
+            Err(_) => continue,
         };
+        if let Some(co) = city_order {
+            if let Ok(order) = serde_json::from_str::<Vec<String>>(&co) {
+                all_orders.insert(id.clone(), order);
+            }
+        }
+        defs.push(def);
+    }
 
     // 批量预加载所有数据
     let all_states = db.load_all_task_states().await;
@@ -106,21 +57,11 @@ pub async fn load_tasks(db: &Database) -> Vec<Task> {
     tasks
 }
 
-/// 加载单个任务（优先 DB 缓存，fallback mock）
+/// 从 DB 加载单个任务
 pub async fn load_task_by_id(db: &Database, target_id: &str) -> Option<Task> {
-    if let Some((id, name, payload)) = db.load_task_def_by_id(target_id).await {
-        if let Ok(def) = parse_task_def_payload(&id, &name, &payload) {
-            return Some(build_task(db, def).await);
-        }
-    }
-    if !mock_enabled() {
-        return None;
-    }
-    let defs: Vec<TaskDef> = load_mock_definitions();
-    match defs.into_iter().find(|d| d.id == target_id) {
-        Some(def) => Some(build_task(db, def).await),
-        None => None,
-    }
+    let (id, name, payload) = db.load_task_def_by_id(target_id).await?;
+    let def = parse_task_def_payload(&id, &name, &payload).ok()?;
+    Some(build_task(db, def).await)
 }
 
 fn parse_task_def_payload(
@@ -204,7 +145,7 @@ pub fn derive_presentation_status(status: &str, runtime_status: Option<&str>) ->
     }
 }
 
-/// 内部：从 Mock 定义 + DB 进度 + DB 状态 构建单个 Task
+/// 内部：从任务定义 + DB 进度 + DB 状态 构建单个 Task
 pub async fn build_task(db: &Database, def: TaskDef) -> Task {
     let state = db.load_task_state(&def.id).await;
     let round_id = state.as_ref().and_then(|state| state.current_round_id).unwrap_or(0);
@@ -385,13 +326,3 @@ fn build_task_batched(
     }
 }
 
-/// 从嵌入资源读取 Mock 任务定义（OnceLock 缓存，只解析一次）
-pub fn load_mock_definitions() -> Vec<TaskDef> {
-    use std::sync::OnceLock;
-    static DEFS: OnceLock<Vec<TaskDef>> = OnceLock::new();
-    DEFS.get_or_init(|| {
-        let json = include_str!("../../resources/mock_tasks.json");
-        serde_json::from_str(json).unwrap_or_default()
-    })
-    .clone()
-}

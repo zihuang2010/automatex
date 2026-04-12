@@ -153,6 +153,7 @@ impl MqttManager {
                                     connect_ts = crate::constants::now_unix();
 
                                     // ⚠️ subscribe 必须在独立 task 内执行，避免自我死锁
+                                    // 带指数退避重试，防止订阅失败后静默丢失下行消息
                                     let client_sub = client.clone();
                                     let sub_downstream = mqtt_topic::client_topic(
                                         &config.client_id,
@@ -161,30 +162,39 @@ impl MqttManager {
                                     let sub_broadcast =
                                         mqtt_topic::broadcast_topic(mqtt_topic::BROADCAST_WILDCARD);
                                     let gen_for_sub = my_generation;
+                                    let gen_arc_sub = Arc::clone(&generation_arc);
                                     tokio::spawn(async move {
-                                        if let Err(e) = client_sub
-                                            .subscribe(&sub_downstream, QoS::AtLeastOnce)
-                                            .await
-                                        {
-                                            error!(
-                                                generation = gen_for_sub,
-                                                error = %e,
-                                                "订阅 downstream 失败"
-                                            );
-                                        } else {
-                                            info!(topic = %sub_downstream, "已订阅");
-                                        }
-                                        if let Err(e) = client_sub
-                                            .subscribe(&sub_broadcast, QoS::AtLeastOnce)
-                                            .await
-                                        {
-                                            error!(
-                                                generation = gen_for_sub,
-                                                error = %e,
-                                                "订阅 broadcast 失败"
-                                            );
-                                        } else {
-                                            info!(topic = %sub_broadcast, "已订阅");
+                                        let topics = [sub_downstream, sub_broadcast];
+                                        for topic in &topics {
+                                            let mut ok = false;
+                                            for attempt in 0..5u32 {
+                                                if gen_arc_sub.load(Ordering::SeqCst) != gen_for_sub {
+                                                    return; // 代数已变，放弃
+                                                }
+                                                match client_sub
+                                                    .subscribe(topic.as_str(), QoS::AtLeastOnce)
+                                                    .await
+                                                {
+                                                    Ok(_) => {
+                                                        info!(topic = %topic, "已订阅");
+                                                        ok = true;
+                                                        break;
+                                                    },
+                                                    Err(e) => {
+                                                        let delay = Duration::from_millis(500 * 2u64.pow(attempt));
+                                                        warn!(
+                                                            topic = %topic,
+                                                            attempt = attempt + 1,
+                                                            error = %e,
+                                                            "订阅失败，{:?} 后重试", delay
+                                                        );
+                                                        tokio::time::sleep(delay).await;
+                                                    },
+                                                }
+                                            }
+                                            if !ok {
+                                                error!(topic = %topic, "订阅重试耗尽");
+                                            }
                                         }
                                     });
 

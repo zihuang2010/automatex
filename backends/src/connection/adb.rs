@@ -740,9 +740,12 @@ pub(crate) fn adb_cmd(serial: &str, args: &[&str]) -> Result<String, String> {
 /// 设备震动警告（10次短震）
 ///
 /// 异步 fire-and-forget：spawn 独立 task 执行，不阻塞引擎事件循环。
-/// 震动失败静默忽略（设备可能已离线）。
+/// 震动失败静默忽略（设备可能已离线或不支持震动）。
 ///
 /// 模式：200ms 震 → 150ms 停 × 10 次 ≈ 3.5 秒
+///
+/// 兼容策略：优先 `cmd vibrator vibrate`（Android 8+），
+/// 失败后回退 `service call vibrator`（Android 7 及以下）。
 pub fn vibrate_device_alert(serial: &str) {
     let serial = serial.to_string();
     tokio::spawn(async move {
@@ -750,24 +753,39 @@ pub fn vibrate_device_alert(serial: &str) {
         const PAUSE_MS: u64 = 150;
         const REPEAT: usize = 10;
 
-        for i in 0..REPEAT {
-            // 兼容 Android 8+：优先 cmd vibrator vibrate，回退 service call
-            let result =
-                adb_shell_async(&serial, &format!("cmd vibrator vibrate {}", VIBRATE_MS)).await;
+        // 探测震动方式：首次尝试确定可用命令，后续复用
+        let vibrate_cmd = match probe_vibrate_cmd(&serial, VIBRATE_MS).await {
+            Some(cmd) => cmd,
+            None => {
+                debug!(device = %serial, "设备不支持震动或已离线，跳过警告");
+                return;
+            },
+        };
 
-            if let Err(ref e) = result {
-                // 首次失败时打印日志，后续静默
-                if i == 0 {
-                    debug!(device = %serial, reason = %e, "震动命令失败（设备可能已离线）");
-                }
-                return; // 设备不可达，提前退出避免无意义重试
-            }
-
+        for i in 1..REPEAT {
             if i < REPEAT - 1 {
                 tokio::time::sleep(std::time::Duration::from_millis(PAUSE_MS + VIBRATE_MS)).await;
+            }
+            if adb_shell_async(&serial, &vibrate_cmd).await.is_err() {
+                return; // 设备不可达，提前退出
             }
         }
 
         debug!(device = %serial, count = REPEAT, "震动警告完成");
     });
+}
+
+/// 探测设备可用的震动命令，返回 None 表示不支持
+async fn probe_vibrate_cmd(serial: &str, ms: u64) -> Option<String> {
+    // Android 8+: cmd vibrator vibrate
+    let cmd_vibrator = format!("cmd vibrator vibrate {}", ms);
+    if adb_shell_async(serial, &cmd_vibrator).await.is_ok() {
+        return Some(cmd_vibrator);
+    }
+    // Android 7 及以下: service call vibrator 2 i32 <ms>
+    let service_call = format!("service call vibrator 2 i32 {}", ms);
+    if adb_shell_async(serial, &service_call).await.is_ok() {
+        return Some(service_call);
+    }
+    None
 }

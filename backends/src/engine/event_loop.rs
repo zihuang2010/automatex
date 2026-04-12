@@ -433,6 +433,7 @@ fn remove_runtime(s: &mut EngineState, task_id: &str) -> Option<RunningTaskState
         worker.cancel.cancel();
     }
     clear_task_schedule(&mut runtime);
+    compact_wakeup_heap(s);
     Some(runtime)
 }
 
@@ -813,22 +814,27 @@ async fn dispatch_due_wakeups(s: &mut EngineState) {
         persist_runtime_state(s, &wakeup.task_id).await;
     }
 
-    // Fix-P5：清理僵尸 wakeup（任务 pause/resume/retry 循环产生的过期条目）
-    // 当堆大小远超活跃 runtime 数量时，重建堆以释放无效条目
-    let threshold = s.running.len() * 3 + 10;
-    if s.wakeups.len() > threshold {
-        let valid: Vec<_> = s
-            .wakeups
-            .drain()
-            .filter(|Reverse(w)| {
-                s.running
-                    .get(&w.task_id)
-                    .map(|rt| rt.wakeup_seq == w.wakeup_seq)
-                    .unwrap_or(false)
-            })
-            .collect();
-        s.wakeups.extend(valid);
+    compact_wakeup_heap(s);
+}
+
+/// 清理僵尸 wakeup：任务 pause/resume/retry 循环产生的过期条目。
+/// 当堆大小超出活跃 runtime 数量的合理倍数时，重建堆以释放无效条目。
+fn compact_wakeup_heap(s: &mut EngineState) {
+    let threshold = s.running.len() * 2 + 5;
+    if s.wakeups.len() <= threshold {
+        return;
     }
+    let valid: Vec<_> = s
+        .wakeups
+        .drain()
+        .filter(|Reverse(w)| {
+            s.running
+                .get(&w.task_id)
+                .map(|rt| rt.wakeup_seq == w.wakeup_seq)
+                .unwrap_or(false)
+        })
+        .collect();
+    s.wakeups.extend(valid);
 }
 
 async fn emit_update(s: &mut EngineState) {
@@ -1459,25 +1465,6 @@ async fn handle_batch_done(
         return Ok(());
     }
 
-    // ── Mock 风控（调试用，正式版 MOCK_RISK_ENABLED = false）──
-    if constants::debug::MOCK_RISK_ENABLED {
-        let triggered = {
-            let mut rng = rand::rng();
-            rand::RngExt::random_bool(&mut rng, constants::debug::MOCK_RISK_PROBABILITY)
-        };
-        if triggered {
-            mark_task_error(
-                s,
-                task_id,
-                "设备风控触发，任务已停止，设备已标记".to_string(),
-                true,
-                run_status::STOPPED,
-            )
-            .await;
-            return Ok(());
-        }
-    }
-
     // ── 将本批次完成的关键词应用到内存任务状态 ──
     apply_completed_to_task(task, &completed);
 
@@ -1839,7 +1826,9 @@ async fn handle_phones_unbind(s: &mut EngineState, phones: Vec<String>) -> u32 {
 
     let id_set: HashSet<String> = all_task_ids.iter().cloned().collect();
     s.tasks.retain(|task| !id_set.contains(&task.id));
-    s.storage.batch_cleanup_tasks(&all_task_ids).await;
+    if let Err(e) = s.storage.batch_cleanup_tasks(&all_task_ids).await {
+        error!(error = %e, "批量清理任务失败");
+    }
     all_task_ids.len() as u32
 }
 
@@ -1872,7 +1861,9 @@ async fn handle_task_reload_msg(s: &mut EngineState, action: &str, task_id: Opti
                     let _ = handle_stop(s, task_id).await;
                 }
                 s.tasks.retain(|task| task.id != task_id);
-                s.storage.batch_cleanup_tasks(&[task_id.to_string()]).await;
+                if let Err(e) = s.storage.batch_cleanup_tasks(&[task_id.to_string()]).await {
+                    error!(error = %e, task_id = task_id, "删除任务清理失败");
+                }
                 force_emit(s).await;
             }
         },
@@ -1929,16 +1920,22 @@ async fn merge_single_task(s: &mut EngineState, task_id: &str) {
             local.current_city_name = saved_city;
             local.current_keyword_name = saved_keyword;
 
+            // O(CK) 合并：用 HashMap 索引旧城市/关键词状态，避免 O(C²K²) 嵌套查找
+            let old_city_map: HashMap<_, _> =
+                old_cities.iter().map(|c| (c.name.as_str(), c)).collect();
             for city in &mut local.cities {
-                if let Some(old_city) = old_cities.iter().find(|item| item.name == city.name) {
+                if let Some(old_city) = old_city_map.get(city.name.as_str()) {
                     city.status = old_city.status.clone();
                     city.done = old_city.done;
                     city.progress = old_city.progress;
+                    let old_kw_map: HashMap<&str, &str> = old_city
+                        .keywords
+                        .iter()
+                        .map(|kw| (kw.name.as_str(), kw.status.as_str()))
+                        .collect();
                     for keyword in &mut city.keywords {
-                        if let Some(old_keyword) =
-                            old_city.keywords.iter().find(|item| item.name == keyword.name)
-                        {
-                            keyword.status = old_keyword.status.clone();
+                        if let Some(&status) = old_kw_map.get(keyword.name.as_str()) {
+                            keyword.status = status.to_string();
                         }
                     }
                 }

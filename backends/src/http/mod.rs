@@ -1,18 +1,11 @@
 //! HTTP 客户端模块
 //!
-//! 定义 `ApiClient` trait 和 工厂函数。
-//! - `api_base_url` 为空 → `MockApiClient`（本地模拟）
-//! - `api_base_url` 非空 → `RealApiClient`（reqwest 真实请求）
-//!
+//! 定义 `ApiClient` trait 和 `RealApiClient`（reqwest 真实请求）。
 //! 所有业务代码依赖 `dyn ApiClient`，切换实现无需修改调用方。
 
-mod disabled;
-mod mock;
 mod real;
 pub mod types;
 
-pub use disabled::DisabledApiClient;
-pub use mock::MockApiClient;
 pub use real::RealApiClient;
 pub use types::*;
 

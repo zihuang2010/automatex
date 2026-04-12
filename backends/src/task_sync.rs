@@ -96,7 +96,9 @@ pub(crate) async fn merge_batch_task_items(
 
     if !stale_ids.is_empty() {
         info!(count = stale_ids.len(), stale_ids = ?stale_ids, "清理本地过期任务");
-        db.batch_cleanup_tasks(&stale_ids).await;
+        if let Err(e) = db.batch_cleanup_tasks(&stale_ids).await {
+            tracing::error!(error = %e, "批量清理过期任务失败");
+        }
     }
 
     Ok(items.len())

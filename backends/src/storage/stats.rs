@@ -64,20 +64,13 @@ impl Database {
         conn.interact(move |conn| {
             let now = now_unix();
             let today = today_str();
-            let kw_baseline: i32 = conn
+            let (kw_baseline, city_baseline): (i32, i32) = conn
                 .query_row(
-                    "SELECT COUNT(*) FROM a_task_progress WHERE task_id = ?1 AND round_id = ?2",
+                    "SELECT COUNT(*), COUNT(DISTINCT city_name) FROM a_task_progress WHERE task_id = ?1 AND round_id = ?2",
                     params![task_id, round_id],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
-                .unwrap_or(0);
-            let city_baseline: i32 = conn
-                .query_row(
-                    "SELECT COUNT(DISTINCT city_name) FROM a_task_progress WHERE task_id = ?1 AND round_id = ?2",
-                    params![task_id, round_id],
-                    |row| row.get(0),
-                )
-                .unwrap_or(0);
+                .unwrap_or((0, 0));
             log_exec(
                 conn.execute(
                     "INSERT INTO a_task_runs
@@ -246,15 +239,13 @@ impl Database {
                     "SELECT started_at FROM a_task_runs WHERE task_id = ?1 ORDER BY started_at DESC LIMIT 1",
                     params![task_id], |row| row.get(0),
                 ).ok();
-            let today_runs: i32 = conn
-                .query_row("SELECT COUNT(DISTINCT round_id) FROM a_task_runs WHERE task_id = ?1 AND run_date = ?2",
-                    params![task_id, today], |row| row.get(0)).unwrap_or(0);
-            let today_duration_sec: i64 = conn
-                .query_row("SELECT COALESCE(SUM(duration_sec), 0) FROM a_task_runs WHERE task_id = ?1 AND run_date = ?2",
-                    params![task_id, today], |row| row.get(0)).unwrap_or(0);
-            let today_keywords: i32 = conn
-                .query_row("SELECT COALESCE(SUM(keywords_done), 0) FROM a_task_runs WHERE task_id = ?1 AND run_date = ?2",
-                    params![task_id, today], |row| row.get(0)).unwrap_or(0);
+            let (today_runs, today_duration_sec, today_keywords) = conn
+                .query_row(
+                    "SELECT COUNT(DISTINCT round_id), COALESCE(SUM(duration_sec), 0), COALESCE(SUM(keywords_done), 0)
+                     FROM a_task_runs WHERE task_id = ?1 AND run_date = ?2",
+                    params![task_id, today],
+                    |row| Ok((row.get::<_, i32>(0)?, row.get::<_, i64>(1)?, row.get::<_, i32>(2)?)),
+                ).unwrap_or((0, 0, 0));
             TaskRunStats { last_run_at, today_runs, today_duration_sec, today_keywords }
         }).await.unwrap_or(TaskRunStats { last_run_at: None, today_runs: 0, today_duration_sec: 0, today_keywords: 0 })
     }
