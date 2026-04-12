@@ -168,7 +168,8 @@ impl MqttManager {
                                         for topic in &topics {
                                             let mut ok = false;
                                             for attempt in 0..5u32 {
-                                                if gen_arc_sub.load(Ordering::SeqCst) != gen_for_sub {
+                                                if gen_arc_sub.load(Ordering::SeqCst) != gen_for_sub
+                                                {
                                                     return; // 代数已变，放弃
                                                 }
                                                 match client_sub
@@ -181,7 +182,9 @@ impl MqttManager {
                                                         break;
                                                     },
                                                     Err(e) => {
-                                                        let delay = Duration::from_millis(500 * 2u64.pow(attempt));
+                                                        let delay = Duration::from_millis(
+                                                            500 * 2u64.pow(attempt),
+                                                        );
                                                         warn!(
                                                             topic = %topic,
                                                             attempt = attempt + 1,

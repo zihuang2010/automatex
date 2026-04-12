@@ -325,4 +325,3 @@ fn build_task_batched(
         next_round_at: saved_next_round_at,
     }
 }
-
