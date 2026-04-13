@@ -101,22 +101,22 @@ function ensureSkeleton(mid: HTMLElement): boolean {
     <div id="tv-header" class="shrink-0"></div>
     <div id="tv-metrics" class="shrink-0"></div>
     <div class="flex-1 bg-white rounded-md border border-s200 shadow-sm overflow-hidden flex flex-col min-h-0">
-      <div class="px-4 pt-3 pb-0 shrink-0 border-b border-s100">
-        <div id="tv-city-header" class="flex items-center justify-between mb-2.5"></div>
-        <div id="tv-cities" class="flex gap-2 overflow-x-auto pb-3 scrollbar-hide"></div>
+      <div class="px-3.5 pt-2 pb-0 shrink-0 border-b border-s100">
+        <div id="tv-city-header" class="flex items-center justify-between mb-1.5"></div>
+        <div id="tv-cities" class="flex gap-1.5 overflow-x-auto pb-2 scrollbar-hide"></div>
       </div>
       <div id="tv-kw-body" class="flex-1 flex flex-col min-h-0 overflow-hidden">
-        <div class="px-4 pt-3 pb-2 shrink-0">
+        <div class="px-3.5 pt-2 pb-1.5 shrink-0">
           <div id="tv-kw-info" class="flex items-center justify-between"></div>
         </div>
-        <div id="tv-kw-grid-wrap" class="flex-1 overflow-y-auto px-4 pb-4">
-          <div id="tv-kw-grid" class="flex flex-wrap gap-2"></div>
+        <div id="tv-kw-grid-wrap" class="flex-1 overflow-y-auto px-3.5 pb-3">
+          <div id="tv-kw-grid" class="flex flex-wrap gap-1.5"></div>
         </div>
         <div id="tv-kw-detail-wrap" class="hidden flex-1 flex min-h-0 overflow-hidden">
-          <div id="tv-kw-list-wrap" class="w-[240px] shrink-0 overflow-y-auto border-r border-s100 px-3 pb-3">
+          <div id="tv-kw-list-wrap" class="w-[220px] shrink-0 overflow-y-auto border-r border-s100 px-2.5 pb-2.5">
             <div id="tv-kw-list"></div>
           </div>
-          <div id="tv-kw-results-wrap" class="flex-1 flex flex-col overflow-y-auto px-4 pb-4">
+          <div id="tv-kw-results-wrap" class="flex-1 flex flex-col overflow-y-auto px-3.5 pb-3">
             <div id="tv-kw-results" class="flex-1 flex flex-col"></div>
           </div>
         </div>
@@ -222,11 +222,11 @@ export async function renderTaskView() {
   // ── City Header ──
   const citiesDone = task.cities.filter((c: TaskCity) => c.status === CityStatus.DONE).length;
   const cityHeaderHtml = `
-    <div class="flex items-center gap-2">
-      <span class="material-symbols-outlined icon-sm text-blue-400">location_city</span>
-      <span class="text-[11px] font-black text-s500 uppercase tracking-tight">覆盖城市</span>
+    <div class="flex items-center gap-1.5">
+      <span class="material-symbols-outlined icon-xs text-sky-400">location_city</span>
+      <span class="text-[10px] font-black text-s500 uppercase tracking-tight">覆盖城市</span>
     </div>
-    <span class="text-[11px] font-bold text-s400">${citiesDone}/${task.cities.length} 已完成</span>`;
+    <span class="text-[10px] font-bold text-s400 font-mono">${citiesDone}/${task.cities.length} 已完成</span>`;
   // city header 直接内联更新，不做 prev 缓存（轻量）
   const cityHeaderEl = document.getElementById('tv-city-header');
   if (cityHeaderEl) cityHeaderEl.innerHTML = cityHeaderHtml;
@@ -239,13 +239,13 @@ export async function renderTaskView() {
   // ── Keywords Info Bar ──
   const kwInfoHtml = `
     <div class="flex items-center gap-1.5">
-      <span class="material-symbols-outlined icon-sm text-blue-400 fill-1">sell</span>
-      <span class="text-[11px] font-black text-s500 uppercase tracking-tight">关键词</span>
-      <span class="px-1.5 py-0.5 bg-s100 text-s500 rounded text-[10px] font-bold">${city.done}/${city.total}</span>
+      <span class="material-symbols-outlined icon-xs text-sky-400 fill-1">sell</span>
+      <span class="text-[10px] font-black text-s500 uppercase tracking-tight">关键词</span>
+      <span class="px-1.5 py-0.5 bg-s100 text-s500 rounded text-[10px] font-bold font-mono">${city.done}/${city.total}</span>
     </div>
     <div class="relative">
-      <input class="w-40 pl-9 pr-2 py-1 bg-s50 border border-s200 rounded text-[11px] focus:ring-1 focus:ring-blue-200 focus:border-blue-400 focus:bg-white outline-none transition-all placeholder:text-s300" placeholder="搜索..." type="text" id="kw-filter-input" oninput="window.__filterKw(this.value)" />
-      <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-s300 text-xs">search</span>
+      <input class="w-36 pl-7 pr-2 py-1 bg-s50 border border-s200 rounded text-[11px] focus:ring-1 focus:ring-sky-200 focus:border-sky-400 focus:bg-white outline-none transition-all placeholder:text-s300" placeholder="搜索关键词..." type="text" id="kw-filter-input" oninput="window.__filterKw(this.value)" />
+      <span class="material-symbols-outlined absolute left-2 top-1/2 -translate-y-1/2 text-s300" style="font-size:14px">search</span>
     </div>`;
 
   // 保留搜索框的值和焦点
@@ -469,6 +469,9 @@ async function buildMetrics(task: {
   const kwTotal = task.cities.reduce((s: number, c: TaskCity) => s + c.total, 0);
   const kwDone = task.cities.reduce((s: number, c: TaskCity) => s + c.done, 0);
   const pctDone = kwTotal > 0 ? Math.round((kwDone / kwTotal) * 100) : 0;
+  const citiesTotal = task.cities.length;
+  const citiesDone = task.cities.filter((c: TaskCity) => c.status === CityStatus.DONE).length;
+  const cityPct = citiesTotal > 0 ? Math.round((citiesDone / citiesTotal) * 100) : 0;
 
   let lastRunLabel = '--';
   let todayRuns = 0;
@@ -499,40 +502,51 @@ async function buildMetrics(task: {
     todayDurationSec > 60 ? Math.round((todayKeywords / todayDurationSec) * 3600) : 0;
 
   return `
-    <div class="grid grid-cols-4 gap-2.5 mb-4">
-      <div class="bg-emerald-50 rounded-md border border-emerald-200 p-3">
-        <div class="flex items-center justify-between mb-1.5">
-          <span class="material-symbols-outlined icon-sm text-emerald-500">check_circle</span>
-          <span class="text-[11px] font-black text-emerald-600 font-mono">${pctDone}%</span>
+    <div class="grid grid-cols-5 gap-2 mb-3">
+      <div class="bg-emerald-50/50 rounded-md border border-emerald-100 p-2.5">
+        <div class="flex items-center justify-between mb-1">
+          <span class="material-symbols-outlined icon-xs text-emerald-400">check_circle</span>
+          <span class="text-[10px] font-black text-emerald-600 font-mono">${pctDone}%</span>
         </div>
-        <div class="text-[13px] font-bold text-s800 font-mono">${kwDone} <span class="text-s400">/ ${kwTotal}</span></div>
-        <div class="text-[11px] text-s500 font-bold uppercase mt-1">完成进度</div>
-        <div class="w-full h-2 bg-emerald-100 rounded-full overflow-hidden mt-1.5">
+        <div class="text-[12px] font-bold text-s800 truncate">${kwDone} <span class="text-s400">/ ${kwTotal}</span></div>
+        <div class="text-[9px] text-s500 font-bold uppercase mt-0.5 tracking-tight">完成进度</div>
+        <div class="w-full h-1.5 bg-emerald-100 rounded-full overflow-hidden mt-1">
           <div class="h-full bg-emerald-500 rounded-full transition-all" style="width:${pctDone}%"></div>
         </div>
       </div>
-      <div class="bg-blue-50 rounded-md border border-blue-200 p-3">
-        <div class="flex items-center justify-between mb-1.5">
-          <span class="material-symbols-outlined icon-sm text-blue-500">trending_up</span>
-          <span class="text-[11px] font-black text-blue-600 font-mono">${ratePerHour > 0 ? `${ratePerHour}/h` : '--'}</span>
+      <div class="bg-teal-50/50 rounded-md border border-teal-100 p-2.5">
+        <div class="flex items-center justify-between mb-1">
+          <span class="material-symbols-outlined icon-xs text-teal-400">location_city</span>
+          <span class="text-[10px] font-black text-teal-600 font-mono">${cityPct}%</span>
         </div>
-        <div class="text-[13px] font-bold text-s800 font-mono">${todayKeywords} <span class="text-s400 font-sans">词</span></div>
-        <div class="text-[11px] text-s500 font-bold uppercase mt-1">今日采集</div>
+        <div class="text-[12px] font-bold text-s800 truncate">${citiesDone} <span class="text-s400">/ ${citiesTotal}</span></div>
+        <div class="text-[9px] text-s500 font-bold uppercase mt-0.5 tracking-tight">覆盖城市</div>
+        <div class="w-full h-1.5 bg-teal-100 rounded-full overflow-hidden mt-1">
+          <div class="h-full bg-teal-500 rounded-full transition-all" style="width:${cityPct}%"></div>
+        </div>
       </div>
-      <div class="bg-violet-50 rounded-md border border-violet-200 p-3">
-        <div class="flex items-center justify-between mb-1.5">
-          <span class="material-symbols-outlined icon-sm text-violet-500">timer</span>
-          <span class="text-[11px] font-black text-violet-600 font-mono">${todayRuns} 次</span>
+      <div class="bg-sky-50/50 rounded-md border border-sky-100 p-2.5">
+        <div class="flex items-center justify-between mb-1">
+          <span class="material-symbols-outlined icon-xs text-sky-400">trending_up</span>
+          <span class="text-[10px] font-black text-sky-600 font-mono">${ratePerHour > 0 ? `${ratePerHour}/h` : '--'}</span>
         </div>
-        <div class="text-[13px] font-bold text-s800 font-mono">${durationLabel}</div>
-        <div class="text-[11px] text-s500 font-bold uppercase mt-1">今日时长</div>
+        <div class="text-[12px] font-bold text-s800 truncate">${todayKeywords} <span class="text-s400">词</span></div>
+        <div class="text-[9px] text-s500 font-bold uppercase mt-0.5 tracking-tight">今日采集</div>
       </div>
-      <div class="bg-s100 rounded-md border border-s200 p-3">
-        <div class="flex items-center justify-between mb-1.5">
-          <span class="material-symbols-outlined icon-sm text-s500">schedule</span>
+      <div class="bg-indigo-50/50 rounded-md border border-indigo-100 p-2.5">
+        <div class="flex items-center justify-between mb-1">
+          <span class="material-symbols-outlined icon-xs text-indigo-400">timer</span>
+          <span class="text-[10px] font-black text-indigo-600 font-mono">${todayRuns} 次</span>
         </div>
-        <div class="text-[13px] font-bold text-s800 font-mono">${lastRunLabel}</div>
-        <div class="text-[11px] text-s500 font-bold uppercase mt-1">上次执行</div>
+        <div class="text-[12px] font-bold text-s800 truncate">${durationLabel}</div>
+        <div class="text-[9px] text-s500 font-bold uppercase mt-0.5 tracking-tight">今日时长</div>
+      </div>
+      <div class="bg-violet-50/50 rounded-md border border-violet-100 p-2.5">
+        <div class="flex items-center justify-between mb-1">
+          <span class="material-symbols-outlined icon-xs text-violet-400">schedule</span>
+        </div>
+        <div class="text-[12px] font-bold text-s800 truncate">${lastRunLabel}</div>
+        <div class="text-[9px] text-s500 font-bold uppercase mt-0.5 tracking-tight">上次执行</div>
       </div>
     </div>`;
 }
@@ -545,69 +559,69 @@ function buildCityCards(task: { cities: TaskCity[] }): string {
       const isExecuting = c.status === CityStatus.ACTIVE;
       const borderCls = isSelected
         ? isExecuting
-          ? 'border-2 border-blue-500 shadow-md'
-          : 'border-2 border-green-400 shadow-md'
+          ? 'border-2 border-sky-500 shadow-sm'
+          : 'border-2 border-emerald-400 shadow-sm'
         : 'border border-s200';
       const statusIcon =
         c.status === CityStatus.DONE
-          ? '<span class="material-symbols-outlined text-green-500 icon-sm fill-1">check_circle</span>'
+          ? '<span class="material-symbols-outlined text-emerald-500 icon-xs fill-1 shrink-0">check_circle</span>'
           : c.status === CityStatus.ACTIVE
-            ? '<div class="h-1.5 w-1.5 rounded-full bg-blue-500"></div>'
-            : '<span class="material-symbols-outlined text-s300 icon-sm">schedule</span>';
+            ? '<div class="h-1.5 w-1.5 rounded-full bg-sky-500 shrink-0 animate-pulse"></div>'
+            : '<span class="material-symbols-outlined text-s300 icon-xs shrink-0">schedule</span>';
       const nameWeight = isSelected ? 'font-bold text-s900' : 'font-semibold text-s500';
       const barBg =
         c.status === CityStatus.DONE
-          ? 'bg-green-50'
+          ? 'bg-emerald-100/70'
           : c.status === CityStatus.ACTIVE
-            ? 'bg-s100'
-            : 'bg-s50';
+            ? 'bg-sky-100/70'
+            : 'bg-s100';
       const barFill =
         c.status === CityStatus.DONE
-          ? 'bg-green-500'
+          ? 'bg-emerald-500'
           : c.status === CityStatus.ACTIVE
-            ? 'bg-blue-500'
-            : 'bg-s200';
+            ? 'bg-sky-500'
+            : 'bg-s300';
       const pct = c.status === CityStatus.DONE ? 100 : c.progress;
       const statsLabel =
         c.status === CityStatus.DONE
-          ? '<span class="text-[11px] text-s400 font-bold uppercase">已完成</span>'
+          ? '<span class="text-[10px] text-s400 font-bold uppercase tracking-tight">已完成</span>'
           : c.status === CityStatus.ACTIVE
-            ? `<span class="text-[11px] text-s400 font-bold uppercase">${c.done}/${c.total} 关键词</span>`
-            : '<span class="text-[11px] text-s400 font-bold uppercase">等待中</span>';
+            ? `<span class="text-[10px] text-s400 font-bold uppercase tracking-tight">${c.done}/${c.total} 词</span>`
+            : '<span class="text-[10px] text-s400 font-bold uppercase tracking-tight">等待中</span>';
       const pctLabel =
         c.status === CityStatus.DONE
-          ? '<span class="text-[11px] font-black text-green-600 font-mono">100%</span>'
+          ? '<span class="text-[10px] font-black text-emerald-600 font-mono">100%</span>'
           : c.status === CityStatus.ACTIVE
-            ? `<span class="text-[11px] font-black text-blue-600 font-mono">${c.progress}%</span>`
+            ? `<span class="text-[10px] font-black text-sky-600 font-mono">${c.progress}%</span>`
             : '';
       const cardBg =
         c.status === CityStatus.DONE
-          ? 'bg-green-50/50'
+          ? 'bg-emerald-50/60'
           : c.status === CityStatus.ACTIVE
-            ? 'bg-blue-50/40'
-            : 'bg-s50/50';
+            ? 'bg-sky-50/50'
+            : 'bg-s50/60';
       // DEAD-2 修复：移除永远为空字符串的 dragAttr 变量
       const dragCls = isPending ? 'city-draggable' : '';
       const dragHandle = isPending
-        ? '<span class="material-symbols-outlined text-s300 text-sm cursor-grab city-drag-handle">drag_indicator</span>'
+        ? '<span class="material-symbols-outlined text-s300 text-xs cursor-grab city-drag-handle">drag_indicator</span>'
         : '';
       return `
-      <div class="city-card ${cardBg} rounded-md ${borderCls} p-3 cursor-pointer ${!isSelected ? 'hover:bg-s50' : ''} transition-all relative overflow-hidden ${dragCls}" style="width:220px;min-width:220px;flex-shrink:0" data-city-name="${esc(c.name)}" data-city-idx="${i}" onclick="window.__switchCity(${i})">
-        <div class="flex items-center justify-between mb-2">
-          <div class="flex items-center space-x-2">
+      <div class="city-card ${cardBg} rounded-md ${borderCls} px-2.5 py-2 cursor-pointer ${!isSelected ? 'hover:bg-s50' : ''} transition-all relative overflow-hidden ${dragCls}" style="width:182px;min-width:182px;flex-shrink:0" data-city-name="${esc(c.name)}" data-city-idx="${i}" onclick="window.__switchCity(${i})">
+        <div class="flex items-center justify-between mb-1.5">
+          <div class="flex items-center gap-1.5 min-w-0">
             ${dragHandle}
-            <span class="material-symbols-outlined icon-sm text-blue-400">location_city</span>
-            <span class="text-[13px] ${nameWeight}">${c.name}</span>
+            <span class="material-symbols-outlined icon-xs text-sky-400 shrink-0">location_city</span>
+            <span class="text-[12px] ${nameWeight} truncate">${c.name}</span>
           </div>
           ${statusIcon}
         </div>
-        <div class="text-[10px] text-s500 truncate mb-2" title="${c.poi}">
+        <div class="text-[10px] font-medium text-s500 truncate mb-1.5" title="${c.poi}">
           <span class="material-symbols-outlined icon-xs text-s300 align-middle mr-0.5">location_on</span>${c.poi}
         </div>
-        <div class="w-full h-2 ${barBg} rounded-full overflow-hidden">
+        <div class="w-full h-1 ${barBg} rounded-full overflow-hidden">
           <div class="h-full ${barFill} rounded-full" style="width: ${pct}%"></div>
         </div>
-        <div class="flex justify-between mt-2">
+        <div class="flex justify-between items-center mt-1.5">
           ${statsLabel}
           ${pctLabel}
         </div>
@@ -722,11 +736,24 @@ function closeKwResultsPanel() {
 }
 
 function buildResultItem(r: ResultRow, i: number): string {
-  return `<div class="flex items-start gap-1.5 px-2 py-2 rounded-md bg-white border border-s100 hover:border-s200 transition-all">
-    <span class="inline-flex items-center justify-center w-4 h-4 rounded bg-s100 text-[9px] font-black text-s600 font-mono mt-0.5 shrink-0 leading-none">${i + 1}</span>
+  const isHighlight = r.shop_name.includes('匠多多');
+  const wrapCls = isHighlight
+    ? 'flex items-start gap-1.5 px-2 py-2 rounded-md bg-rose-50 border border-rose-300 shadow-sm ring-1 ring-rose-200/60 transition-all'
+    : 'flex items-start gap-1.5 px-2 py-2 rounded-md bg-white border border-s100 hover:border-s200 transition-all';
+  const idxCls = isHighlight
+    ? 'inline-flex items-center justify-center w-4 h-4 rounded bg-rose-500 text-[9px] font-black text-white font-mono mt-0.5 shrink-0 leading-none'
+    : 'inline-flex items-center justify-center w-4 h-4 rounded bg-s100 text-[9px] font-black text-s600 font-mono mt-0.5 shrink-0 leading-none';
+  const nameCls = isHighlight
+    ? 'text-[11px] font-bold text-rose-700 leading-tight truncate'
+    : 'text-[11px] font-semibold text-s800 leading-tight truncate';
+  const timeCls = isHighlight
+    ? 'text-[10px] text-rose-400 mt-0.5 font-mono leading-none'
+    : 'text-[10px] text-s400 mt-0.5 font-mono leading-none';
+  return `<div class="${wrapCls}">
+    <span class="${idxCls}">${i + 1}</span>
     <div class="min-w-0 flex-1">
-      <div class="text-[11px] font-semibold text-s800 leading-tight truncate" title="${esc(r.shop_name)}">${esc(r.shop_name)}</div>
-      ${r.captured_at ? `<div class="text-[10px] text-s400 mt-0.5 font-mono leading-none">${esc(r.captured_at)}</div>` : ''}
+      <div class="${nameCls}" title="${esc(r.shop_name)}">${esc(r.shop_name)}</div>
+      ${r.captured_at ? `<div class="${timeCls}">${esc(r.captured_at)}</div>` : ''}
     </div>
   </div>`;
 }
