@@ -64,10 +64,13 @@ window.addEventListener('beforeunload', () => {
 /* ===== Theme Toggle ===== */
 
 function initTheme() {
-  // 先从 localStorage 快速应用（避免开屏期间白屏闪烁）
+  // 启动默认：浅色主题；只有在 localStorage 明确保存为 'dark' 时才预加深色
+  // （避免开屏期间白屏闪烁），否则一律以浅色开屏
   const saved = localStorage.getItem('theme');
   if (saved === 'dark') {
     document.documentElement.classList.add('dark');
+  } else {
+    document.documentElement.classList.remove('dark');
   }
 
   // 异步从数据库读取真实主题设置并同步（同时预加载账号计数避免显示延迟）
@@ -347,15 +350,31 @@ function initAccountPanel() {
     target.classList.add('opacity-50');
 
     try {
-      const syncResult = await invoke<{ tasks?: number; phones?: number }>('unbind_phone', {
-        phone: phoneToRemove,
+      // 本地预计算剩余手机号（避免依赖网络）
+      const currentPhones = await getSyncedPhones();
+      const remaining = currentPhones.filter(p => p !== phoneToRemove);
+
+      if (remaining.length === 0) {
+        // 最后一个账号 → sync_tasks_by_phones([], force: true) 走后端本地清理分支（无 HTTP），
+        // 直接跳转到同步过渡页，允许离线场景正常工作
+        await invoke('sync_tasks_by_phones', { phones: [], force: true });
+        showToast(`已移除账号 ${masked}`, 'info');
+        await Promise.all([refreshAccountList(), fullRefresh()]);
+        openPhoneBindPage('startup').catch(console.error);
+        return;
+      }
+
+      // 非最后账号 → 用剩余号码重新同步（后端 sync_tasks_by_phones 会自动清理被移除的号码）
+      const syncResult = await invoke<{ tasks?: number }>('sync_tasks_by_phones', {
+        phones: remaining,
+        force: true,
       });
 
       showToast(`已移除账号 ${masked}`, 'info');
       await Promise.all([refreshAccountList(), fullRefresh()]);
 
       if ((syncResult.tasks ?? 0) === 0) {
-        openPhoneBindPage(syncResult.phones === 0 ? 'startup' : 'empty-tasks').catch(console.error);
+        openPhoneBindPage('empty-tasks').catch(console.error);
       }
     } catch (err) {
       showToast(`移除失败: ${err}`, 'error');
@@ -533,6 +552,16 @@ window.addEventListener('DOMContentLoaded', () => {
     $('#btn-mac-close')?.addEventListener('click', () => appWindow.close());
     $('#btn-mac-minimize')?.addEventListener('click', () => appWindow.minimize());
     $('#btn-mac-maximize')?.addEventListener('click', () => appWindow.toggleMaximize());
+
+    // 过渡页 macOS 交通灯
+    const transMacControls = document.getElementById('transition-mac-controls');
+    if (transMacControls) {
+      transMacControls.classList.remove('hidden');
+      transMacControls.classList.add('flex');
+    }
+    $('#btn-transition-mac-close')?.addEventListener('click', () => appWindow.close());
+    $('#btn-transition-mac-minimize')?.addEventListener('click', () => appWindow.minimize());
+    $('#btn-transition-mac-maximize')?.addEventListener('click', () => appWindow.toggleMaximize());
   } else if (currentPlatform === 'windows') {
     // Windows: 显示方块按钮
     const winControls = document.getElementById('window-controls');
@@ -540,6 +569,14 @@ window.addEventListener('DOMContentLoaded', () => {
       winControls.classList.remove('hidden');
       winControls.classList.add('flex');
     }
+
+    // 过渡页 Windows 关闭按钮
+    const transWinClose = document.getElementById('btn-transition-win-close');
+    if (transWinClose) {
+      transWinClose.classList.remove('hidden');
+      transWinClose.classList.add('flex');
+    }
+    $('#btn-transition-win-close')?.addEventListener('click', () => appWindow.close());
     // Windows 调整顶部 padding
     const header = document.querySelector('header');
     if (header) {

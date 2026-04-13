@@ -5,7 +5,6 @@
  * 在开屏动画结束后显示，让用户输入手机号并开始同步任务。
  */
 import { invoke } from '@tauri-apps/api/core';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import { $ } from './utils';
 
@@ -103,7 +102,6 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
     const submitTextEl = el.querySelector('#transition-submit-text') as HTMLElement | null;
     const resetBtn = el.querySelector('#btn-sync-reset') as HTMLButtonElement | null;
     const submitBtn = el.querySelector('#btn-sync-start') as HTMLButtonElement | null;
-    const closeBtn = el.querySelector('#btn-transition-close') as HTMLButtonElement | null;
     const initialPhones = options.prefillPhones ?? [];
     const forceSync = options.forceSync ?? false;
     const conflictDetails = options.conflictDetails ?? [];
@@ -137,22 +135,23 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
     });
 
     // 更新手机号计数
+    // 注意：背景/边框用 s* 语义 token（随主题自动切换），
+    //      着色态用 500/10 半透明叠层，在浅/深色底都有良好对比度
     function updateCounter() {
       const phones = parsePhones(textarea.value);
       const valid = phones.filter(isValidPhone);
       const invalid = phones.length - valid.length;
+      const base =
+        'absolute bottom-3 right-3 text-[10px] font-mono px-2 py-0.5 rounded border backdrop-blur-sm';
       if (phones.length === 0) {
         counterEl.textContent = '建议一次不超过 50 个';
-        counterEl.className =
-          'absolute bottom-3 right-3 text-[10px] text-s400 font-mono bg-white/80 dark:bg-s800/80 px-2 py-0.5 rounded border border-s100 dark:border-s700';
+        counterEl.className = `${base} text-s500 bg-s100/80 border-s200`;
       } else if (invalid > 0) {
         counterEl.textContent = `${valid.length} 个有效 / ${invalid} 个无效`;
-        counterEl.className =
-          'absolute bottom-3 right-3 text-[10px] text-orange-500 font-mono bg-white/80 dark:bg-s800/80 px-2 py-0.5 rounded border border-orange-200 dark:border-orange-800';
+        counterEl.className = `${base} text-orange-500 bg-orange-500/10 border-orange-400/30`;
       } else {
         counterEl.textContent = `${valid.length} 个号码`;
-        counterEl.className =
-          'absolute bottom-3 right-3 text-[10px] text-green-600 font-mono bg-white/80 dark:bg-s800/80 px-2 py-0.5 rounded border border-green-200 dark:border-green-800';
+        counterEl.className = `${base} text-emerald-600 bg-emerald-500/10 border-emerald-400/30`;
       }
     }
 
@@ -184,7 +183,6 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
       textarea.removeEventListener('input', onInput);
       submitBtn?.removeEventListener('click', onSubmit);
       resetBtn?.removeEventListener('click', onReset);
-      closeBtn?.removeEventListener('click', onClose);
     }
 
     activePhoneBindCleanup = cleanup;
@@ -192,10 +190,6 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
     const onInput = () => {
       hideError();
       updateCounter();
-    };
-
-    const onClose = () => {
-      getCurrentWindow().close();
     };
 
     const onReset = () => {
@@ -266,7 +260,6 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
     textarea.addEventListener('input', onInput);
     submitBtn?.addEventListener('click', onSubmit);
     resetBtn?.addEventListener('click', onReset);
-    closeBtn?.addEventListener('click', onClose);
     updateCounter();
     textarea.focus();
   });

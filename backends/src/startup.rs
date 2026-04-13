@@ -44,14 +44,19 @@ pub(crate) async fn ensure_mqtt_defaults(db: &storage::Database) {
     let port = mqtt_default::port();
     let username = mqtt_default::username();
     let password = mqtt_default::password();
+    // 默认指向开发代理；生产上线请通过环境变量 AUTOMATEX_API_BASE_URL 覆盖，
+    // 或在打包前修改此处的 fallback 值为生产端点。
     let api_base = std::env::var("AUTOMATEX_API_BASE_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
+        .unwrap_or_else(|_| "https://proxy-dev.jdd51.com/edge-app".to_string());
+    // 主题默认：浅色（light）
+    let theme_default = "light";
     let defaults: &[(&str, &str)] = &[
         (setting_key::MQTT_HOST, host),
         (setting_key::MQTT_PORT, port),
         (setting_key::MQTT_USERNAME, username),
         (setting_key::MQTT_PASSWORD, password),
         (setting_key::API_BASE_URL, &api_base),
+        (setting_key::THEME, theme_default),
     ];
     let existing = db.get_all_settings().await;
     for (key, default_val) in defaults {

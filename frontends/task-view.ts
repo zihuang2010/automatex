@@ -521,9 +521,6 @@ async function buildMetrics(task: {
         </div>
         <div class="text-[12px] font-bold text-s800 truncate">${citiesDone} <span class="text-s400">/ ${citiesTotal}</span></div>
         <div class="text-[9px] text-s500 font-bold uppercase mt-0.5 tracking-tight">覆盖城市</div>
-        <div class="w-full h-1.5 bg-teal-100 rounded-full overflow-hidden mt-1">
-          <div class="h-full bg-teal-500 rounded-full transition-all" style="width:${cityPct}%"></div>
-        </div>
       </div>
       <div class="bg-sky-50/50 rounded-md border border-sky-100 p-2.5">
         <div class="flex items-center justify-between mb-1">

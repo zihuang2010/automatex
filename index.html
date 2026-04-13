@@ -254,6 +254,96 @@
 
       <!-- ===== 任务同步过渡页 ===== -->
       <div class="transition-page" id="transition" style="display: none">
+        <!-- macOS 交通灯控件（左上角，仅 macOS 显示，由 main.ts 按平台切换） -->
+        <div
+          id="transition-mac-controls"
+          class="absolute top-4 left-4 z-50 hidden items-center gap-2"
+        >
+          <button
+            id="btn-transition-mac-close"
+            class="group flex h-3 w-3 cursor-pointer items-center justify-center rounded-full border-none bg-[#ff5f57] transition-all hover:brightness-90"
+            title="关闭"
+          >
+            <svg
+              class="h-1.5 w-1.5 opacity-0 transition-opacity group-hover:opacity-100"
+              viewBox="0 0 6 6"
+            >
+              <line
+                x1="0.5"
+                y1="0.5"
+                x2="5.5"
+                y2="5.5"
+                stroke="#4a0002"
+                stroke-width="1.2"
+                stroke-linecap="round"
+              />
+              <line
+                x1="5.5"
+                y1="0.5"
+                x2="0.5"
+                y2="5.5"
+                stroke="#4a0002"
+                stroke-width="1.2"
+                stroke-linecap="round"
+              />
+            </svg>
+          </button>
+          <button
+            id="btn-transition-mac-minimize"
+            class="group flex h-3 w-3 cursor-pointer items-center justify-center rounded-full border-none bg-[#febc2e] transition-all hover:brightness-90"
+            title="最小化"
+          >
+            <svg
+              class="h-1.5 w-1.5 opacity-0 transition-opacity group-hover:opacity-100"
+              viewBox="0 0 6 6"
+            >
+              <line
+                x1="0.5"
+                y1="3"
+                x2="5.5"
+                y2="3"
+                stroke="#995700"
+                stroke-width="1.2"
+                stroke-linecap="round"
+              />
+            </svg>
+          </button>
+          <button
+            id="btn-transition-mac-maximize"
+            class="group flex h-3 w-3 cursor-pointer items-center justify-center rounded-full border-none bg-[#28c840] transition-all hover:brightness-90"
+            title="最大化"
+          >
+            <svg
+              class="h-1.5 w-1.5 opacity-0 transition-opacity group-hover:opacity-100"
+              viewBox="0 0 6 6"
+            >
+              <polyline
+                points="1,3.5 3,1 5,3.5"
+                fill="none"
+                stroke="#006500"
+                stroke-width="1.2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+              <polyline
+                points="1,2.5 3,5 5,2.5"
+                fill="none"
+                stroke="#006500"
+                stroke-width="1.2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+        </div>
+        <!-- Windows 关闭按钮（右上角，仅 Windows 显示） -->
+        <button
+          id="btn-transition-win-close"
+          class="text-s400 hover:bg-s100 hover:text-s600 absolute top-4 right-4 z-50 hidden h-8 w-8 cursor-pointer items-center justify-center rounded-lg border-none bg-white/60 backdrop-blur transition-all"
+          title="关闭应用"
+        >
+          <span class="material-symbols-outlined text-lg">close</span>
+        </button>
         <!-- 主卡片 -->
         <div
           class="border-s200 w-full max-w-2xl overflow-hidden rounded-2xl border bg-white shadow-xl"
@@ -335,32 +425,23 @@
           </div>
 
           <!-- 标题区 -->
-          <div class="flex items-center justify-between px-8 pt-8 pb-4">
-            <div class="flex items-center gap-3">
-              <div
-                class="bg-blue/10 text-blue flex h-10 w-10 items-center justify-center rounded-full"
-              >
-                <span class="material-symbols-outlined">sync_alt</span>
-              </div>
-              <div>
-                <h2
-                  id="transition-title"
-                  class="text-s800 font-mono text-xl font-bold tracking-tight"
-                >
-                  任务同步过渡
-                </h2>
-                <p id="transition-subtitle" class="text-s400 text-sm tracking-wide">
-                  正在进入多端任务检索流程
-                </p>
-              </div>
-            </div>
-            <button
-              id="btn-transition-close"
-              class="text-s400 hover:bg-s100 hover:text-s600 flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg border-none bg-transparent transition-all"
-              title="关闭应用"
+          <div class="flex items-center gap-3 px-8 pt-8 pb-4">
+            <div
+              class="bg-blue/10 text-blue flex h-10 w-10 items-center justify-center rounded-full"
             >
-              <span class="material-symbols-outlined text-lg">close</span>
-            </button>
+              <span class="material-symbols-outlined">sync_alt</span>
+            </div>
+            <div>
+              <h2
+                id="transition-title"
+                class="text-s800 font-mono text-xl font-bold tracking-tight"
+              >
+                任务同步过渡
+              </h2>
+              <p id="transition-subtitle" class="text-s400 text-sm font-medium tracking-wide">
+                正在进入多端任务检索流程
+              </p>
+            </div>
           </div>
 
           <!-- 分隔线 -->
@@ -387,14 +468,14 @@
                 </label>
                 <div class="group relative">
                   <textarea
-                    class="bg-s50 border-s200 focus:ring-blue/20 focus:border-blue text-s800 placeholder:text-s400 w-full resize-none rounded-xl border px-4 py-3 transition-all focus:ring-2"
+                    class="bg-s50 border-s200 focus:ring-blue/20 focus:border-blue text-s800 placeholder:text-s400 w-full resize-none rounded-xl border px-4 py-3 font-medium transition-all focus:ring-2"
                     id="phone-numbers"
                     placeholder="请输入手机号，多个号码请换行分隔..."
                     rows="5"
                   ></textarea>
                   <div
                     id="phone-counter"
-                    class="text-s400 dark:bg-s800/80 border-s100 dark:border-s700 absolute right-3 bottom-3 rounded border bg-white/80 px-2 py-0.5 font-mono text-[10px]"
+                    class="text-s500 bg-s100/80 border-s200 absolute bottom-3 rounded border px-2 py-0.5 font-mono text-[10px] font-medium backdrop-blur-sm"
                   >
                     建议一次不超过 50 个
                   </div>
@@ -406,7 +487,7 @@
                   >
                     lightbulb
                   </span>
-                  <span id="transition-helper">
+                  <span id="transition-helper" class="font-medium">
                     系统将根据填写的号码自动匹配当前任务队列，请确保设备均已登录并处于在线状态。
                   </span>
                 </p>
@@ -1033,7 +1114,9 @@
               >
                 lightbulb
               </span>
-              <span>请输入手机号进行任务获取，支持换行输入多个号码。系统将自动验证账号状态。</span>
+              <span class="font-medium">
+                请输入手机号进行任务获取，支持换行输入多个号码。系统将自动验证账号状态。
+              </span>
             </p>
           </div>
 
