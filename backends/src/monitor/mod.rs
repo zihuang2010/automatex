@@ -341,6 +341,32 @@ pub fn spawn_device_monitor(
 
                 ready.notify_one();
 
+                // 屏幕常亮：仅在「首次出现」或「从非 DEVICE 状态转为 DEVICE」时触发，
+                // 避免 track_devices 回调对同一 DEVICE 状态重复下发 shell 命令。
+                // 设备断连后 Android 自动清零 stayon，重连时状态从 OFFLINE → DEVICE
+                // 再次命中此分支，自然恢复常亮。
+                let was_not_device = existing
+                    .as_ref()
+                    .map(|row| row.state != constants::device_state::DEVICE)
+                    .unwrap_or(true);
+                if was_not_device {
+                    let serial_stayon = serial.clone();
+                    rt_cb.spawn(async move {
+                        match connection::adb::enable_stayon_async(&serial_stayon).await {
+                            Ok(_) => {
+                                debug!(device = %serial_stayon, "✓ 已开启屏幕常亮 (svc power stayon true)");
+                            },
+                            Err(e) => {
+                                debug!(
+                                    device = %serial_stayon,
+                                    error = %e,
+                                    "开启屏幕常亮失败（设备可能已离线或 ROM 禁用 svc power）"
+                                );
+                            },
+                        }
+                    });
+                }
+
                 let needs_props = existing.as_ref().map(device_props_incomplete).unwrap_or(true);
 
                 if !needs_props {

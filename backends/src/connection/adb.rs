@@ -540,6 +540,18 @@ pub async fn adb_shell_async(serial: &str, command: &str) -> Result<String, Stri
         .await
 }
 
+/// 启用设备屏幕常亮：`adb shell svc power stayon true`
+///
+/// 在设备连上之后立即调用，使屏幕在连接期间不自动熄灭。
+/// 说明：
+/// - 该设置与 USB 会话绑定，设备断连后 Android 会自动清零，
+///   因此每次设备重新上线都需再次调用（由 monitor 状态迁移检测触发）。
+/// - 部分厂商 ROM 可能禁用 `svc power` 或需额外权限，失败时仅返回错误，
+///   由调用方在日志层面静默处理，不影响设备注册与任务调度。
+pub async fn enable_stayon_async(serial: &str) -> Result<(), String> {
+    adb_shell_async(serial, "svc power stayon true").await.map(|_| ())
+}
+
 pub async fn adb_cmd_async(serial: &str, args: &[&str]) -> Result<String, String> {
     run_adb_async(serial, args, crate::constants::timing::ADB_COMMAND_TIMEOUT_SECS).await
 }
