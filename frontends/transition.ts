@@ -94,7 +94,9 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
     const app = $('#app')!;
     const textarea = el.querySelector('#phone-numbers') as HTMLTextAreaElement;
     const errorEl = el.querySelector('#transition-error') as HTMLElement;
-    const errorTextEl = errorEl.querySelector('span:last-child') as HTMLElement | null;
+    const errorTextEl = el.querySelector('#transition-error-text') as HTMLElement | null;
+    const errorTitleEl = el.querySelector('#transition-error-title') as HTMLElement | null;
+    const errorCloseBtn = el.querySelector('#transition-error-close') as HTMLButtonElement | null;
     const counterEl = el.querySelector('#phone-counter') as HTMLElement;
     const titleEl = el.querySelector('#transition-title') as HTMLElement | null;
     const subtitleEl = el.querySelector('#transition-subtitle') as HTMLElement | null;
@@ -155,9 +157,12 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
       }
     }
 
-    function showError(msg: string) {
+    function showError(msg: string, title?: string) {
       if (errorTextEl) errorTextEl.textContent = msg;
-      errorEl.style.display = 'flex';
+      if (errorTitleEl && title) errorTitleEl.textContent = title;
+      errorEl.style.display = 'block';
+      // 无障碍：宣告错误
+      errorEl.setAttribute('role', 'alert');
     }
 
     function hideError() {
@@ -183,6 +188,7 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
       textarea.removeEventListener('input', onInput);
       submitBtn?.removeEventListener('click', onSubmit);
       resetBtn?.removeEventListener('click', onReset);
+      errorCloseBtn?.removeEventListener('click', hideError);
     }
 
     activePhoneBindCleanup = cleanup;
@@ -260,6 +266,7 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
     textarea.addEventListener('input', onInput);
     submitBtn?.addEventListener('click', onSubmit);
     resetBtn?.addEventListener('click', onReset);
+    errorCloseBtn?.addEventListener('click', hideError);
     updateCounter();
     textarea.focus();
   });

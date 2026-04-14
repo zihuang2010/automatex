@@ -8,6 +8,10 @@ const THEME_OPT_ACTIVE = 'bg-white text-s800 shadow-sm';
 const THEME_OPT_INACTIVE = 'text-s400 hover:text-s600';
 const DEFAULT_MQTT_HOST = '39.98.170.208';
 const DEFAULT_MQTT_PORT = '30002';
+// 与后端 constants.rs::mqtt_default 保持一致的 fallback，避免用户清空表单保存后
+// DB 存入空串 → 后端连接时无凭据被 broker 拒绝 NotAuthorized
+const DEFAULT_MQTT_USERNAME = 'automatex';
+const DEFAULT_MQTT_PASSWORD = 'zihuang2010=-0';
 let themeSwitcherBound = false;
 let settingsBound = false;
 
@@ -22,12 +26,14 @@ function normalizeMqttFormValues() {
     host: hostInput.value.trim() || DEFAULT_MQTT_HOST,
     port: portInput.value.trim() || DEFAULT_MQTT_PORT,
     client_id: clientIdInput.value.trim(),
-    username: usernameInput.value.trim(),
-    password: passwordInput.value,
+    username: usernameInput.value.trim() || DEFAULT_MQTT_USERNAME,
+    password: passwordInput.value || DEFAULT_MQTT_PASSWORD,
   };
 
   hostInput.value = normalized.host;
   portInput.value = normalized.port;
+  usernameInput.value = normalized.username;
+  passwordInput.value = normalized.password;
 
   return normalized;
 }

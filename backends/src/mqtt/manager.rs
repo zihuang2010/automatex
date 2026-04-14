@@ -81,6 +81,18 @@ impl MqttManager {
         *self.client_id.lock().await = config.client_id.clone();
         let _ = app_handle.emit(tauri_event::MQTT_STATUS, mqtt_emit_status::CONNECTING);
 
+        // 连接尝试日志：出现 NotAuthorized / 认证失败时可直接从日志核对实际参数
+        // （密码仅输出是否存在，避免泄露）
+        info!(
+            generation = my_generation,
+            broker = %config.broker_host,
+            port = config.broker_port,
+            client_id = %config.client_id,
+            username = %config.username.as_deref().unwrap_or("<NONE>"),
+            has_password = config.password.is_some(),
+            "MQTT 连接尝试"
+        );
+
         // ── Step 3: 启动重连外循环，每次断线都创建全新 (client, eventloop) ──
         let generation_arc = Arc::clone(&self.generation);
         let status = self.status.clone();

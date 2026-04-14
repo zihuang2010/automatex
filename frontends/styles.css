@@ -75,6 +75,10 @@
 
 /* ─── CSS Variables ─── */
 :root {
+  /* 关键：显式锁定为浅色配色方案，避免 Windows WebView2
+     根据系统深色模式自动反转表单/滚动条等原生控件颜色。
+     用户切换主题时由 .dark 类覆盖为 dark。 */
+  color-scheme: light;
   --vibrant-green: #10b981;
   --deep-charcoal: #1e293b;
   --premium-bg: #f8fafc;
@@ -83,6 +87,7 @@
 
 /* ─── Dark Theme: 覆盖 Tailwind v4 的 --color-* 变量 ─── */
 .dark {
+  color-scheme: dark;
   --deep-charcoal: #e2e8f0;
   --premium-bg: #0f1117;
   --panel-border: rgba(255, 255, 255, 0.08);
@@ -230,6 +235,36 @@
   transition:
     opacity 0.4s ease,
     transform 0.4s ease;
+}
+
+/* 错误提示出现动画 + 图标脉冲，提升上方提示的醒目度 */
+#transition-error[style*='block'] {
+  animation: trans-error-slide 0.32s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes trans-error-slide {
+  from {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.trans-error-icon-pulse {
+  animation: trans-error-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes trans-error-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(239, 68, 68, 0);
+  }
 }
 
 .task-stack-container {

@@ -11,10 +11,15 @@ pub(crate) fn build_mqtt_config_from(s: &std::collections::HashMap<String, Strin
         .unwrap_or_else(mqtt_default::port_num);
     let client_id = s
         .get(setting_key::MQTT_CLIENT_ID)
+        .filter(|v| !v.is_empty())
         .cloned()
         .unwrap_or_else(crate::utils::generate_machine_client_id);
-    let username = s.get(setting_key::MQTT_USERNAME).filter(|v| !v.is_empty()).cloned();
-    let password = s.get(setting_key::MQTT_PASSWORD).filter(|v| !v.is_empty()).cloned();
+    // 与 host 对称：空字符串或缺失时回退到默认凭据，避免发出无认证 CONNECT 被 broker
+    // 拒绝为 NotAuthorized（历史 bug：用户在设置面板清空凭据后保存会写入空串）
+    let username_str = setting_or(s, setting_key::MQTT_USERNAME, mqtt_default::username());
+    let password_str = setting_or(s, setting_key::MQTT_PASSWORD, mqtt_default::password());
+    let username = if username_str.is_empty() { None } else { Some(username_str) };
+    let password = if password_str.is_empty() { None } else { Some(password_str) };
     MqttConfig { broker_host: host, broker_port: port, client_id, username, password }
 }
 

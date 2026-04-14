@@ -2,9 +2,23 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
+    <meta name="color-scheme" content="light dark" />
     <link rel="stylesheet" href="/frontends/styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AutomateX 工作台 PRO</title>
+    <script>
+      // 早期主题引导：默认浅色，仅当 localStorage 明确为 'dark' 时启用深色。
+      // 必须在样式应用前同步执行，避免开屏闪烁错误主题。
+      (function () {
+        try {
+          var t = localStorage.getItem('theme');
+          if (t === 'dark') document.documentElement.classList.add('dark');
+          else document.documentElement.classList.remove('dark');
+        } catch (e) {
+          /* ignore */
+        }
+      })();
+    </script>
   </head>
 
   <body>
@@ -253,7 +267,7 @@
       </div>
 
       <!-- ===== 任务同步过渡页 ===== -->
-      <div class="transition-page" id="transition" style="display: none">
+      <div class="transition-page" id="transition" data-tauri-drag-region style="display: none">
         <!-- macOS 交通灯控件（左上角，仅 macOS 显示，由 main.ts 按平台切换） -->
         <div
           id="transition-mac-controls"
@@ -344,13 +358,70 @@
         >
           <span class="material-symbols-outlined text-lg">close</span>
         </button>
+        <!-- 错误提示（卡片上方，醒目位置） -->
+        <div id="transition-error" class="mb-4 w-full max-w-2xl" style="display: none">
+          <div
+            class="border-red/30 bg-red-light shadow-red/10 relative overflow-hidden rounded-2xl border-2 p-4 shadow-xl backdrop-blur-sm"
+          >
+            <!-- 装饰性光晕（顶部右上 + 左侧色条） -->
+            <div
+              class="bg-red/15 pointer-events-none absolute -top-8 -right-8 h-28 w-28 rounded-full blur-2xl"
+            ></div>
+            <div
+              class="from-red via-red/70 to-red/30 pointer-events-none absolute top-0 left-0 h-full w-1.5 bg-gradient-to-b"
+            ></div>
+
+            <div class="relative flex items-start gap-3 pl-2">
+              <!-- 图标 -->
+              <div
+                class="border-red/30 bg-red/15 text-red shadow-red/10 trans-error-icon-pulse flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border shadow-sm"
+              >
+                <span
+                  class="material-symbols-outlined text-[24px]"
+                  style="font-variation-settings: 'FILL' 1"
+                >
+                  error
+                </span>
+              </div>
+
+              <!-- 文本 -->
+              <div class="min-w-0 flex-1 pt-0.5">
+                <div
+                  class="text-red flex items-center gap-2 text-[14px] font-extrabold tracking-wide"
+                >
+                  <span id="transition-error-title">同步出错</span>
+                  <span
+                    class="border-red/30 bg-red/10 text-red rounded-md border px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase"
+                  >
+                    error
+                  </span>
+                </div>
+                <div
+                  id="transition-error-text"
+                  class="text-red mt-1.5 text-[13px] leading-relaxed font-bold break-words"
+                ></div>
+              </div>
+
+              <!-- 关闭按钮 -->
+              <button
+                id="transition-error-close"
+                class="text-red/70 hover:bg-red/15 hover:text-red -mt-1 -mr-1 flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-lg border-none bg-transparent transition-all"
+                title="关闭提示"
+              >
+                <span class="material-symbols-outlined text-base">close</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
         <!-- 主卡片 -->
         <div
           class="border-s200 w-full max-w-2xl overflow-hidden rounded-2xl border bg-white shadow-xl"
         >
-          <!-- 顶部图形区 -->
+          <!-- 顶部图形区（装饰区域，无交互元素 → 可拖动窗口） -->
           <div
             class="border-s100 relative overflow-hidden border-b bg-gradient-to-b from-blue-50 to-white p-12"
+            data-tauri-drag-region
           >
             <div class="relative z-10 flex items-center justify-center gap-16">
               <!-- 任务卡片堆叠 -->
@@ -552,16 +623,6 @@
               </button>
             </div>
           </div>
-        </div>
-
-        <!-- 错误提示 -->
-        <div
-          id="transition-error"
-          class="bg-red-light border-red/30 text-red mt-4 flex w-full max-w-2xl items-center gap-2 rounded-xl border px-4 py-3 text-xs"
-          style="display: none"
-        >
-          <span class="material-symbols-outlined text-sm">error</span>
-          <span></span>
         </div>
 
         <!-- 页脚信息 -->

@@ -106,31 +106,33 @@ window.addEventListener('beforeunload', () => {
 /* ===== Theme Toggle ===== */
 
 function initTheme() {
-  // 启动默认：浅色主题；只有在 localStorage 明确保存为 'dark' 时才预加深色
-  // （避免开屏期间白屏闪烁），否则一律以浅色开屏
-  const saved = localStorage.getItem('theme');
-  if (saved === 'dark') {
-    document.documentElement.classList.add('dark');
-  } else {
-    document.documentElement.classList.remove('dark');
-  }
-
-  // 异步从数据库读取真实主题设置并同步（同时预加载账号计数避免显示延迟）
+  // 早期内联脚本（index.html <head>）已根据 localStorage 应用初步主题，
+  // 此处仅负责以数据库为权威来源做二次校正，并清理不一致的 localStorage。
+  // 数据库默认值由后端 startup.rs 写入为 'light'。
   invoke<Record<string, string>>('get_settings')
     .then(settings => {
-      const dbTheme = settings.theme || 'light';
-      const currentIsDark = document.documentElement.classList.contains('dark');
+      const dbTheme = settings.theme === 'dark' ? 'dark' : 'light';
       const dbIsDark = dbTheme === 'dark';
+      const currentIsDark = document.documentElement.classList.contains('dark');
       if (currentIsDark !== dbIsDark) {
         if (dbIsDark) {
           document.documentElement.classList.add('dark');
         } else {
           document.documentElement.classList.remove('dark');
         }
-        localStorage.setItem('theme', dbTheme);
       }
+      // 始终把 localStorage 对齐到数据库（防止历史构建残留 'dark' 干扰）
+      localStorage.setItem('theme', dbTheme);
     })
-    .catch(() => {});
+    .catch(() => {
+      // 后端不可达时兜底：保持浅色，并清理可能的脏 localStorage
+      document.documentElement.classList.remove('dark');
+      try {
+        localStorage.setItem('theme', 'light');
+      } catch {
+        /* ignore */
+      }
+    });
 }
 
 /* ===== Splash Screen ===== */
