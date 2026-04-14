@@ -117,11 +117,77 @@ mkdir -p "$OUTPUT_DIR"
 # 复制主程序
 EXE=$(find "$RELEASE_DIR" -maxdepth 1 -name "*.exe" -not -name "adb*" 2>/dev/null | head -1)
 if [ -n "$EXE" ] && [ -f "$EXE" ]; then
-    cp "$EXE" "$OUTPUT_DIR/"
+    EXE_DEST="$OUTPUT_DIR/$(basename "$EXE")"
+    cp "$EXE" "$EXE_DEST"
     info "主程序: $(basename "$EXE") ($(du -h "$EXE" | awk '{print $1}'))"
 else
     error "未找到构建产物 .exe"
 fi
+
+# ── 可选: 自签名 (osslsigncode) ──
+# 启用方式: 设置以下环境变量后运行脚本
+#   export WINDOWS_PFX=/path/to/company-cert.pfx
+#   export WINDOWS_PFX_PASS='your-pfx-password'
+#   bash scripts/build-windows.sh
+#
+# 没有 AD/GPO 推根证书的话，自签名只能"有签名比没签名好一点"，
+# SmartScreen 仍会弹窗。公司有 AD 时让 IT 把对应公钥推入"受信任的
+# 根证书颁发机构"即可让签名在全员机器上被完全信任。
+if [ -n "${WINDOWS_PFX:-}" ]; then
+    if ! command -v osslsigncode >/dev/null 2>&1; then
+        warn "WINDOWS_PFX 已设置但未安装 osslsigncode，跳过签名"
+        warn "安装方式: brew install osslsigncode"
+    elif [ ! -f "$WINDOWS_PFX" ]; then
+        warn "WINDOWS_PFX 指向的文件不存在: $WINDOWS_PFX，跳过签名"
+    else
+        info "使用自签名证书签 exe ..."
+        SIGNED_TMP="$OUTPUT_DIR/.signed.exe"
+        osslsigncode sign \
+            -pkcs12 "$WINDOWS_PFX" \
+            -pass "${WINDOWS_PFX_PASS:-}" \
+            -n "AutomateX" \
+            -i "https://internal/automatex" \
+            -t "http://timestamp.digicert.com" \
+            -in "$EXE_DEST" \
+            -out "$SIGNED_TMP"
+        mv "$SIGNED_TMP" "$EXE_DEST"
+
+        # 验证签名
+        if osslsigncode verify "$EXE_DEST" 2>&1 | grep -q "Signature verification"; then
+            info "签名完成: $(basename "$EXE_DEST")"
+        else
+            warn "签名验证输出异常，请手动检查"
+        fi
+    fi
+fi
+
+# ── 生成用户端 readme ──
+cat > "$OUTPUT_DIR/README.txt" <<'README_EOF'
+AutomateX — Windows 内部分发
+============================
+
+安装:
+  1. 双击 AutomateX.exe
+  2. 首次启动时 Windows SmartScreen 可能弹窗 "Windows 已保护你的电脑"
+     → 点击 "更多信息" → "仍要运行"
+     之后启动将不再弹窗
+
+依赖:
+  - Windows 10 (1803+) 或 Windows 11
+  - Microsoft Edge WebView2 Runtime
+    * Windows 11 / 最新 Win10: 系统自带
+    * 旧版 Win10 / LTSC: 需手动安装
+      下载地址: https://go.microsoft.com/fwlink/p/?LinkId=2124703
+      (选择 "Evergreen Bootstrapper" 版本)
+
+运行时会自动释放:
+  - adb.exe (Android 调试桥)
+  - scrcpy-server (投屏服务端)
+  - AdbWinApi.dll / AdbWinUsbApi.dll (Windows USB 驱动库)
+
+反馈问题请联系内部 IT 或开发团队。
+README_EOF
+info "生成用户端说明: README.txt"
 
 # ── 输出摘要 ──
 echo ""
@@ -131,5 +197,13 @@ echo ""
 info "产物目录: $OUTPUT_DIR"
 ls -lh "$OUTPUT_DIR"
 echo ""
-warn "部署: 直接分发该 exe 即可，运行时会自动释放 adb / scrcpy-server / Windows DLL"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  内部分发指引"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+info "分发: 压缩 windows-x64-single/ 目录后发给同事"
+info "依赖: 旧版 Win10 用户需手动安装 WebView2 Runtime (README.txt 已说明)"
+if [ -z "${WINDOWS_PFX:-}" ]; then
+    warn "未签名: 首次启动 SmartScreen 弹窗，用户需点 '更多信息 → 仍要运行'"
+    warn "如需签名, 设置 WINDOWS_PFX + WINDOWS_PFX_PASS 环境变量后重新构建"
+fi
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
