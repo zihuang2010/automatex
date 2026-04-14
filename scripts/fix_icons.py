@@ -20,39 +20,10 @@ PNG_SIZES = {
     "64x64.png": 64,
     "128x128.png": 128,
     "128x128@2x.png": 256,
-    "icon.png": 512,
-    "Square30x30Logo.png": 30,
-    "Square44x44Logo.png": 44,
-    "Square71x71Logo.png": 71,
-    "Square89x89Logo.png": 89,
-    "Square107x107Logo.png": 107,
-    "Square142x142Logo.png": 142,
-    "Square150x150Logo.png": 150,
-    "Square284x284Logo.png": 284,
-    "Square310x310Logo.png": 310,
-    "StoreLogo.png": 50,
+    "icon.png": 512
 }
 
-IOS_SIZES = {
-    "AppIcon-20x20@1x.png": 20,
-    "AppIcon-20x20@2x.png": 40,
-    "AppIcon-20x20@2x-1.png": 40,
-    "AppIcon-20x20@3x.png": 60,
-    "AppIcon-29x29@1x.png": 29,
-    "AppIcon-29x29@2x.png": 58,
-    "AppIcon-29x29@2x-1.png": 58,
-    "AppIcon-29x29@3x.png": 87,
-    "AppIcon-40x40@1x.png": 40,
-    "AppIcon-40x40@2x.png": 80,
-    "AppIcon-40x40@2x-1.png": 80,
-    "AppIcon-40x40@3x.png": 120,
-    "AppIcon-60x60@2x.png": 120,
-    "AppIcon-60x60@3x.png": 180,
-    "AppIcon-76x76@1x.png": 76,
-    "AppIcon-76x76@2x.png": 152,
-    "AppIcon-83.5x83.5@2x.png": 167,
-    "AppIcon-512@2x.png": 1024,
-}
+IOS_SIZES = {}
 
 
 def save_pngs(source: Image.Image) -> None:
@@ -125,7 +96,6 @@ def main() -> None:
     source.save(SOURCE_ICON, "PNG")
 
     save_pngs(source)
-    save_ios_icons(source)
     save_icns(source)
     save_ico(source)
 

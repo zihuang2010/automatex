@@ -42,6 +42,48 @@ let appBootstrapped = false;
 let accountPanelInitialized = false;
 const appUnlisteners: UnlistenFn[] = [];
 
+/* ===== 生产环境交互拦截 =====
+ * 仅在 vite 构建出的生产包中生效：
+ *  - 屏蔽右键菜单、F12/DevTools 快捷键、页面刷新（F5/Ctrl+R）、查看源码
+ *  - 屏蔽外部文件拖入 webview（避免意外替换资源或跳离应用）
+ * 开发期保留全部调试能力。
+ */
+if (import.meta.env.PROD) {
+  window.addEventListener('contextmenu', e => e.preventDefault());
+
+  window.addEventListener('keydown', e => {
+    const k = e.key.toLowerCase();
+    // F12
+    if (k === 'f12') {
+      e.preventDefault();
+      return;
+    }
+    // Ctrl/Cmd + Shift + I / J / C  → DevTools
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (k === 'i' || k === 'j' || k === 'c')) {
+      e.preventDefault();
+      return;
+    }
+    // Ctrl/Cmd + R / F5 → 页面刷新会让 Rust 端状态与 webview 脱节
+    if (((e.ctrlKey || e.metaKey) && k === 'r') || k === 'f5') {
+      e.preventDefault();
+      return;
+    }
+    // Ctrl/Cmd + U → 查看源码
+    if ((e.ctrlKey || e.metaKey) && k === 'u') {
+      e.preventDefault();
+      return;
+    }
+    // Ctrl/Cmd + P → 打印对话框
+    if ((e.ctrlKey || e.metaKey) && k === 'p') {
+      e.preventDefault();
+      return;
+    }
+  });
+
+  window.addEventListener('dragover', e => e.preventDefault());
+  window.addEventListener('drop', e => e.preventDefault());
+}
+
 // 窗口关闭时优雅停止所有投屏并清理所有资源
 window.addEventListener('beforeunload', () => {
   stopAllMirrors();

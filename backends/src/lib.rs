@@ -46,7 +46,8 @@ impl AppState {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // ── 日志初始化（必须最先执行）──
-    let default_level = if cfg!(debug_assertions) { "debug" } else { "info" };
+    // 生产环境默认 warn，降低磁盘/日志噪音；需要临时调试可通过 RUST_LOG 覆盖
+    let default_level = if cfg!(debug_assertions) { "debug" } else { "warn" };
     let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         tracing_subscriber::EnvFilter::new(format!(
             "{default_level},automatex_lib={default_level},hyper=warn,reqwest=warn,rumqttc=info"
