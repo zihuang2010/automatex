@@ -159,10 +159,10 @@ export function loadChainForDevice(_serial: string) {
       <div class="task-queue-item bg-violet-50/40 border border-violet-100 rounded-md shadow-sm relative overflow-hidden flex cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
         <div class="w-1 self-stretch bg-violet-500"></div>
         <div class="flex-1 p-3 flex flex-col">
-          <div class="flex items-center justify-between gap-3 mb-2">
-            <div class="flex min-w-0 items-center gap-2.5 pr-2">
+          <div class="flex items-center gap-2 mb-2">
+            <div class="flex flex-1 min-w-0 items-center gap-2.5">
               <span class="task-queue-drag-handle material-symbols-outlined">drag_indicator</span>
-              <h4 class="truncate text-[12px] font-bold leading-none tracking-[0.01em] text-s700">${esc(q.name)}</h4>
+              <h4 class="truncate min-w-0 text-[12px] font-bold leading-none tracking-[0.01em] text-s700">${esc(q.name)}</h4>
             </div>
             <div class="interval-waiting-badge flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-violet-100 px-2.5 py-0.5">
               <span class="interval-waiting-dot w-1.5 h-1.5 bg-violet-500 rounded-full"></span>
@@ -187,10 +187,10 @@ export function loadChainForDevice(_serial: string) {
       <div class="task-queue-item bg-blue-50/40 border border-blue-100 rounded-md shadow-sm relative overflow-hidden flex cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
         <div class="w-1 self-stretch bg-[#2563EB]"></div>
         <div class="flex-1 p-3 flex flex-col">
-          <div class="flex items-center justify-between gap-3 mb-2">
-            <div class="flex min-w-0 items-center gap-2.5 pr-2">
+          <div class="flex items-center gap-2 mb-2">
+            <div class="flex flex-1 min-w-0 items-center gap-2.5">
               <span class="task-queue-drag-handle material-symbols-outlined">drag_indicator</span>
-              <h4 class="truncate text-[12px] font-bold leading-none tracking-[0.01em] text-s700">${esc(q.name)}</h4>
+              <h4 class="truncate min-w-0 text-[12px] font-bold leading-none tracking-[0.01em] text-s700">${esc(q.name)}</h4>
             </div>
             <div class="flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-s100 px-2.5 py-0.5">
               <span class="w-1.5 h-1.5 bg-[#2563EB] rounded-full animate-pulse"></span>
@@ -216,10 +216,10 @@ export function loadChainForDevice(_serial: string) {
       <div class="task-queue-item bg-amber-50/50 border border-amber-100 rounded-md shadow-sm relative overflow-hidden flex cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
         <div class="w-1 self-stretch bg-amber-400"></div>
         <div class="flex-1 p-3 flex flex-col">
-          <div class="flex items-center justify-between gap-3 mb-2">
-            <div class="flex min-w-0 items-center gap-2.5 pr-2">
+          <div class="flex items-center gap-2 mb-2">
+            <div class="flex flex-1 min-w-0 items-center gap-2.5">
               <span class="task-queue-drag-handle material-symbols-outlined">drag_indicator</span>
-              <h4 class="truncate text-[12px] font-bold leading-none tracking-[0.01em] text-s700">${esc(q.name)}</h4>
+              <h4 class="truncate min-w-0 text-[12px] font-bold leading-none tracking-[0.01em] text-s700">${esc(q.name)}</h4>
             </div>
             <div class="flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-amber-100 px-2.5 py-0.5">
               <span class="w-1.5 h-1.5 bg-amber-500 rounded-full"></span>
@@ -252,10 +252,10 @@ export function loadChainForDevice(_serial: string) {
       <div class="task-queue-item bg-amber-50/40 border border-amber-100 rounded-md shadow-sm relative overflow-hidden flex cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
         <div class="w-1 self-stretch bg-amber-400"></div>
         <div class="flex-1 p-3 flex flex-col">
-          <div class="flex items-center justify-between gap-3 mb-2">
-            <div class="flex min-w-0 items-center gap-2.5 pr-2">
+          <div class="flex items-center gap-2 mb-2">
+            <div class="flex flex-1 min-w-0 items-center gap-2.5">
               <span class="task-queue-drag-handle material-symbols-outlined">drag_indicator</span>
-              <h4 class="truncate text-[12px] font-bold leading-none tracking-[0.01em] text-s700">${esc(q.name)}</h4>
+              <h4 class="truncate min-w-0 text-[12px] font-bold leading-none tracking-[0.01em] text-s700">${esc(q.name)}</h4>
             </div>
             <div class="flex h-7 shrink-0 items-center rounded-full bg-s100 px-2.5 py-0.5">
               <span class="text-[11px] font-bold text-amber-600">已暂停</span>
@@ -276,10 +276,10 @@ export function loadChainForDevice(_serial: string) {
       <div class="task-queue-item bg-s50/60 border border-s200 rounded-md shadow-sm relative overflow-hidden flex cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
         <div class="w-1 self-stretch bg-[#64748B]"></div>
         <div class="flex-1 p-3">
-          <div class="flex items-center justify-between gap-3 mb-2">
-            <div class="flex min-w-0 items-center gap-2.5 pr-2">
+          <div class="flex items-center gap-2 mb-2">
+            <div class="flex flex-1 min-w-0 items-center gap-2.5">
               <span class="task-queue-drag-handle material-symbols-outlined">drag_indicator</span>
-              <h4 class="truncate text-[12px] font-bold leading-none tracking-[0.01em] text-s700">${esc(q.name)}</h4>
+              <h4 class="truncate min-w-0 text-[12px] font-bold leading-none tracking-[0.01em] text-s700">${esc(q.name)}</h4>
             </div>
             <div class="flex h-7 shrink-0 items-center rounded-full bg-s100 px-2.5 py-0.5">
               <span class="text-[11px] font-bold text-[#64748B]">待启动</span>
@@ -293,10 +293,10 @@ export function loadChainForDevice(_serial: string) {
       <div class="task-queue-item bg-green-50/40 border border-green-100 rounded-md shadow-sm relative overflow-hidden flex cursor-pointer opacity-80 transition-all duration-200 hover:opacity-100 hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
         <div class="w-1 self-stretch bg-[#10B981]"></div>
         <div class="flex-1 p-3">
-          <div class="flex items-center justify-between gap-3 mb-2">
-            <div class="flex min-w-0 items-center gap-2.5 pr-2">
+          <div class="flex items-center gap-2 mb-2">
+            <div class="flex flex-1 min-w-0 items-center gap-2.5">
               <span class="task-queue-drag-handle material-symbols-outlined">drag_indicator</span>
-              <h4 class="truncate text-[12px] font-bold leading-none tracking-[0.01em] text-s700">${esc(q.name)}</h4>
+              <h4 class="truncate min-w-0 text-[12px] font-bold leading-none tracking-[0.01em] text-s700">${esc(q.name)}</h4>
             </div>
             <div class="flex h-7 shrink-0 items-center rounded-full bg-s100 px-2.5 py-0.5">
               <span class="text-[11px] font-bold text-[#10B981]">已完成</span>
@@ -311,10 +311,10 @@ export function loadChainForDevice(_serial: string) {
       <div class="task-queue-item bg-red-50/40 border border-red-100 rounded-md shadow-sm relative overflow-hidden flex cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
         <div class="w-1 self-stretch bg-red-500"></div>
         <div class="flex-1 p-3 flex flex-col">
-          <div class="flex items-center justify-between gap-3 mb-2">
-            <div class="flex min-w-0 items-center gap-2.5 pr-2">
+          <div class="flex items-center gap-2 mb-2">
+            <div class="flex flex-1 min-w-0 items-center gap-2.5">
               <span class="task-queue-drag-handle material-symbols-outlined">drag_indicator</span>
-              <h4 class="truncate text-[12px] font-bold leading-none tracking-[0.01em] text-s700">${esc(q.name)}</h4>
+              <h4 class="truncate min-w-0 text-[12px] font-bold leading-none tracking-[0.01em] text-s700">${esc(q.name)}</h4>
             </div>
             <div class="flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-red-50 border border-red-200 px-2.5 py-0.5">
               <span class="material-symbols-outlined text-red-400" style="font-size:13px">error</span>
@@ -383,7 +383,7 @@ function bindTaskQueueDragEvents(container: HTMLElement) {
         .filter((id): id is string => Boolean(id));
       reorderGlobalQueue(newOrder);
       document.body.classList.remove('task-queue-sorting');
-      loadChainForDevice('');
+      setTimeout(() => loadChainForDevice(''), 200);
     },
   });
 }
