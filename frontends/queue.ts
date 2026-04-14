@@ -140,7 +140,7 @@ export function loadChainForDevice(_serial: string) {
       const ring = isActive ? `ring-2 ${ringColor}` : '';
 
       const statsRow = `
-        <div class="flex items-center gap-4 text-s500">
+        <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-s500">
           <div class="flex items-center gap-1">
             <span class="material-symbols-outlined icon-xs text-[14px]">domain</span>
             <span class="text-[10px] font-semibold leading-none">${cityCount} 城市</span>
@@ -150,32 +150,45 @@ export function loadChainForDevice(_serial: string) {
             <span class="text-[10px] font-semibold leading-none">${kwTotal} 关键词</span>
           </div>
         </div>`;
+      const cardContentClass = 'flex-1 min-w-0 p-3 flex flex-col';
+      const titleRowBase = `
+        <div class="mb-2 flex items-start gap-2">
+          <div class="flex min-w-0 flex-1 items-center gap-2.5">
+            <span class="task-queue-drag-handle material-symbols-outlined">drag_indicator</span>
+            <h4 class="min-w-0 flex-1 truncate text-[12px] font-bold leading-none tracking-[0.01em] text-s700">${esc(q.name)}</h4>
+          </div>`;
+      const buildTitleRow = (badgeHtml: string) => `
+          ${titleRowBase}
+          ${badgeHtml}
+        </div>`;
+      const buildBadge = (innerHtml: string, className: string) => `
+        <div class="flex h-7 shrink-0 items-center rounded-full px-2.5 py-0.5 whitespace-nowrap ${className}">
+          ${innerHtml}
+        </div>`;
 
       if (presentation === TaskPresentationStatus.WAITING_NEXT_ROUND) {
         const countdown = getCountdownState(q);
         const countdownText = countdown?.text ?? '即将开始';
         const remainPct = countdown?.percent ?? 0;
+        const badge = buildBadge(
+          `
+            <span class="interval-waiting-dot w-1.5 h-1.5 rounded-full bg-violet-500"></span>
+            <span class="text-[11px] font-bold text-violet-600">等待中</span>
+          `,
+          'interval-waiting-badge gap-1.5 bg-violet-100',
+        );
         return `
       <div class="task-queue-item bg-violet-50/40 border border-violet-100 rounded-md shadow-sm relative overflow-hidden flex cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
         <div class="w-1 self-stretch bg-violet-500"></div>
-        <div class="flex-1 p-3 flex flex-col">
-          <div class="flex items-center gap-2 mb-2">
-            <div class="flex flex-1 min-w-0 items-center gap-2.5">
-              <span class="task-queue-drag-handle material-symbols-outlined">drag_indicator</span>
-              <h4 class="truncate min-w-0 text-[12px] font-bold leading-none tracking-[0.01em] text-s700">${esc(q.name)}</h4>
-            </div>
-            <div class="interval-waiting-badge flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-violet-100 px-2.5 py-0.5">
-              <span class="interval-waiting-dot w-1.5 h-1.5 bg-violet-500 rounded-full"></span>
-              <span class="text-[11px] font-bold text-violet-600">等待中</span>
-            </div>
-          </div>
+        <div class="${cardContentClass}">
+          ${buildTitleRow(badge)}
           ${statsRow}
-          <div class="interval-countdown-bar mt-2 flex items-center gap-2.5">
+          <div class="interval-countdown-bar mt-2 flex min-w-0 items-center gap-2.5">
             <div class="flex items-center gap-1.5 shrink-0">
               <span class="material-symbols-outlined text-violet-400" style="font-size:14px">hourglass_top</span>
               <span class="interval-countdown-text text-[11px] font-black text-violet-600 font-mono tracking-wide">${countdownText}</span>
             </div>
-            <div class="flex-1 h-[3px] bg-violet-100 rounded-full overflow-hidden">
+            <div class="h-[3px] min-w-[48px] flex-1 rounded-full bg-violet-100 overflow-hidden">
               <div class="interval-countdown-bar-fill h-full bg-violet-400 rounded-full" style="width:${remainPct}%"></div>
             </div>
           </div>
@@ -183,20 +196,18 @@ export function loadChainForDevice(_serial: string) {
       </div>`;
       } else if (presentation === TaskPresentationStatus.RUNNING) {
         const { pct, label: progressLabel } = getTaskCardProgress(q);
+        const badge = buildBadge(
+          `
+            <span class="w-1.5 h-1.5 rounded-full bg-[#2563EB] animate-pulse"></span>
+            <span class="text-[11px] font-bold text-[#2563EB]">执行中</span>
+          `,
+          'gap-1.5 bg-s100',
+        );
         return `
       <div class="task-queue-item bg-blue-50/40 border border-blue-100 rounded-md shadow-sm relative overflow-hidden flex cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
         <div class="w-1 self-stretch bg-[#2563EB]"></div>
-        <div class="flex-1 p-3 flex flex-col">
-          <div class="flex items-center gap-2 mb-2">
-            <div class="flex flex-1 min-w-0 items-center gap-2.5">
-              <span class="task-queue-drag-handle material-symbols-outlined">drag_indicator</span>
-              <h4 class="truncate min-w-0 text-[12px] font-bold leading-none tracking-[0.01em] text-s700">${esc(q.name)}</h4>
-            </div>
-            <div class="flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-s100 px-2.5 py-0.5">
-              <span class="w-1.5 h-1.5 bg-[#2563EB] rounded-full animate-pulse"></span>
-              <span class="text-[11px] font-bold text-[#2563EB]">执行中</span>
-            </div>
-          </div>
+        <div class="${cardContentClass}">
+          ${buildTitleRow(badge)}
           ${statsRow}
           <div class="flex justify-between items-center mt-2">
             <span class="text-[10px] font-semibold text-s400">${esc(progressLabel)}</span>
@@ -212,30 +223,28 @@ export function loadChainForDevice(_serial: string) {
         const countdown = getCountdownState(q);
         const countdownText = countdown?.text ?? '可继续';
         const remainPct = countdown?.percent ?? 0;
+        const badge = buildBadge(
+          `
+            <span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+            <span class="text-[11px] font-bold text-amber-700">等待暂停</span>
+          `,
+          'gap-1.5 bg-amber-100',
+        );
         return `
       <div class="task-queue-item bg-amber-50/50 border border-amber-100 rounded-md shadow-sm relative overflow-hidden flex cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
         <div class="w-1 self-stretch bg-amber-400"></div>
-        <div class="flex-1 p-3 flex flex-col">
-          <div class="flex items-center gap-2 mb-2">
-            <div class="flex flex-1 min-w-0 items-center gap-2.5">
-              <span class="task-queue-drag-handle material-symbols-outlined">drag_indicator</span>
-              <h4 class="truncate min-w-0 text-[12px] font-bold leading-none tracking-[0.01em] text-s700">${esc(q.name)}</h4>
-            </div>
-            <div class="flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-amber-100 px-2.5 py-0.5">
-              <span class="w-1.5 h-1.5 bg-amber-500 rounded-full"></span>
-              <span class="text-[11px] font-bold text-amber-700">等待暂停</span>
-            </div>
-          </div>
+        <div class="${cardContentClass}">
+          ${buildTitleRow(badge)}
           ${statsRow}
-          <div class="interval-countdown-bar mt-2 flex items-center gap-2.5">
+          <div class="interval-countdown-bar mt-2 flex min-w-0 items-center gap-2.5">
             <div class="flex items-center gap-1.5 shrink-0">
               <span class="material-symbols-outlined text-amber-500" style="font-size:14px">schedule</span>
               <span class="interval-countdown-text text-[11px] font-black text-amber-700 font-mono tracking-wide">${countdownText}</span>
             </div>
-            <div class="flex-1 h-[3px] bg-amber-100 rounded-full overflow-hidden">
+            <div class="h-[3px] min-w-[48px] flex-1 rounded-full bg-amber-100 overflow-hidden">
               <div class="interval-countdown-bar-fill h-full bg-amber-400 rounded-full" style="width:${remainPct}%"></div>
             </div>
-            <span class="text-[10px] font-semibold text-amber-500">恢复后继续</span>
+            <span class="shrink-0 whitespace-nowrap text-[10px] font-semibold text-amber-500">恢复后继续</span>
           </div>
           <div class="flex justify-between items-center mt-2">
             <span class="text-[10px] font-semibold text-s400">${esc(progressLabel)}</span>
@@ -248,19 +257,15 @@ export function loadChainForDevice(_serial: string) {
       </div>`;
       } else if (presentation === TaskPresentationStatus.PAUSED_MANUAL) {
         const { pct, label: progressLabel } = getTaskCardProgress(q);
+        const badge = buildBadge(
+          `<span class="text-[11px] font-bold text-amber-600">已暂停</span>`,
+          'bg-s100',
+        );
         return `
       <div class="task-queue-item bg-amber-50/40 border border-amber-100 rounded-md shadow-sm relative overflow-hidden flex cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
         <div class="w-1 self-stretch bg-amber-400"></div>
-        <div class="flex-1 p-3 flex flex-col">
-          <div class="flex items-center gap-2 mb-2">
-            <div class="flex flex-1 min-w-0 items-center gap-2.5">
-              <span class="task-queue-drag-handle material-symbols-outlined">drag_indicator</span>
-              <h4 class="truncate min-w-0 text-[12px] font-bold leading-none tracking-[0.01em] text-s700">${esc(q.name)}</h4>
-            </div>
-            <div class="flex h-7 shrink-0 items-center rounded-full bg-s100 px-2.5 py-0.5">
-              <span class="text-[11px] font-bold text-amber-600">已暂停</span>
-            </div>
-          </div>
+        <div class="${cardContentClass}">
+          ${buildTitleRow(badge)}
           ${statsRow}
           <div class="flex justify-between items-center mt-2">
             <span class="text-[10px] font-semibold text-s400">${esc(progressLabel)}</span>
@@ -272,55 +277,45 @@ export function loadChainForDevice(_serial: string) {
         </div>
       </div>`;
       } else if (presentation === TaskPresentationStatus.READY) {
+        const badge = buildBadge(
+          `<span class="text-[11px] font-bold text-[#64748B]">待启动</span>`,
+          'bg-s100',
+        );
         return `
       <div class="task-queue-item bg-s50/60 border border-s200 rounded-md shadow-sm relative overflow-hidden flex cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
         <div class="w-1 self-stretch bg-[#64748B]"></div>
-        <div class="flex-1 p-3">
-          <div class="flex items-center gap-2 mb-2">
-            <div class="flex flex-1 min-w-0 items-center gap-2.5">
-              <span class="task-queue-drag-handle material-symbols-outlined">drag_indicator</span>
-              <h4 class="truncate min-w-0 text-[12px] font-bold leading-none tracking-[0.01em] text-s700">${esc(q.name)}</h4>
-            </div>
-            <div class="flex h-7 shrink-0 items-center rounded-full bg-s100 px-2.5 py-0.5">
-              <span class="text-[11px] font-bold text-[#64748B]">待启动</span>
-            </div>
-          </div>
+        <div class="${cardContentClass}">
+          ${buildTitleRow(badge)}
           ${statsRow}
         </div>
       </div>`;
       } else if (presentation === TaskPresentationStatus.COMPLETED) {
+        const badge = buildBadge(
+          `<span class="text-[11px] font-bold text-[#10B981]">已完成</span>`,
+          'bg-s100',
+        );
         return `
       <div class="task-queue-item bg-green-50/40 border border-green-100 rounded-md shadow-sm relative overflow-hidden flex cursor-pointer opacity-80 transition-all duration-200 hover:opacity-100 hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
         <div class="w-1 self-stretch bg-[#10B981]"></div>
-        <div class="flex-1 p-3">
-          <div class="flex items-center gap-2 mb-2">
-            <div class="flex flex-1 min-w-0 items-center gap-2.5">
-              <span class="task-queue-drag-handle material-symbols-outlined">drag_indicator</span>
-              <h4 class="truncate min-w-0 text-[12px] font-bold leading-none tracking-[0.01em] text-s700">${esc(q.name)}</h4>
-            </div>
-            <div class="flex h-7 shrink-0 items-center rounded-full bg-s100 px-2.5 py-0.5">
-              <span class="text-[11px] font-bold text-[#10B981]">已完成</span>
-            </div>
-          </div>
+        <div class="${cardContentClass}">
+          ${buildTitleRow(badge)}
           ${statsRow}
         </div>
       </div>`;
       } else if (presentation === TaskPresentationStatus.ERROR_PAUSED) {
         const { pct, label: progressLabel } = getTaskCardProgress(q);
+        const badge = buildBadge(
+          `
+            <span class="material-symbols-outlined text-red-400" style="font-size:13px">error</span>
+            <span class="text-[11px] font-bold text-red-600">异常暂停</span>
+          `,
+          'gap-1.5 border border-red-200 bg-red-50',
+        );
         return `
       <div class="task-queue-item bg-red-50/40 border border-red-100 rounded-md shadow-sm relative overflow-hidden flex cursor-pointer transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 ${ring}" data-task-id="${taskIdAttr}" onclick='window.__switchTask(${clickTaskId})'>
         <div class="w-1 self-stretch bg-red-500"></div>
-        <div class="flex-1 p-3 flex flex-col">
-          <div class="flex items-center gap-2 mb-2">
-            <div class="flex flex-1 min-w-0 items-center gap-2.5">
-              <span class="task-queue-drag-handle material-symbols-outlined">drag_indicator</span>
-              <h4 class="truncate min-w-0 text-[12px] font-bold leading-none tracking-[0.01em] text-s700">${esc(q.name)}</h4>
-            </div>
-            <div class="flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-red-50 border border-red-200 px-2.5 py-0.5">
-              <span class="material-symbols-outlined text-red-400" style="font-size:13px">error</span>
-              <span class="text-[11px] font-bold text-red-600">异常暂停</span>
-            </div>
-          </div>
+        <div class="${cardContentClass}">
+          ${buildTitleRow(badge)}
           ${statsRow}
           <div class="flex justify-between items-center mt-2">
             <span class="text-[10px] font-semibold text-s400">${esc(progressLabel)}</span>
