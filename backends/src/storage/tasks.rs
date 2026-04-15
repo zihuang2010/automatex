@@ -65,6 +65,28 @@ impl Database {
         let Ok(conn) = self.pool.get().await else { return };
         let _ = conn
             .interact(move |conn| {
+                // 服务端 mobile 偶发为空（已观测到过）：若是新行插入，phone='' 会产生
+                // 永远无法被 `get_tasks_by_phone` 找到的孤儿任务。这里在写入前 fail-loud：
+                // 历史行有非空 phone → CASE WHEN 兜底，正常 upsert；
+                // 否则记录 error 并跳过，避免脏数据进入 DB。
+                if phone.is_empty() {
+                    let existing_phone: Option<String> = conn
+                        .query_row(
+                            "SELECT phone FROM a_task_defs WHERE task_id = ?1",
+                            params![task_id],
+                            |row| row.get(0),
+                        )
+                        .ok();
+                    let has_existing_phone =
+                        matches!(existing_phone.as_deref(), Some(p) if !p.is_empty());
+                    if !has_existing_phone {
+                        error!(
+                            task_id = %task_id,
+                            "拒绝写入：服务端下发空 phone 且无历史记录，跳过 upsert"
+                        );
+                        return;
+                    }
+                }
                 let now = now_unix();
                 log_exec(
                 conn.execute(
@@ -87,6 +109,10 @@ impl Database {
     ///
     /// CON-4 修复：返回 Result<usize, String>，事务失败时向调用方传播错误，
     /// 不再静默丢失数据（原实现事务 commit 失败仅打日志、调用方无法感知）。
+    ///
+    /// 强防御：服务端 mobile 偶发为空时，若无历史 phone 记录则跳过写入，
+    /// 避免产生「按 phone 永远找不到」的孤儿任务。返回值是**实际写入**的行数，
+    /// 不一定等于 items.len()——如果有跳过，差值即为被拒绝的孤儿数量。
     pub async fn batch_upsert_task_defs(
         &self,
         items: Vec<(String, String, String, i64, String)>,
@@ -94,7 +120,7 @@ impl Database {
         if items.is_empty() {
             return Ok(0);
         }
-        let count = items.len();
+        let input_count = items.len();
         let Ok(conn) = self.pool.get().await else {
             return Err("[db] batch_upsert_task_defs: 获取连接失败".to_string());
         };
@@ -103,7 +129,29 @@ impl Database {
             let tx = conn
                 .transaction()
                 .map_err(|e| format!("[db] batch_upsert_task_defs 事务失败: {}", e))?;
+            let mut written = 0usize;
+            let mut skipped = 0usize;
             for (task_id, name, payload, version, phone) in &items {
+                // fail-loud 防御：phone 为空且无历史记录 → 跳过，避免 DB 进脏数据
+                if phone.is_empty() {
+                    let existing_phone: Option<String> = tx
+                        .query_row(
+                            "SELECT phone FROM a_task_defs WHERE task_id = ?1",
+                            rusqlite::params![task_id],
+                            |row| row.get(0),
+                        )
+                        .ok();
+                    let has_existing_phone =
+                        matches!(existing_phone.as_deref(), Some(p) if !p.is_empty());
+                    if !has_existing_phone {
+                        error!(
+                            task_id = %task_id,
+                            "拒绝写入：服务端下发空 phone 且无历史记录，跳过 upsert"
+                        );
+                        skipped += 1;
+                        continue;
+                    }
+                }
                 tx.execute(
                     "INSERT INTO a_task_defs (task_id, name, payload, version, fetched_at, phone)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -114,10 +162,18 @@ impl Database {
                     rusqlite::params![task_id, name, payload, version, now, phone],
                 )
                 .map_err(|e| format!("[db] batch_upsert row 失败: {}", e))?;
+                written += 1;
             }
             tx.commit().map_err(|e| format!("[db] batch_upsert_task_defs commit 失败: {}", e))?;
-            debug!(count = count, "batch_upsert 任务定义完成");
-            Ok::<usize, String>(count)
+            if skipped > 0 {
+                error!(
+                    input = input_count,
+                    written, skipped, "batch_upsert 完成，部分行因空 phone 被拒绝"
+                );
+            } else {
+                debug!(count = written, "batch_upsert 任务定义完成");
+            }
+            Ok::<usize, String>(written)
         })
         .await
         .map_err(|e| format!("[db] batch_upsert interact 失败: {}", e))?

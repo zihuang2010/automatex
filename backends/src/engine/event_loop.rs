@@ -677,10 +677,6 @@ async fn engine_loop(mut s: EngineState, mut rx: mpsc::Receiver<EngineMsg>) {
                 let _ = reply.send(handle_pause_tasks_for_phones(&mut s, phones).await);
                 should_force_emit = true;
             },
-            EngineMsg::CleanupTaskIds { task_ids, reply } => {
-                let _ = reply.send(cleanup_task_ids_impl(&mut s, task_ids).await);
-                should_force_emit = true;
-            },
             EngineMsg::ReleaseOfflineDevices { online_serials, reply } => {
                 let _ = reply.send(handle_release_offline(&mut s, &online_serials).await);
                 should_force_emit = true;
@@ -1824,9 +1820,8 @@ async fn handle_phones_unbind(s: &mut EngineState, phones: Vec<String>) -> u32 {
 
 /// 精确按 task_id 清理：停 runtime → 标记 round/run 停止 → 从 s.tasks 移除 → DB 删除
 ///
-/// 是 `handle_phones_unbind` / `acknowledge_phones_unbind` 共用的底层操作。
-/// 独立出来后，上层可以先收集 task_id（包括因 phone 列异常而无法通过 phone 匹配的残留任务），
-/// 再一次性交给这里做原子清理，避免「synced_phones 已清空、但本地 task_defs 仍残留」的数据不一致。
+/// `handle_phones_unbind` 的私有 helper：先由上游把 phones 转成 task_ids，
+/// 再调本函数做原子清理（内存 + DB）。不作为独立 EngineMsg 对外暴露。
 async fn cleanup_task_ids_impl(s: &mut EngineState, task_ids: Vec<String>) -> u32 {
     if task_ids.is_empty() {
         return 0;

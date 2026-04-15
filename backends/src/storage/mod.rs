@@ -253,6 +253,16 @@ impl Database {
                 (13, "ALTER TABLE a_task_state ADD COLUMN runtime_status TEXT;", "state.runtime_status"),
                 (14, "ALTER TABLE a_devices ADD COLUMN local_port INTEGER;", "devices.local_port"),
                 (15, "ALTER TABLE a_task_progress ADD COLUMN item_count INTEGER NOT NULL DEFAULT 0;", "progress.item_count"),
+                // 历史 bug 修复：旧版本 `batch_upsert_task_defs` 的 CASE WHEN 会在服务端
+                // 偶发下发空 mobile 时永久保留 phone='' 状态，这些行之后任何按 phone
+                // 精确匹配的清理路径都碰不到，形成「无法定位的孤儿任务」。此处一次性
+                // 删除 phone='' 的任务及其所有关联子表（顺序镜像 `batch_cleanup_tasks`）。
+                // 语义幂等：后续启动若没有符合条件的行，DELETE 是 no-op。
+                (
+                    16,
+                    "DELETE FROM a_task_progress WHERE task_id IN (SELECT task_id FROM a_task_defs WHERE phone = '');\n                     DELETE FROM a_task_results  WHERE task_id IN (SELECT task_id FROM a_task_defs WHERE phone = '');\n                     DELETE FROM a_task_runs     WHERE task_id IN (SELECT task_id FROM a_task_defs WHERE phone = '');\n                     DELETE FROM a_task_rounds   WHERE task_id IN (SELECT task_id FROM a_task_defs WHERE phone = '');\n                     DELETE FROM a_task_state    WHERE task_id IN (SELECT task_id FROM a_task_defs WHERE phone = '');\n                     DELETE FROM a_task_defs                                                 WHERE phone = '';",
+                    "cleanup.orphan_empty_phone_tasks",
+                ),
             ];
 
             let now_ts = std::time::SystemTime::now()

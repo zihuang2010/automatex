@@ -85,7 +85,16 @@ pub(crate) async fn merge_batch_task_items(
     }
 
     // CON-4 修复：用 `?` 传播错误，调用方可感知并中止同步流程
-    db.batch_upsert_task_defs(upsert_items).await?;
+    // 强防御：返回值是实际写入数（拒绝空 phone 孤儿后），不一定等于 items.len()
+    let written = db.batch_upsert_task_defs(upsert_items).await?;
+    if written < items.len() {
+        tracing::error!(
+            input = items.len(),
+            written,
+            skipped = items.len() - written,
+            "merge: 部分任务因服务端下发空 mobile 被拒绝"
+        );
+    }
 
     let local_defs = db.load_all_task_defs().await;
     let stale_ids: Vec<String> = local_defs
@@ -101,7 +110,7 @@ pub(crate) async fn merge_batch_task_items(
         }
     }
 
-    Ok(items.len())
+    Ok(written)
 }
 
 pub(crate) async fn load_remote_tasks_by_ids(
