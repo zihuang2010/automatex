@@ -1,11 +1,33 @@
 use std::collections::HashSet;
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 use crate::constants;
 use crate::http::{self, ApiClient, BatchTaskItem, BatchTasksRequest};
 use crate::storage::Database;
 use crate::task_provider::{CityDef, TaskDef};
+
+/// 消息入口的 fail-loud 校验：服务端偶发下发空 mobile（已观测到过），
+/// 若放任其进入 DB 会产生「按 phone 永远找不到」的孤儿任务。
+/// 这里在**收到消息的第一时间**就拒绝，不再把判断推到写入层。
+///
+/// 输入：服务端返回的 BatchTaskItem 列表
+/// 输出：过滤后仅保留 mobile 非空的 item；被拒绝的每一条都会记录 error! 日志
+pub(crate) fn filter_items_with_valid_mobile(items: Vec<BatchTaskItem>) -> Vec<BatchTaskItem> {
+    let input = items.len();
+    let kept: Vec<BatchTaskItem> =
+        items.into_iter().filter(|item| !item.mobile.trim().is_empty()).collect();
+    let skipped = input - kept.len();
+    if skipped > 0 {
+        error!(
+            input,
+            skipped,
+            kept = kept.len(),
+            "拒绝消息：服务端下发空 mobile 的任务条目被拒绝（入口校验）"
+        );
+    }
+    kept
+}
 
 pub(crate) fn normalize_unique_strings<I, S>(values: I) -> Vec<String>
 where
@@ -66,7 +88,8 @@ pub(crate) async fn fetch_batch_task_items(
             http.batch_fetch_tasks(&BatchTasksRequest { task_ids: chunk.to_vec() }).await?;
         items.extend(chunk_items);
     }
-    Ok(items)
+    // 入口 fail-loud：在进入 merge/upsert 之前就过滤掉空 mobile 的条目
+    Ok(filter_items_with_valid_mobile(items))
 }
 
 pub(crate) async fn merge_batch_task_items(
@@ -85,16 +108,9 @@ pub(crate) async fn merge_batch_task_items(
     }
 
     // CON-4 修复：用 `?` 传播错误，调用方可感知并中止同步流程
-    // 强防御：返回值是实际写入数（拒绝空 phone 孤儿后），不一定等于 items.len()
+    // 空 mobile 校验已经在消息入口 `fetch_batch_task_items` 完成，此处到达的条目
+    // 保证 mobile 非空，written 正常情况下应等于 items.len()
     let written = db.batch_upsert_task_defs(upsert_items).await?;
-    if written < items.len() {
-        tracing::error!(
-            input = items.len(),
-            written,
-            skipped = items.len() - written,
-            "merge: 部分任务因服务端下发空 mobile 被拒绝"
-        );
-    }
 
     let local_defs = db.load_all_task_defs().await;
     let stale_ids: Vec<String> = local_defs

@@ -1930,6 +1930,8 @@ async fn merge_single_task(s: &mut EngineState, task_id: &str) {
         Ok(items) => items,
         Err(_) => return,
     };
+    // 入口 fail-loud：空 mobile 的条目直接丢弃，和批量路径保持一致
+    let batch_items = task_sync::filter_items_with_valid_mobile(batch_items);
     let Some(item) = batch_items.into_iter().find(|item| item.task_id == task_id) else {
         return;
     };

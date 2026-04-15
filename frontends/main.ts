@@ -575,27 +575,24 @@ function showUnbindNotifyModal(mobiles: string[], reason?: string) {
   // 持有状态，避免重复触发（Enter + 点击 同时发生时只执行一次）
   let acknowledging = false;
 
-  // 点击「我知道了」：调用后端清理被解绑的手机号及其任务，
-  // 刷新账号列表与任务状态，再判断是否需要跳过渡页。
+  // 点击「我知道了」：先**立即关闭弹窗**给用户即时反馈，再异步调用后端
+  // 清理被解绑的手机号及任务、刷新账号列表与任务状态。
+  //
+  // 为什么先关再做：原实现等后端 `invoke` 返回后才 cleanup，点击到弹窗消失之间
+  // 有 ~100ms+ 空白期，用户会以为「没点到」而反复点击。现在按下首击立即消失。
+  //
   // 注意：不支持点击遮罩或 Esc 关闭 —— 异地登录是强制提醒，必须点按钮确认。
   const onOk = async () => {
     if (acknowledging) return;
     acknowledging = true;
-    if (okBtn) {
-      okBtn.disabled = true;
-      okBtn.textContent = '处理中...';
-    }
-    // 先让按钮状态完成一帧渲染，避免用户首击后因视觉反馈延迟而误判为未点击成功。
-    await new Promise<void>(resolve => {
-      requestAnimationFrame(() => resolve());
-    });
+    // 首击即时生效：立即隐藏弹窗并解绑监听，后端处理并行进行
+    cleanup();
     try {
       const result = await invoke<{
         status: string;
         phones: number;
         tasks: number;
       }>('acknowledge_phones_unbind', { phones: mobiles });
-      cleanup();
       await Promise.all([refreshAccountList(), fullRefresh()]);
       if ((result.phones ?? 0) === 0 && (result.tasks ?? 0) === 0) {
         openPhoneBindPage('startup').catch(console.error);
@@ -607,11 +604,6 @@ function showUnbindNotifyModal(mobiles: string[], reason?: string) {
     } catch (err) {
       console.error('[unbind-notify] 确认失败:', err);
       showToast(`确认失败: ${err}`, 'error');
-      acknowledging = false;
-      if (okBtn) {
-        okBtn.disabled = false;
-        okBtn.textContent = '我知道了';
-      }
     }
   };
 
@@ -626,25 +618,14 @@ function showUnbindNotifyModal(mobiles: string[], reason?: string) {
     void onOk();
   };
 
-  const onPointerDown = (e: PointerEvent) => {
-    e.preventDefault();
-    void onOk();
-  };
-
   const cleanup = () => {
     modal.style.display = 'none';
     okBtn?.removeEventListener('click', onPress);
-    okBtn?.removeEventListener('pointerdown', onPointerDown);
     okBtn?.removeEventListener('keydown', onKey);
-    if (okBtn) {
-      okBtn.disabled = false;
-      okBtn.textContent = '我知道了';
-    }
     activeUnbindModalCleanup = null;
   };
 
   okBtn?.addEventListener('click', onPress);
-  okBtn?.addEventListener('pointerdown', onPointerDown);
   okBtn?.addEventListener('keydown', onKey);
   activeUnbindModalCleanup = cleanup;
 }
