@@ -32,3 +32,6 @@ mock_server/
 
 # history
 .history
+
+# claude code rule
+CLAUDE.md
