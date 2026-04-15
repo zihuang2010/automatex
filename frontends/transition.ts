@@ -42,6 +42,86 @@ function isValidPhone(phone: string): boolean {
   return /^1[3-9]\d{9}$/.test(phone.trim());
 }
 
+/** 手机号掩码: 138****8888 */
+function maskMobile(phone: string): string {
+  if (phone.length >= 7) {
+    return phone.slice(0, 3) + '****' + phone.slice(-4);
+  }
+  return phone;
+}
+
+/**
+ * 弹出「是否强制绑定」确认弹窗。
+ * 返回 Promise<boolean>：true 表示用户确认强制，false 表示取消。
+ */
+function confirmForceBind(
+  conflicts: Array<{ mobile?: string; phone?: string; clientId: string }>,
+): Promise<boolean> {
+  return new Promise(resolve => {
+    const modal = document.getElementById('force-bind-confirm-modal') as HTMLElement | null;
+    const list = document.getElementById('force-bind-conflicts-list') as HTMLElement | null;
+    const cancelBtn = document.getElementById('force-bind-cancel') as HTMLElement | null;
+    const okBtn = document.getElementById('force-bind-ok') as HTMLElement | null;
+    if (!modal || !list || !cancelBtn || !okBtn) {
+      resolve(false);
+      return;
+    }
+
+    // 渲染冲突手机号列表
+    list.innerHTML = conflicts
+      .map(item => {
+        const phone = item.mobile ?? item.phone ?? '';
+        const masked = maskMobile(phone);
+        const clientId = item.clientId || '未知客户端';
+        return `
+          <div class="border-s100 bg-s50/60 flex items-center gap-3 rounded-xl border px-3 py-2.5">
+            <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-amber-100 bg-amber-50">
+              <span class="material-symbols-outlined text-base text-amber-500">smartphone</span>
+            </div>
+            <div class="min-w-0 flex-1">
+              <div class="text-s800 text-[13px] font-bold tracking-wide" style="font-feature-settings:'tnum'">${masked}</div>
+              <div class="text-s400 mt-0.5 truncate text-[10px]">占用端：${clientId}</div>
+            </div>
+          </div>
+        `;
+      })
+      .join('');
+
+    modal.style.display = 'flex';
+
+    const cleanup = () => {
+      modal.style.display = 'none';
+      cancelBtn.removeEventListener('click', onCancel);
+      okBtn.removeEventListener('click', onConfirm);
+      modal.removeEventListener('click', onMask);
+      document.removeEventListener('keydown', onKey);
+    };
+    const onCancel = () => {
+      cleanup();
+      resolve(false);
+    };
+    const onConfirm = () => {
+      cleanup();
+      resolve(true);
+    };
+    const onMask = (e: MouseEvent) => {
+      if (e.target === e.currentTarget) {
+        cleanup();
+        resolve(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onCancel();
+      if (e.key === 'Enter') onConfirm();
+    };
+
+    cancelBtn.addEventListener('click', onCancel);
+    okBtn.addEventListener('click', onConfirm);
+    modal.addEventListener('click', onMask);
+    document.addEventListener('keydown', onKey);
+  });
+}
+
 /** 从 textarea 内容解析有效手机号列表 */
 function parsePhones(raw: string): string[] {
   return [
@@ -105,7 +185,8 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
     const resetBtn = el.querySelector('#btn-sync-reset') as HTMLButtonElement | null;
     const submitBtn = el.querySelector('#btn-sync-start') as HTMLButtonElement | null;
     const initialPhones = options.prefillPhones ?? [];
-    const forceSync = options.forceSync ?? false;
+    // 注：options.forceSync 字段保留以便后续兼容，但不再在首次提交时透传给后端，
+    // 否则后端会跳过冲突检测，前端弹窗永远不会触发（详见 sync.rs 的 force 分支）
     const conflictDetails = options.conflictDetails ?? [];
     const emptyTasksMessage =
       options.emptyTasksMessage || '当前绑定手机号暂无任务，请修改手机号后重新同步。';
@@ -224,32 +305,33 @@ export function showPhoneBindFlow(options: PhoneBindFlowOptions = {}): Promise<v
         return;
       }
 
-      try {
-        const result = await invoke<{
+      // 调用同步接口；conflicts 时弹出确认弹窗，确认后用 force=true 再调一次
+      const callSync = (force: boolean) =>
+        invoke<{
           status: string;
           phones?: number;
           tasks?: number;
           conflicts?: Array<{ mobile?: string; phone?: string; clientId: string }>;
-        }>('sync_tasks_by_phones', {
-          phones: valid,
-          force:
-            forceSync || !!(submitBtn as HTMLButtonElement & { _forceNext?: boolean })._forceNext,
-        });
-        (submitBtn as HTMLButtonElement & { _forceNext?: boolean })._forceNext = false;
+        }>('sync_tasks_by_phones', { phones: valid, force });
 
-        if (result.status === 'conflicts') {
-          const message =
-            result.conflicts
-              ?.map(item => `${item.mobile ?? item.phone ?? ''}（占用端：${item.clientId}）`)
-              .join('、') || '';
-          // LOGIC-8 修复：移除 window.confirm（Tauri webview 中被阻止）
-          // 改为在 showError 中展示冲突信息，并提示用户再次点击提交将自动强制绑定
-          showError(
-            `以下号码已在其他客户端绑定：${message}。再次点击「${options.submitLabel ?? '开始同步'}」将强制绑定。`,
-          );
-          // 第二次提交时将走 force=true 路径（通过重新调用 onSubmit 处理）
-          (submitBtn as HTMLButtonElement & { _forceNext?: boolean })._forceNext = true;
-          return;
+      try {
+        // 先以 force=false 调用，让后端返回 conflicts；由弹窗收集用户授权后再以 force=true 重调
+        let result = await callSync(false);
+
+        if (result.status === 'conflicts' && (result.conflicts?.length ?? 0) > 0) {
+          // 弹出确认弹窗：是否强制绑定（forceBind = true）
+          const confirmed = await confirmForceBind(result.conflicts ?? []);
+          if (!confirmed) {
+            // 用户取消：在错误条上提示一下，留在当前页面
+            const message =
+              result.conflicts
+                ?.map(item => `${item.mobile ?? item.phone ?? ''}（占用端：${item.clientId}）`)
+                .join('、') || '';
+            showError(`以下号码已在其他客户端绑定：${message}。已取消强制绑定。`);
+            return;
+          }
+          // 用户确认强制绑定 → 重新调用接口，force=true
+          result = await callSync(true);
         }
 
         if ((result.tasks ?? 0) === 0) {

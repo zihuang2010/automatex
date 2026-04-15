@@ -244,10 +244,11 @@ async function refreshAccountList(): Promise<string[]> {
 async function openPhoneBindPage(
   mode: 'startup' | 'rebind' | 'empty-tasks' = 'rebind',
   conflictDetails: Array<{ mobile?: string; phone?: string; clientId: string }> = [],
+  prefillPhones?: string[],
 ) {
   if (isPhoneBindFlowVisible()) return;
 
-  const phones = await getSyncedPhones();
+  const phones = prefillPhones ?? (await getSyncedPhones());
   const hasBoundPhones = phones.length > 0;
 
   const config =
@@ -495,8 +496,14 @@ function initAccountPanel() {
           status: string;
           phones?: number;
           tasks?: number;
-          conflicts?: unknown[];
-        }>('sync_tasks_by_phones', { phones: uniquePhones, force: true });
+          conflicts?: Array<{ mobile?: string; phone?: string; clientId: string }>;
+        }>('sync_tasks_by_phones', { phones: uniquePhones, force: false });
+
+        if (result.status === 'conflicts' && (result.conflicts?.length ?? 0) > 0) {
+          accountModal.style.display = 'none';
+          await openPhoneBindPage('rebind', result.conflicts, uniquePhones);
+          return;
+        }
 
         accountModal.style.display = 'none';
         showToast(

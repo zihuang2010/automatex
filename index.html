@@ -1106,6 +1106,77 @@
         </div>
       </div>
 
+      <!-- 强制绑定确认弹窗（手机号在其他客户端登录时弹出） -->
+      <div class="modal-mask" id="force-bind-confirm-modal" style="display: none">
+        <div
+          class="border-s200 w-full max-w-[440px] overflow-hidden rounded-2xl border bg-white shadow-2xl"
+          style="animation: m-up 200ms var(--ease-smooth)"
+        >
+          <!-- 顶部警告区域 -->
+          <div class="relative overflow-hidden px-8 pt-8 pb-4">
+            <div
+              class="absolute top-0 right-0 -mt-12 -mr-12 h-40 w-40 rounded-full opacity-40 blur-3xl"
+              style="background: radial-gradient(circle, rgba(245, 158, 11, 0.2), transparent 70%)"
+            ></div>
+            <div class="relative z-10 flex flex-col items-center text-center">
+              <div
+                class="mb-4 flex h-14 w-14 items-center justify-center rounded-full border border-amber-100 bg-amber-50"
+              >
+                <span
+                  class="material-symbols-outlined text-2xl text-amber-500"
+                  style="font-variation-settings: 'FILL' 1"
+                >
+                  swap_horiz
+                </span>
+              </div>
+              <h3 class="text-s800 text-base font-bold tracking-tight">手机号已在其他客户端登录</h3>
+              <p class="text-s400 mt-1 text-[12px]">
+                以下手机号当前已绑定到其他客户端，是否强制绑定到当前设备？
+              </p>
+            </div>
+          </div>
+
+          <!-- 冲突手机号列表 -->
+          <div class="px-8 py-3">
+            <div
+              id="force-bind-conflicts-list"
+              class="max-h-[220px] space-y-1.5 overflow-y-auto"
+            ></div>
+          </div>
+
+          <!-- 强制绑定影响说明 -->
+          <div class="px-8 pb-2">
+            <div
+              class="flex items-start gap-2 rounded-lg border border-amber-100 bg-amber-50/50 px-4 py-2.5 text-[11px] text-amber-700"
+            >
+              <span class="material-symbols-outlined mt-[1px] shrink-0 text-sm">info</span>
+              <span class="leading-snug">
+                强制绑定后，原客户端将被挤下线，对应账号的任务会迁移到当前设备。
+              </span>
+            </div>
+          </div>
+
+          <!-- 操作按钮 -->
+          <div class="border-s100 flex items-center justify-end gap-2.5 border-t px-8 py-4">
+            <button
+              id="force-bind-cancel"
+              class="border-s200 bg-s50 text-s500 hover:bg-s100 hover:border-s300 cursor-pointer rounded-lg border px-5 py-2 text-xs font-semibold transition-all duration-150 active:scale-[0.98]"
+            >
+              取消
+            </button>
+            <button
+              id="force-bind-ok"
+              class="cursor-pointer rounded-lg border border-amber-500/40 bg-amber-500 px-5 py-2 text-xs font-bold text-white shadow-sm transition-all duration-150 hover:bg-amber-600 hover:shadow-md active:scale-[0.98]"
+            >
+              <span class="flex items-center gap-1.5">
+                <span class="material-symbols-outlined text-[14px]">verified</span>
+                确认强制绑定
+              </span>
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- 添加同步账号对话框 -->
       <div class="modal-mask" id="add-account-modal" style="display: none">
         <div

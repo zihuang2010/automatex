@@ -20,6 +20,13 @@ pub struct RealApiClient {
 
 static NEXT_HTTP_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
+fn is_business_success(code: i32) -> bool {
+    // 兼容不同环境的网关约定：
+    // - 旧文档/部分接口：成功 = 1
+    // - 当前绑定接口真实返回：成功 = 0（冲突态同样走成功响应，只在 data.conflicts 中体现）
+    matches!(code, 0 | 1)
+}
+
 impl RealApiClient {
     pub fn new(base_url: &str) -> Self {
         info!(base_url = %base_url, "真实模式启用");
@@ -120,7 +127,7 @@ impl RealApiClient {
                     let envelope = serde_json::from_str::<ApiEnvelope<T>>(&text)
                         .map_err(|e| format!("{} 解析失败: {}, raw={}", action, e, text))?;
                     let _ = envelope.service_code;
-                    if envelope.code != 1 {
+                    if !is_business_success(envelope.code) {
                         return Err(format!("{} 失败: {}", action, envelope.msg));
                     }
                     if envelope.data.is_none() {
@@ -163,6 +170,27 @@ impl RealApiClient {
         }
 
         Err(format!("{} 请求失败: 已达到最大重试次数", action))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_business_success;
+
+    #[test]
+    fn accepts_zero_as_success_code() {
+        assert!(is_business_success(0));
+    }
+
+    #[test]
+    fn accepts_one_as_success_code() {
+        assert!(is_business_success(1));
+    }
+
+    #[test]
+    fn rejects_other_business_codes() {
+        assert!(!is_business_success(-1));
+        assert!(!is_business_success(2));
     }
 }
 
