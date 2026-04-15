@@ -173,8 +173,7 @@ pub async fn unbind_phone(
 
     let remaining_phones: Vec<String> =
         old_phones.into_iter().filter(|saved| saved != &phone).collect();
-    let cleaned =
-        apply_phone_state_change(&state, &app_handle, &[phone], &remaining_phones).await;
+    let cleaned = apply_phone_state_change(&state, &app_handle, &[phone], &remaining_phones).await;
     if cleaned > 0 {
         engine.reload_tasks().await;
     }
@@ -235,11 +234,8 @@ pub async fn acknowledge_phones_unbind(
     let to_remove: HashSet<&String> = normalized.iter().collect();
     let remaining_phones: Vec<String> =
         old_phones.iter().filter(|saved| !to_remove.contains(*saved)).cloned().collect();
-    let intersected: Vec<String> = old_phones
-        .iter()
-        .filter(|saved| to_remove.contains(*saved))
-        .cloned()
-        .collect();
+    let intersected: Vec<String> =
+        old_phones.iter().filter(|saved| to_remove.contains(*saved)).cloned().collect();
 
     // 快路径：服务端推送的手机号与本地完全不相交 → 本地无需任何动作
     if intersected.is_empty() {
