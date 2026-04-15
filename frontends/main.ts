@@ -585,6 +585,10 @@ function showUnbindNotifyModal(mobiles: string[], reason?: string) {
       okBtn.disabled = true;
       okBtn.textContent = '处理中...';
     }
+    // 先让按钮状态完成一帧渲染，避免用户首击后因视觉反馈延迟而误判为未点击成功。
+    await new Promise<void>(resolve => {
+      requestAnimationFrame(() => resolve());
+    });
     try {
       const result = await invoke<{
         status: string;
@@ -622,10 +626,15 @@ function showUnbindNotifyModal(mobiles: string[], reason?: string) {
     void onOk();
   };
 
+  const onPointerDown = (e: PointerEvent) => {
+    e.preventDefault();
+    void onOk();
+  };
+
   const cleanup = () => {
     modal.style.display = 'none';
     okBtn?.removeEventListener('click', onPress);
-    okBtn?.removeEventListener('pointerup', onPress);
+    okBtn?.removeEventListener('pointerdown', onPointerDown);
     okBtn?.removeEventListener('keydown', onKey);
     if (okBtn) {
       okBtn.disabled = false;
@@ -635,7 +644,7 @@ function showUnbindNotifyModal(mobiles: string[], reason?: string) {
   };
 
   okBtn?.addEventListener('click', onPress);
-  okBtn?.addEventListener('pointerup', onPress);
+  okBtn?.addEventListener('pointerdown', onPointerDown);
   okBtn?.addEventListener('keydown', onKey);
   activeUnbindModalCleanup = cleanup;
 }
