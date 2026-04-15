@@ -1,10 +1,26 @@
 //! 消息路由 — 根据 Topic 后缀将 MQTT 消息映射到 Tauri 前端事件
 
 use crate::constants::{mqtt_topic, tauri_event};
+use chrono::{Local, LocalResult, NaiveDateTime, TimeZone};
 use tauri::Emitter;
 use tracing::{debug, info, warn};
 
 use super::types::{MsgBroadcastOffline, MsgTaskChanged, MsgUnbind};
+
+fn parse_event_at_ts(json_value: &serde_json::Value) -> Option<i64> {
+    let raw = json_value.get("eventAt")?;
+    if let Some(ts) = raw.as_i64() {
+        return Some(ts);
+    }
+
+    let text = raw.as_str()?;
+    let naive = NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S").ok()?;
+    match Local.from_local_datetime(&naive) {
+        LocalResult::Single(dt) => Some(dt.timestamp()),
+        LocalResult::Ambiguous(dt, _) => Some(dt.timestamp()),
+        LocalResult::None => None,
+    }
+}
 
 /// 根据 Topic 后缀将消息路由到不同的 Tauri 前端事件
 /// `client_id`: 当前客户端 ID，用于回环校验
@@ -25,8 +41,8 @@ pub(crate) fn route_message(
         },
     };
 
-    // 过滤旧消息：eventAt 字段必须存在且不早于本次连接时间
-    if let Some(event_at) = json_value.get("eventAt").and_then(|v| v.as_i64()) {
+    // 过滤旧消息：兼容 eventAt 为 Unix 时间戳或 "yyyy-MM-dd HH:mm:ss" 字符串
+    if let Some(event_at) = parse_event_at_ts(&json_value) {
         if event_at < connect_ts {
             debug!(topic = topic, event_at, connect_ts, "过滤旧消息");
             return;
@@ -98,5 +114,28 @@ pub(crate) fn route_message(
                 "payload": payload,
             }),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_event_at_ts;
+
+    #[test]
+    fn parses_numeric_event_at() {
+        let value = serde_json::json!({ "eventAt": 1_713_456_789_i64 });
+        assert_eq!(parse_event_at_ts(&value), Some(1_713_456_789_i64));
+    }
+
+    #[test]
+    fn parses_string_event_at() {
+        let value = serde_json::json!({ "eventAt": "2026-04-15 10:01:20" });
+        assert!(parse_event_at_ts(&value).is_some());
+    }
+
+    #[test]
+    fn ignores_invalid_event_at() {
+        let value = serde_json::json!({ "eventAt": "not-a-date" });
+        assert_eq!(parse_event_at_ts(&value), None);
     }
 }

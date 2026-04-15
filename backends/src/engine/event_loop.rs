@@ -673,6 +673,14 @@ async fn engine_loop(mut s: EngineState, mut rx: mpsc::Receiver<EngineMsg>) {
                 let _ = reply.send(handle_phones_unbind(&mut s, phones).await);
                 should_force_emit = true;
             },
+            EngineMsg::PauseTasksForPhones { phones, reply } => {
+                let _ = reply.send(handle_pause_tasks_for_phones(&mut s, phones).await);
+                should_force_emit = true;
+            },
+            EngineMsg::CleanupTaskIds { task_ids, reply } => {
+                let _ = reply.send(cleanup_task_ids_impl(&mut s, task_ids).await);
+                should_force_emit = true;
+            },
             EngineMsg::ReleaseOfflineDevices { online_serials, reply } => {
                 let _ = reply.send(handle_release_offline(&mut s, &online_serials).await);
                 should_force_emit = true;
@@ -1811,11 +1819,20 @@ async fn handle_phones_unbind(s: &mut EngineState, phones: Vec<String>) -> u32 {
     }
     all_task_ids.sort();
     all_task_ids.dedup();
-    if all_task_ids.is_empty() {
+    cleanup_task_ids_impl(s, all_task_ids).await
+}
+
+/// 精确按 task_id 清理：停 runtime → 标记 round/run 停止 → 从 s.tasks 移除 → DB 删除
+///
+/// 是 `handle_phones_unbind` / `acknowledge_phones_unbind` 共用的底层操作。
+/// 独立出来后，上层可以先收集 task_id（包括因 phone 列异常而无法通过 phone 匹配的残留任务），
+/// 再一次性交给这里做原子清理，避免「synced_phones 已清空、但本地 task_defs 仍残留」的数据不一致。
+async fn cleanup_task_ids_impl(s: &mut EngineState, task_ids: Vec<String>) -> u32 {
+    if task_ids.is_empty() {
         return 0;
     }
 
-    for task_id in &all_task_ids {
+    for task_id in &task_ids {
         if let Some(runtime) = remove_runtime(s, task_id) {
             s.storage.finish_round(runtime.round_id, round_status::STOPPED).await;
             s.storage
@@ -1824,12 +1841,50 @@ async fn handle_phones_unbind(s: &mut EngineState, phones: Vec<String>) -> u32 {
         }
     }
 
-    let id_set: HashSet<String> = all_task_ids.iter().cloned().collect();
+    let id_set: HashSet<String> = task_ids.iter().cloned().collect();
     s.tasks.retain(|task| !id_set.contains(&task.id));
-    if let Err(e) = s.storage.batch_cleanup_tasks(&all_task_ids).await {
+    if let Err(e) = s.storage.batch_cleanup_tasks(&task_ids).await {
         error!(error = %e, "批量清理任务失败");
     }
-    all_task_ids.len() as u32
+    task_ids.len() as u32
+}
+
+/// 暂停归属于指定手机号的所有「执行中」任务（非破坏性，用于 MQTT 异地绑定通知前置动作）
+///
+/// 注意：依赖 `a_task_defs.phone` 列做匹配，历史空值的任务无法被识别 → 只做 best-effort。
+/// 后续用户确认后的 `acknowledge_phones_unbind` 会再兜底一次完整清理。
+async fn handle_pause_tasks_for_phones(s: &mut EngineState, phones: Vec<String>) -> u32 {
+    let mut all_task_ids = Vec::new();
+    for phone in &phones {
+        all_task_ids.extend(s.storage.get_tasks_by_phone(phone).await);
+    }
+    all_task_ids.sort();
+    all_task_ids.dedup();
+
+    let mut paused = 0u32;
+    for task_id in &all_task_ids {
+        let is_executing =
+            s.tasks.iter().any(|t| t.id == *task_id && t.status == task_status::EXECUTING);
+        if !is_executing {
+            continue;
+        }
+        match handle_pause(s, task_id).await {
+            Ok(()) => {
+                paused += 1;
+                // 与 EngineMsg::PauseTask 分支保持一致：pause 成功后对外广播事件
+                let mqtt = Arc::clone(&s.mqtt);
+                let tid = task_id.clone();
+                tokio::spawn(async move { mqtt.publish_task_event(&tid, "paused").await });
+            },
+            Err(e) => {
+                warn!(task_id = %task_id, error = %e, "异地绑定通知：暂停任务失败");
+            },
+        }
+    }
+    if paused > 0 {
+        info!(count = paused, phones = ?phones, "已暂停异地绑定手机号的执行中任务");
+    }
+    paused
 }
 
 async fn handle_task_reload_msg(s: &mut EngineState, action: &str, task_id: Option<&str>) {

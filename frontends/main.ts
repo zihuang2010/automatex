@@ -41,6 +41,7 @@ import { $, showToast } from './utils';
 let appBootstrapped = false;
 let accountPanelInitialized = false;
 const appUnlisteners: UnlistenFn[] = [];
+let activeUnbindModalCleanup: (() => void) | null = null;
 
 /* ===== 生产环境交互拦截 =====
  * 仅在 vite 构建出的生产包中生效：
@@ -395,30 +396,36 @@ function initAccountPanel() {
     target.classList.add('opacity-50');
 
     try {
-      // 本地预计算剩余手机号（避免依赖网络）
-      const currentPhones = await getSyncedPhones();
-      const remaining = currentPhones.filter(p => p !== phoneToRemove);
+      // Step 1: 调用 unbind_phone —— 命中后端 /mttl_tools/v1/meituanTraffic/client/unbind
+      // 同时完成：HTTP 解绑 + 本地任务清理 + 更新 SYNCED_PHONES + 发 ACCOUNT_SYNC_CHANGED 事件
+      const unbindResult = await invoke<{ status: string; phones: number; tasks: number }>(
+        'unbind_phone',
+        { phone: phoneToRemove },
+      );
 
-      if (remaining.length === 0) {
-        // 最后一个账号 → sync_tasks_by_phones([], force: true) 走后端本地清理分支（无 HTTP），
-        // 直接跳转到同步过渡页，允许离线场景正常工作
-        await invoke('sync_tasks_by_phones', { phones: [], force: true });
-        showToast(`已移除账号 ${masked}`, 'info');
+      showToast(`已移除账号 ${masked}`, 'info');
+
+      // Step 2: 如果最后一个号码被解绑，直接跳转同步过渡页
+      if (unbindResult.phones === 0) {
         await Promise.all([refreshAccountList(), fullRefresh()]);
         openPhoneBindPage('startup').catch(console.error);
         return;
       }
 
-      // 非最后账号 → 用剩余号码重新同步（后端 sync_tasks_by_phones 会自动清理被移除的号码）
-      const syncResult = await invoke<{ tasks?: number }>('sync_tasks_by_phones', {
-        phones: remaining,
-        force: true,
-      });
+      // Step 3: 对剩余号码重新同步 —— 强制以服务端为准刷新任务状态，
+      // 避免 handle_phones_unbind 因 phone 列匹配失败而漏清理，也保证剩余号码
+      // 的任务数是服务端最新数据（而不是 DB 里过期的行数）
+      const remaining = await getSyncedPhones();
+      const syncResult = await invoke<{
+        status: string;
+        phones?: number;
+        tasks?: number;
+      }>('sync_tasks_by_phones', { phones: remaining, force: true });
 
-      showToast(`已移除账号 ${masked}`, 'info');
       await Promise.all([refreshAccountList(), fullRefresh()]);
 
       if ((syncResult.tasks ?? 0) === 0) {
+        // 剩余号码均无任务 → 提示用户重绑
         openPhoneBindPage('empty-tasks').catch(console.error);
       }
     } catch (err) {
@@ -536,7 +543,7 @@ function showUnbindNotifyModal(mobiles: string[], reason?: string) {
   const reasonWrap = document.getElementById('unbind-notify-reason') as HTMLElement;
   const reasonText = document.getElementById('unbind-notify-reason-text') as HTMLElement;
   const phonesList = document.getElementById('unbind-notify-phones') as HTMLElement;
-  const okBtn = document.getElementById('unbind-notify-ok') as HTMLElement;
+  const okBtn = document.getElementById('unbind-notify-ok') as HTMLButtonElement | null;
 
   // 显示原因
   if (reason && reasonWrap && reasonText) {
@@ -561,24 +568,76 @@ function showUnbindNotifyModal(mobiles: string[], reason?: string) {
       .join('');
   }
 
+  activeUnbindModalCleanup?.();
   modal.style.display = 'flex';
+  okBtn?.focus({ preventScroll: true });
+
+  // 持有状态，避免重复触发（Enter + 点击 同时发生时只执行一次）
+  let acknowledging = false;
+
+  // 点击「我知道了」：调用后端清理被解绑的手机号及其任务，
+  // 刷新账号列表与任务状态，再判断是否需要跳过渡页。
+  // 注意：不支持点击遮罩或 Esc 关闭 —— 异地登录是强制提醒，必须点按钮确认。
+  const onOk = async () => {
+    if (acknowledging) return;
+    acknowledging = true;
+    if (okBtn) {
+      okBtn.disabled = true;
+      okBtn.textContent = '处理中...';
+    }
+    try {
+      const result = await invoke<{
+        status: string;
+        phones: number;
+        tasks: number;
+      }>('acknowledge_phones_unbind', { phones: mobiles });
+      cleanup();
+      await Promise.all([refreshAccountList(), fullRefresh()]);
+      if ((result.phones ?? 0) === 0 && (result.tasks ?? 0) === 0) {
+        openPhoneBindPage('startup').catch(console.error);
+        return;
+      }
+      if ((result.tasks ?? 0) === 0) {
+        openPhoneBindPage('empty-tasks').catch(console.error);
+      }
+    } catch (err) {
+      console.error('[unbind-notify] 确认失败:', err);
+      showToast(`确认失败: ${err}`, 'error');
+      acknowledging = false;
+      if (okBtn) {
+        okBtn.disabled = false;
+        okBtn.textContent = '我知道了';
+      }
+    }
+  };
+
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      void onOk();
+    }
+  };
+
+  const onPress = () => {
+    void onOk();
+  };
 
   const cleanup = () => {
     modal.style.display = 'none';
-    okBtn?.removeEventListener('click', onOk);
-    modal.removeEventListener('click', onMask);
-    document.removeEventListener('keydown', onKey);
+    okBtn?.removeEventListener('click', onPress);
+    okBtn?.removeEventListener('pointerup', onPress);
+    okBtn?.removeEventListener('keydown', onKey);
+    if (okBtn) {
+      okBtn.disabled = false;
+      okBtn.textContent = '我知道了';
+    }
+    activeUnbindModalCleanup = null;
   };
-  const onOk = () => cleanup();
-  const onMask = (e: MouseEvent) => {
-    if (e.target === e.currentTarget) cleanup();
-  };
-  const onKey = (e: KeyboardEvent) => {
-    if (e.key === 'Escape' || e.key === 'Enter') cleanup();
-  };
-  okBtn?.addEventListener('click', onOk);
-  modal.addEventListener('click', onMask);
-  document.addEventListener('keydown', onKey);
+
+  okBtn?.addEventListener('click', onPress);
+  okBtn?.addEventListener('pointerup', onPress);
+  okBtn?.addEventListener('keydown', onKey);
+  activeUnbindModalCleanup = cleanup;
 }
 
 /* ===== Init ===== */

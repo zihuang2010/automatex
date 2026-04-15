@@ -77,6 +77,17 @@ pub(crate) enum EngineMsg {
         phones: Vec<String>,
         reply: oneshot::Sender<u32>,
     },
+    /// 暂停归属于指定手机号的执行中任务（不删除，用于 MQTT 异地绑定通知前置动作）
+    PauseTasksForPhones {
+        phones: Vec<String>,
+        reply: oneshot::Sender<u32>,
+    },
+    /// 按 task_id 精确清理任务（停止 runtime + 从 s.tasks / DB 删除）
+    /// 是 `HandlePhonesUnbind` 的底层能力，供 `acknowledge_phones_unbind` 做「安全网」清理
+    CleanupTaskIds {
+        task_ids: Vec<String>,
+        reply: oneshot::Sender<u32>,
+    },
     ReleaseOfflineDevices {
         online_serials: Vec<String>,
         reply: oneshot::Sender<u32>,
@@ -267,6 +278,21 @@ impl TaskEngine {
 
     pub async fn handle_device_kick(self: &Arc<Self>, hw_serials: Vec<String>) -> u32 {
         self.send_and_recv(|reply| EngineMsg::HandleDeviceKick { hw_serials, reply })
+            .await
+            .unwrap_or(0)
+    }
+
+    /// 暂停归属于指定手机号的所有「执行中」任务。
+    /// 仅暂停 runtime / 停 worker，不改动 synced_phones 或 DB 任务定义。
+    pub async fn pause_tasks_for_phones(self: &Arc<Self>, phones: Vec<String>) -> u32 {
+        self.send_and_recv(|reply| EngineMsg::PauseTasksForPhones { phones, reply })
+            .await
+            .unwrap_or(0)
+    }
+
+    /// 按 task_id 精确清理任务（runtime + DB + 内存状态）
+    pub async fn cleanup_task_ids(self: &Arc<Self>, task_ids: Vec<String>) -> u32 {
+        self.send_and_recv(|reply| EngineMsg::CleanupTaskIds { task_ids, reply })
             .await
             .unwrap_or(0)
     }

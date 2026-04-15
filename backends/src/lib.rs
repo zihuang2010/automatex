@@ -236,18 +236,31 @@ pub fn run() {
             }
 
             // ── MQTT 手机号解绑监听 ──
+            //
+            // 收到 `mt/client/{cid}/unbind` 消息后的双通道处理：
+            // 1) router.rs 会把 `MQTT_PHONES_UNBIND` 事件派发给前端，
+            //    前端弹出「账号异地绑定通知」模态框让用户知情；
+            // 2) 这里的后端 listener 会在**同一事件**上先做**非破坏性**的
+            //    best-effort 暂停：把归属于被异地绑定手机号的执行中任务 pause 住，
+            //    避免用户看到弹窗前仍在跑已失效的任务。
+            //
+            // 真正的「删除任务 + 清理 synced_phones」只在用户点击「我知道了」后，
+            // 由前端回调 `acknowledge_phones_unbind` 命令触发，避免在用户确认前就
+            // 悄悄改动状态。
             {
-                let engine_unbind = Arc::clone(&engine);
+                let engine_unbind_pause = Arc::clone(&engine);
                 app.listen(constants::tauri_event::MQTT_PHONES_UNBIND, move |event| {
-                    let engine = Arc::clone(&engine_unbind);
+                    let engine = Arc::clone(&engine_unbind_pause);
                     tauri::async_runtime::spawn(async move {
                         let Some(eng) = engine.get() else {
-                            warn!("engine 未初始化，跳过 phones-unbind");
+                            warn!("engine 未初始化，跳过 phones-unbind pause");
                             return;
                         };
                         if let Ok(msg) = serde_json::from_str::<mqtt::MsgUnbind>(event.payload()) {
-                            let n = eng.handle_phones_unbind(msg.mobiles).await;
-                            info!(removed = n, "手机号解绑完成");
+                            let n = eng.pause_tasks_for_phones(msg.mobiles).await;
+                            if n > 0 {
+                                info!(paused = n, "异地绑定通知：已暂停受影响任务");
+                            }
                         }
                     });
                 });
@@ -357,6 +370,7 @@ pub fn run() {
             unflag_device,
             sync_tasks_by_phones,
             unbind_phone,
+            acknowledge_phones_unbind,
             scrcpy_start_mirror,
             scrcpy_stop_mirror,
             scrcpy_inject_touch,
@@ -374,11 +388,19 @@ pub fn run() {
                 let state = app_handle.state::<AppState>();
                 let scrcpy = Arc::clone(&state.scrcpy);
                 let engine = Arc::clone(&state.engine);
+                let mqtt = Arc::clone(&state.mqtt);
                 tauri::async_runtime::block_on(async move {
                     scrcpy.shutdown().await;
                     // 引擎 shutdown：drop sender 触发 event_loop 退出 + 取消所有 worker
                     if let Some(eng) = engine.get() {
                         eng.shutdown().await;
+                    }
+                    // MQTT 优雅下线：MqttManager::disconnect 会先发 mt/client/{cid}/offline
+                    // （reason=user_logout, 2s publish 超时）再发 MQTT DISCONNECT 包，
+                    // 服务端收到 DISCONNECT 后不会触发 LWT，而是把 offline 作为权威下线消息。
+                    // 必须放在 engine.shutdown 之后，避免 in-flight 的 MQTT 发布被抢跑。
+                    if let Err(e) = mqtt.disconnect().await {
+                        info!(error = %e, "MQTT 退出时断开失败（可能未连接，忽略）");
                     }
                     info!("资源清理完成");
                 });
