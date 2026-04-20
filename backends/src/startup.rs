@@ -46,6 +46,7 @@ pub(crate) async fn ensure_mqtt_defaults(db: &storage::Database) {
     let password = mqtt_default::password();
     // 默认指向开发代理；生产上线请通过环境变量 AUTOMATEX_API_BASE_URL 覆盖，
     // 或在打包前修改此处的 fallback 值为生产端点。
+    // https://proxy.jdd51.com/edge-app
     let api_base = std::env::var("AUTOMATEX_API_BASE_URL")
         .unwrap_or_else(|_| "https://proxy-dev.jdd51.com/edge-app".to_string());
     // 主题默认：浅色（light）
