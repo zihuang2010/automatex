@@ -8,8 +8,9 @@ pub use progress::ResultRow;
 pub use stats::{DailyStatRow, DailySummary, ProgressRow, TaskRunStats};
 
 use deadpool_sqlite::{Config, Hook, Pool, Runtime};
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 use tracing::{error, info};
 
@@ -116,7 +117,8 @@ impl Database {
 
         // 同步建表（裸 Connection，一次性操作）
         {
-            let conn = Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {}", e))?;
+            let mut conn =
+                Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {}", e))?;
             conn.execute_batch("PRAGMA journal_mode=WAL;")
                 .map_err(|e| format!("设置 WAL 失败: {}", e))?;
 
@@ -299,6 +301,13 @@ impl Database {
                 }
             }
 
+            // 启动期一次性脏数据合并：历史版本未做 hw_serial 去重，
+            // a_devices 中可能残留同一物理设备的多行（USB serial + 无线 IP:port）。
+            // 在建索引前把每组按 updated_at 取 winner，引用迁移后删 loser。
+            if let Err(e) = dedupe_devices_by_hw_serial(&mut conn) {
+                error!(op = "dedupe_devices", error = %e, "启动合并设备脏行失败");
+            }
+
             // 建索引（此时所有列已确保存在）
             conn.execute_batch(
                 "CREATE INDEX IF NOT EXISTS idx_devices_hw_serial ON a_devices(hw_serial);
@@ -353,4 +362,91 @@ impl Database {
 
         Ok(Self { pool })
     }
+}
+
+/// 启动期一次性合并 a_devices 中同一物理设备的多余行（按 hw_serial 分组）。
+///
+/// 历史版本未做去重，可能残留 USB serial 行 + 无线 IP:port 行；二者 hw_serial
+/// 相同。每组按 `updated_at DESC, serial ASC` 选 winner，把 a_task_state /
+/// a_task_runs / a_task_progress 中其他 serial 的引用迁移到 winner，loser 的
+/// local_port 继承到 winner（仅当 winner 为空），最后删除 loser。
+fn dedupe_devices_by_hw_serial(conn: &mut Connection) -> rusqlite::Result<()> {
+    type Row = (String, String, i64, Option<i64>);
+    let rows: Vec<Row> = {
+        let mut stmt = conn.prepare(
+            "SELECT serial, hw_serial, updated_at, local_port
+             FROM a_devices
+             WHERE hw_serial IS NOT NULL AND hw_serial != ''
+             ORDER BY hw_serial, updated_at DESC, serial",
+        )?;
+        let it = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Option<i64>>(3)?,
+            ))
+        })?;
+        it.filter_map(|r| r.ok()).collect()
+    };
+
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    // 按 hw_serial 分组（rows 已按 hw_serial、updated_at DESC 排序，组内首个即 winner）
+    let mut groups: HashMap<String, Vec<(String, Option<i64>)>> = HashMap::new();
+    for (serial, hw, _ts, port) in rows {
+        groups.entry(hw).or_default().push((serial, port));
+    }
+
+    let plans: Vec<(String, Option<i64>, Vec<(String, Option<i64>)>)> = groups
+        .into_iter()
+        .filter(|(_, members)| members.len() > 1)
+        .map(|(_, mut members)| {
+            let (winner_serial, winner_port) = members.remove(0);
+            (winner_serial, winner_port, members)
+        })
+        .collect();
+
+    if plans.is_empty() {
+        return Ok(());
+    }
+
+    let tx = conn.transaction()?;
+    let mut total_merged = 0usize;
+    for (winner, winner_port, losers) in &plans {
+        let mut inherited_port: Option<i64> = None;
+        for (loser_serial, loser_port) in losers {
+            tx.execute(
+                "UPDATE a_task_state SET assigned_device = ?1 WHERE assigned_device = ?2",
+                params![winner, loser_serial],
+            )?;
+            tx.execute(
+                "UPDATE a_task_runs SET device_serial = ?1 WHERE device_serial = ?2",
+                params![winner, loser_serial],
+            )?;
+            tx.execute(
+                "UPDATE a_task_progress SET device_serial = ?1 WHERE device_serial = ?2",
+                params![winner, loser_serial],
+            )?;
+            tx.execute("DELETE FROM a_devices WHERE serial = ?1", params![loser_serial])?;
+            if inherited_port.is_none() {
+                inherited_port = *loser_port;
+            }
+            total_merged += 1;
+        }
+        if winner_port.is_none() {
+            if let Some(port) = inherited_port {
+                tx.execute(
+                    "UPDATE a_devices SET local_port = ?1 WHERE serial = ?2 AND local_port IS NULL",
+                    params![port, winner],
+                )?;
+            }
+        }
+    }
+    tx.commit()?;
+
+    info!(groups = plans.len(), removed = total_merged, "启动期合并 a_devices 重复行");
+    Ok(())
 }

@@ -711,6 +711,14 @@ window.addEventListener('DOMContentLoaded', () => {
     (serial: string) => loadTasksForDevice(serial),
     (serial: string) => showDeviceInfo(serial),
     (serial: string) => startMirror(serial),
+    async (serial: string) => {
+      try {
+        const msg = await invoke<string>('switch_device_to_wifi', { serial });
+        showToast(msg, 'info');
+      } catch (e) {
+        showToast(`切换无线失败: ${e}`, 'error');
+      }
+    },
   );
   setTaskViewCallbacks(
     () => updateCardSelection(),

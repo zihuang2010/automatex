@@ -1170,7 +1170,8 @@
 /* ══════ MIRROR ══════ */
 
 /* 设备卡片投屏按钮 */
-.dev-mirror-btn {
+.dev-mirror-btn,
+.dev-wifi-btn {
   @apply flex items-center justify-center rounded-md transition-all;
   width: 22px;
   height: 22px;
@@ -1180,13 +1181,30 @@
   border: none;
 }
 
-.dev-mirror-btn:hover {
+.dev-mirror-btn:hover,
+.dev-wifi-btn:hover {
   color: var(--color-blue);
   background: rgba(37, 99, 235, 0.1);
 }
 
-.dev-mirror-btn .material-symbols-outlined {
+.dev-mirror-btn .material-symbols-outlined,
+.dev-wifi-btn .material-symbols-outlined {
   font-size: 14px;
+}
+
+.dev-wifi-btn:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+@keyframes dev-btn-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.dev-wifi-btn.is-loading .material-symbols-outlined {
+  animation: dev-btn-spin 0.9s linear infinite;
 }
 
 /* ═══════════════════════════════════════════════════
@@ -1868,11 +1886,14 @@ body.mirror-resizing * {
   letter-spacing: 0.22em;
   text-transform: uppercase;
   color: #94a3b8;
+  white-space: nowrap;
 }
 
 .mirror-info-text {
-  white-space: normal;
-  word-break: break-all;
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 600;

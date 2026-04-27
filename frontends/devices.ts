@@ -9,6 +9,7 @@ import { $, esc, getDeviceName, getPresentationState, timeAgo } from './utils';
 let _onLoadTasksForDevice: ((serial: string) => void) | null = null;
 let _onShowDeviceInfo: ((serial: string) => void) | null = null;
 let _onStartMirror: ((serial: string) => void) | null = null;
+let _onSwitchToWifi: ((serial: string) => void | Promise<void>) | null = null;
 let _pendingRafId: number | null = null;
 let _deviceCache: DeviceRow[] = [];
 
@@ -30,10 +31,12 @@ export function setDeviceCallbacks(
   onLoadTasks: (serial: string) => void,
   onShowDeviceInfo: (serial: string) => void,
   onStartMirror?: (serial: string) => void,
+  onSwitchToWifi?: (serial: string) => void | Promise<void>,
 ) {
   _onLoadTasksForDevice = onLoadTasks;
   _onShowDeviceInfo = onShowDeviceInfo;
   _onStartMirror = onStartMirror ?? null;
+  _onSwitchToWifi = onSwitchToWifi ?? null;
 }
 
 /* ===== Device List ===== */
@@ -78,6 +81,10 @@ export async function refreshDevices(): Promise<DeviceRow[]> {
   }
 }
 
+export function getCachedDevice(serial: string): DeviceRow | undefined {
+  return _deviceCache.find(item => item.serial === serial);
+}
+
 export function getCachedDeviceResolution(
   serial: string,
 ): { width: number; height: number } | null {
@@ -95,6 +102,20 @@ export function getCachedDeviceResolution(
   }
 
   return { width, height };
+}
+
+/** 卡片角标：直观区分当前 ADB transport 是 USB 还是 WiFi */
+function transportChip(d: DeviceRow, dimmed = false): string {
+  const isWifi = d.device_type === 'wifi';
+  const text = isWifi ? 'WiFi' : 'USB';
+  const cls = isWifi
+    ? dimmed
+      ? 'bg-blue-50/60 text-blue-400 border-blue-100'
+      : 'bg-blue-50 text-blue-600 border-blue-100'
+    : dimmed
+      ? 'bg-s100 text-s400 border-s200'
+      : 'bg-s100 text-s500 border-s200';
+  return `<span class="text-[9px] font-black px-1 py-px rounded border uppercase tracking-wider shrink-0 ${cls}">${text}</span>`;
 }
 
 function renderDeviceCards(devs: DeviceRow[]) {
@@ -171,7 +192,10 @@ function renderDeviceCards(devs: DeviceRow[]) {
               <span class="text-[10px] font-bold ${statusTextClass}">${statusLabel}</span>
             </div>
           </div>
-          <p class="mono-technical text-[10px] text-s500 font-medium">${esc(shortHwid)}</p>
+          <div class="flex items-center gap-1.5 min-w-0">
+            <span class="mono-technical text-[10px] text-s500 font-medium truncate">${esc(shortHwid)}</span>
+            ${transportChip(d)}
+          </div>
         </div>
       </div>
       <div class="mt-2.5">
@@ -257,7 +281,10 @@ function renderDeviceCards(devs: DeviceRow[]) {
         </div>
         <div class="min-w-0 flex-1">
           <h3 class="text-[11px] font-bold text-s700 truncate pr-8">${esc(displayName)}</h3>
-          <p class="mono-technical text-[10px] text-s500 mt-0.5 font-medium">${esc(shortHwid)}</p>
+          <div class="flex items-center gap-1.5 mt-0.5 min-w-0 pr-8">
+            <span class="mono-technical text-[10px] text-s500 font-medium truncate">${esc(shortHwid)}</span>
+            ${transportChip(d)}
+          </div>
         </div>
       </div>
       <div class="mt-2.5 flex items-center justify-between text-[10px] font-bold">
@@ -269,9 +296,16 @@ function renderDeviceCards(devs: DeviceRow[]) {
             <span class="material-symbols-outlined icon-sm">device_thermostat</span>${temp}°C
           </span>
         </div>
-        <button class="dev-mirror-btn" data-mirror="${esc(d.serial)}" title="投屏">
-          <span class="material-symbols-outlined">cast</span>
-        </button>
+        <div class="flex items-center gap-1">
+          ${
+            d.device_type === 'usb' && !flagged && !hasError
+              ? `<button class="dev-wifi-btn" data-wifi="${esc(d.serial)}" title="切到无线"><span class="material-symbols-outlined">wifi</span></button>`
+              : ''
+          }
+          <button class="dev-mirror-btn" data-mirror="${esc(d.serial)}" title="投屏">
+            <span class="material-symbols-outlined">cast</span>
+          </button>
+        </div>
       </div>
       ${errorBanner}
     </div>`;
@@ -293,7 +327,10 @@ function renderDeviceCards(devs: DeviceRow[]) {
         </div>
         <div class="min-w-0 flex-1">
           <h3 class="text-[11px] font-bold text-s600 truncate pr-8">${esc(displayName)}</h3>
-          <p class="mono-technical text-[10px] text-s400 mt-0.5 font-medium">${esc(shortHwid)}</p>
+          <div class="flex items-center gap-1.5 mt-0.5 min-w-0 pr-8">
+            <span class="mono-technical text-[10px] text-s400 font-medium truncate">${esc(shortHwid)}</span>
+            ${transportChip(d, true)}
+          </div>
         </div>
       </div>
       <div class="mt-2.5 flex items-center justify-between text-[10px] font-bold">
@@ -398,6 +435,33 @@ function renderDeviceCards(devs: DeviceRow[]) {
         e.stopPropagation();
         const serial = (btn as HTMLElement).dataset.mirror;
         if (serial) _onStartMirror?.(serial);
+      });
+    });
+
+    // 切到无线按钮事件
+    tree.querySelectorAll('.dev-wifi-btn').forEach(btn => {
+      btn.addEventListener('click', async e => {
+        e.stopPropagation();
+        const button = btn as HTMLButtonElement;
+        const serial = button.dataset.wifi;
+        if (!serial || button.disabled || !_onSwitchToWifi) return;
+
+        const icon = button.querySelector('.material-symbols-outlined');
+        const originalIcon = icon?.textContent ?? 'wifi';
+        button.disabled = true;
+        button.classList.add('is-loading');
+        button.title = '切换中…';
+        if (icon) icon.textContent = 'progress_activity';
+
+        try {
+          await _onSwitchToWifi(serial);
+        } finally {
+          // 重渲染后该按钮可能已被卸载；finally 仍安全地恢复以防失败留下假死状态
+          button.disabled = false;
+          button.classList.remove('is-loading');
+          button.title = '切到无线';
+          if (icon) icon.textContent = originalIcon;
+        }
       });
     });
   });

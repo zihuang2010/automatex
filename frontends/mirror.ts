@@ -13,7 +13,7 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { type UnlistenFn, listen } from '@tauri-apps/api/event';
 
-import { getCachedDeviceResolution } from './devices';
+import { getCachedDevice, getCachedDeviceResolution } from './devices';
 import { $, esc, showToast } from './utils';
 
 // ─── 类型 ─────────────────────────────────────────────
@@ -219,7 +219,7 @@ function getInitialMirrorMetrics(serial: string) {
   };
 }
 
-function buildMirrorMarkup(serial: string) {
+function buildMirrorMarkup(serial: string, displayId: string) {
   return `
     <div class="mirror-showcase-unit">
       <div class="mirror-info-panel mirror-win-header">
@@ -232,7 +232,7 @@ function buildMirrorMarkup(serial: string) {
           </div>
           <div class="mirror-info-id-block">
             <span class="mirror-info-kicker">Device ID</span>
-            <span class="mirror-info-text" title="${esc(serial)}">${esc(serial)}</span>
+            <span class="mirror-info-text" title="${esc(displayId)}" data-serial="${esc(serial)}">${esc(displayId)}</span>
           </div>
         </div>
         <div class="mirror-info-actions">
@@ -298,7 +298,8 @@ function createMirrorWindow(
   win.style.top = `${baseY + index * 50}px`;
   win.style.zIndex = String(++zIndexCounter);
   setMirrorWindowVars(win, initialMetrics.width, initialMetrics.height, initialMetrics.screenWidth);
-  win.innerHTML = buildMirrorMarkup(serial);
+  const displayId = getCachedDevice(serial)?.hw_serial?.trim() || serial;
+  win.innerHTML = buildMirrorMarkup(serial, displayId);
 
   const canvas = win.querySelector('.mirror-win-canvas') as HTMLCanvasElement;
   const viewport = win.querySelector('.mirror-device-viewport') as HTMLElement;

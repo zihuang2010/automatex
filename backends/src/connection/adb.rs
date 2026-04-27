@@ -627,6 +627,39 @@ pub async fn adb_forward_remove(serial: &str, local_port: u16) {
     }
 }
 
+/// 让设备 adbd 在 TCP `port` 上重启（`adb -s <serial> tcpip <port>`）。
+///
+/// 用于 USB → 无线切换前置：执行后约 1–2s adbd 才能在 wifi 接口监听，
+/// 调用方需自行 sleep 等待。命令幂等：设备已在监听时再次执行也成功。
+pub async fn enable_tcpip_async(serial: &str, port: u16) -> Result<(), String> {
+    let port_str = port.to_string();
+    run_adb_async(
+        serial,
+        &["tcpip", &port_str],
+        crate::constants::timing::ADB_COMMAND_TIMEOUT_SECS,
+    )
+    .await
+    .map(|_| ())
+}
+
+/// 通过 `adb shell ip -f inet addr show wlan0` 抓设备 wlan0 的 IPv4 地址。
+///
+/// 输出格式形如 `inet 192.168.110.142/24 brd ...`，按行扫 `inet ` 前缀，取
+/// CIDR 之前的部分校验为合法 Ipv4 后返回。匹配不到则视为设备未连 WiFi。
+pub async fn fetch_wlan_ipv4_async(serial: &str) -> Result<String, String> {
+    let output = adb_shell_async(serial, "ip -f inet addr show wlan0").await?;
+    for line in output.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed.strip_prefix("inet ") else { continue };
+        let Some(cidr) = rest.split_whitespace().next() else { continue };
+        let Some(ip) = cidr.split('/').next() else { continue };
+        if ip.parse::<std::net::Ipv4Addr>().is_ok() {
+            return Ok(ip.to_string());
+        }
+    }
+    Err("设备未连接 WiFi 或无法获取 IP".to_string())
+}
+
 pub async fn disconnect_wifi_via_adb_async(serial: &str) -> Result<String, String> {
     if !serial.contains(':') {
         return Ok(format!("USB 设备无需断开 WiFi: {}", serial));

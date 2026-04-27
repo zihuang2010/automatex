@@ -411,6 +411,11 @@ pub fn spawn_device_monitor(
 
                         match result {
                             Ok(Ok(row)) => {
+                                // 同 hw_serial 不同 transport serial 的历史行先合并到本次 serial，
+                                // 再 upsert 当前行 —— 避免 USB ↔ 无线切换造成的 a_devices 重复。
+                                db_inner
+                                    .reconcile_device_by_hw_serial(&row.serial, &row.hw_serial)
+                                    .await;
                                 db_inner.upsert_device(&row).await;
                                 schedule_devices_changed_emit(
                                     &handle_inner,

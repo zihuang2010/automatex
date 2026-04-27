@@ -356,4 +356,125 @@ impl Database {
             })
             .await;
     }
+
+    /// 合并同一物理设备（hw_serial 相同）的不同 ADB transport serial 行。
+    ///
+    /// 一台设备先 USB 接入（serial = hw_serial）后又切到无线（serial = IP:port），
+    /// ADB `track_devices` 把它当成两个 transport 上报，monitor 各 upsert 一条
+    /// `a_devices` 行 —— hw_serial 相同、serial 不同，UI 就出现重复设备卡。
+    /// 本方法在 IMMEDIATE 事务内做四件事：
+    /// 1. 找出 hw_serial 相同但 serial != new_serial 的所有旧行；
+    /// 2. 把 `a_task_state.assigned_device`、`a_task_runs.device_serial`、
+    ///    `a_task_progress.device_serial` 三个引用列里的旧 serial 改写为 new_serial；
+    /// 3. 把旧行 local_port 继承到新行（仅当新行为空时）；
+    /// 4. 删除旧 a_devices 行。
+    ///
+    /// 仅在 monitor 拿到真实 hw_serial（≠ serial 占位）后调用，
+    /// 否则会把 placeholder 行错误合并。
+    pub async fn reconcile_device_by_hw_serial(&self, new_serial: &str, hw_serial: &str) {
+        if hw_serial.trim().is_empty() {
+            return;
+        }
+        let new_serial = new_serial.to_string();
+        let hw_serial = hw_serial.to_string();
+        let Ok(conn) = self.pool.get().await else { return };
+        let _ = conn
+            .interact(move |conn| {
+                let tx = match conn
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                {
+                    Ok(tx) => tx,
+                    Err(e) => {
+                        error!(op = "reconcile_device", error = %e, "事务开始失败");
+                        return;
+                    },
+                };
+
+                let old_rows: Vec<(String, Option<i64>)> = {
+                    let mut stmt = match tx.prepare(
+                        "SELECT serial, local_port FROM a_devices
+                         WHERE hw_serial = ?1 AND serial != ?2",
+                    ) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            error!(op = "reconcile_device", error = %e, "查询旧行失败");
+                            return;
+                        },
+                    };
+                    let mapped = match stmt.query_map(params![hw_serial, new_serial], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+                    }) {
+                        Ok(rows) => rows,
+                        Err(e) => {
+                            error!(op = "reconcile_device", error = %e, "迭代旧行失败");
+                            return;
+                        },
+                    };
+                    let collected: Vec<(String, Option<i64>)> =
+                        mapped.filter_map(|r| r.ok()).collect();
+                    collected
+                };
+
+                if old_rows.is_empty() {
+                    return;
+                }
+
+                let inherited_port: Option<i64> = old_rows.iter().find_map(|(_, p)| *p);
+
+                for (old_serial, _) in &old_rows {
+                    log_exec(
+                        tx.execute(
+                            "UPDATE a_task_state SET assigned_device = ?1 WHERE assigned_device = ?2",
+                            params![new_serial, old_serial],
+                        ),
+                        "reconcile.task_state",
+                    );
+                    log_exec(
+                        tx.execute(
+                            "UPDATE a_task_runs SET device_serial = ?1 WHERE device_serial = ?2",
+                            params![new_serial, old_serial],
+                        ),
+                        "reconcile.task_runs",
+                    );
+                    log_exec(
+                        tx.execute(
+                            "UPDATE a_task_progress SET device_serial = ?1 WHERE device_serial = ?2",
+                            params![new_serial, old_serial],
+                        ),
+                        "reconcile.task_progress",
+                    );
+                    log_exec(
+                        tx.execute(
+                            "DELETE FROM a_devices WHERE serial = ?1",
+                            params![old_serial],
+                        ),
+                        "reconcile.delete_old",
+                    );
+                }
+
+                if let Some(port) = inherited_port {
+                    log_exec(
+                        tx.execute(
+                            "UPDATE a_devices
+                             SET local_port = COALESCE(local_port, ?1)
+                             WHERE serial = ?2",
+                            params![port, new_serial],
+                        ),
+                        "reconcile.inherit_port",
+                    );
+                }
+
+                if let Err(e) = tx.commit() {
+                    error!(op = "reconcile_device", error = %e, "事务提交失败");
+                } else {
+                    info!(
+                        hw_serial = %hw_serial,
+                        new_serial = %new_serial,
+                        merged = old_rows.len(),
+                        "合并设备行（hw_serial 去重）"
+                    );
+                }
+            })
+            .await;
+    }
 }
