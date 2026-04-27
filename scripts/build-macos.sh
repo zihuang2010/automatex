@@ -31,13 +31,36 @@ info "Node $(node -v) | npm $(npm -v)"
 info "Rust $(rustc --version | awk '{print $2}')"
 
 # ── 确定目标架构 ──
-ARCH=$(uname -m)
-if [ "$ARCH" = "arm64" ]; then
-    TARGET="aarch64-apple-darwin"
+# 用法:
+#   bash scripts/build-macos.sh              # 自动识别当前机器架构
+#   bash scripts/build-macos.sh arm64        # 强制 Apple Silicon
+#   bash scripts/build-macos.sh x86_64       # 强制 Intel
+#   bash scripts/build-macos.sh x64          # 同上
+ARG_ARCH="${1:-}"
+if [ -n "$ARG_ARCH" ]; then
+    case "$ARG_ARCH" in
+        arm64|aarch64|aarch64-apple-darwin)
+            ARCH="arm64"
+            TARGET="aarch64-apple-darwin"
+            ;;
+        x86_64|x64|intel|x86_64-apple-darwin)
+            ARCH="x86_64"
+            TARGET="x86_64-apple-darwin"
+            ;;
+        *)
+            error "不支持的架构参数: $ARG_ARCH (可选: arm64 | x86_64)"
+            ;;
+    esac
+    info "指定目标架构: $TARGET"
 else
-    TARGET="x86_64-apple-darwin"
+    ARCH=$(uname -m)
+    if [ "$ARCH" = "arm64" ]; then
+        TARGET="aarch64-apple-darwin"
+    else
+        TARGET="x86_64-apple-darwin"
+    fi
+    info "自动识别目标架构: $TARGET"
 fi
-info "目标架构: $TARGET"
 
 BUNDLE_DIR="$ROOT_DIR/backends/target/$TARGET/release/bundle"
 

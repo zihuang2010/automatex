@@ -13,6 +13,7 @@ pub async fn get_settings(state: tauri::State<'_, AppState>) -> Result<serde_jso
             .unwrap_or_else(crate::utils::generate_machine_client_id),
         setting_key::MQTT_USERNAME: setting_or(&s, setting_key::MQTT_USERNAME, ""),
         setting_key::MQTT_PASSWORD: setting_or(&s, setting_key::MQTT_PASSWORD, ""),
+        setting_key::API_BASE_URL: setting_or(&s, setting_key::API_BASE_URL, ""),
         setting_key::SYNCED_PHONES: setting_or(&s, setting_key::SYNCED_PHONES, "[]"),
         setting_key::THEME: setting_or(&s, setting_key::THEME, "dark"),
     }))

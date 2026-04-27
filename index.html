@@ -2,7 +2,7 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="color-scheme" content="light dark" />
+    <meta name="color-scheme" content="light" />
     <link rel="stylesheet" href="/frontends/styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AutomateX 工作台 PRO</title>
@@ -267,7 +267,7 @@
       </div>
 
       <!-- ===== 任务同步过渡页 ===== -->
-      <div class="transition-page" id="transition" data-tauri-drag-region style="display: none">
+      <div class="transition-page" id="transition" style="display: none">
         <!-- macOS 交通灯控件（左上角，仅 macOS 显示，由 main.ts 按平台切换） -->
         <div
           id="transition-mac-controls"
@@ -277,6 +277,7 @@
             id="btn-transition-mac-close"
             class="group flex h-3 w-3 cursor-pointer items-center justify-center rounded-full border-none bg-[#ff5f57] transition-all hover:brightness-90"
             title="关闭"
+            data-tauri-drag-region="false"
           >
             <svg
               class="h-1.5 w-1.5 opacity-0 transition-opacity group-hover:opacity-100"
@@ -306,6 +307,7 @@
             id="btn-transition-mac-minimize"
             class="group flex h-3 w-3 cursor-pointer items-center justify-center rounded-full border-none bg-[#febc2e] transition-all hover:brightness-90"
             title="最小化"
+            data-tauri-drag-region="false"
           >
             <svg
               class="h-1.5 w-1.5 opacity-0 transition-opacity group-hover:opacity-100"
@@ -326,6 +328,7 @@
             id="btn-transition-mac-maximize"
             class="group flex h-3 w-3 cursor-pointer items-center justify-center rounded-full border-none bg-[#28c840] transition-all hover:brightness-90"
             title="最大化"
+            data-tauri-drag-region="false"
           >
             <svg
               class="h-1.5 w-1.5 opacity-0 transition-opacity group-hover:opacity-100"
@@ -355,296 +358,311 @@
           id="btn-transition-win-close"
           class="text-s400 hover:bg-s100 hover:text-s600 absolute top-4 right-4 z-50 hidden h-8 w-8 cursor-pointer items-center justify-center rounded-lg border-none bg-white/60 backdrop-blur transition-all"
           title="关闭应用"
+          data-tauri-drag-region="false"
         >
           <span class="material-symbols-outlined text-lg">close</span>
         </button>
-        <!-- 错误提示（卡片上方，醒目位置） -->
-        <div id="transition-error" class="mb-4 w-full max-w-2xl" style="display: none">
-          <div
-            class="border-red/30 bg-red-light shadow-red/10 relative overflow-hidden rounded-2xl border-2 p-4 shadow-xl backdrop-blur-sm"
-          >
-            <!-- 装饰性光晕（顶部右上 + 左侧色条） -->
+        <!-- 内容容器：挂 drag-region（Windows 下不能和 transform/overflow 同层，见 styles.css） -->
+        <div class="transition-content" data-tauri-drag-region>
+          <!-- 错误提示（卡片上方，醒目位置） -->
+          <div id="transition-error" class="mb-4 w-full max-w-2xl" style="display: none">
             <div
-              class="bg-red/15 pointer-events-none absolute -top-8 -right-8 h-28 w-28 rounded-full blur-2xl"
-            ></div>
-            <div
-              class="from-red via-red/70 to-red/30 pointer-events-none absolute top-0 left-0 h-full w-1.5 bg-gradient-to-b"
-            ></div>
-
-            <div class="relative flex items-start gap-3 pl-2">
-              <!-- 图标 -->
+              class="border-red/30 bg-red-light shadow-red/10 relative overflow-hidden rounded-2xl border-2 p-4 shadow-xl backdrop-blur-sm"
+            >
+              <!-- 装饰性光晕（顶部右上 + 左侧色条） -->
               <div
-                class="border-red/30 bg-red/15 text-red shadow-red/10 trans-error-icon-pulse flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border shadow-sm"
-              >
-                <span
-                  class="material-symbols-outlined text-[24px]"
-                  style="font-variation-settings: 'FILL' 1"
-                >
-                  error
-                </span>
-              </div>
+                class="bg-red/15 pointer-events-none absolute -top-8 -right-8 h-28 w-28 rounded-full blur-2xl"
+              ></div>
+              <div
+                class="from-red via-red/70 to-red/30 pointer-events-none absolute top-0 left-0 h-full w-1.5 bg-gradient-to-b"
+              ></div>
 
-              <!-- 文本 -->
-              <div class="min-w-0 flex-1 pt-0.5">
+              <div class="relative flex items-start gap-3 pl-2">
+                <!-- 图标 -->
                 <div
-                  class="text-red flex items-center gap-2 text-[14px] font-extrabold tracking-wide"
+                  class="border-red/30 bg-red/15 text-red shadow-red/10 trans-error-icon-pulse flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border shadow-sm"
                 >
-                  <span id="transition-error-title">同步出错</span>
                   <span
-                    class="border-red/30 bg-red/10 text-red rounded-md border px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase"
+                    class="material-symbols-outlined text-[24px]"
+                    style="font-variation-settings: 'FILL' 1"
                   >
                     error
                   </span>
                 </div>
-                <div
-                  id="transition-error-text"
-                  class="text-red mt-1.5 text-[13px] leading-relaxed font-bold break-words"
-                ></div>
-              </div>
 
-              <!-- 关闭按钮 -->
-              <button
-                id="transition-error-close"
-                class="text-red/70 hover:bg-red/15 hover:text-red -mt-1 -mr-1 flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-lg border-none bg-transparent transition-all"
-                title="关闭提示"
-              >
-                <span class="material-symbols-outlined text-base">close</span>
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <!-- 主卡片 -->
-        <div
-          class="border-s200 w-full max-w-2xl overflow-hidden rounded-2xl border bg-white shadow-xl"
-        >
-          <!-- 顶部图形区（装饰区域，无交互元素 → 可拖动窗口） -->
-          <div
-            class="border-s100 relative overflow-hidden border-b bg-gradient-to-b from-blue-50 to-white p-12"
-            data-tauri-drag-region
-          >
-            <div class="relative z-10 flex items-center justify-center gap-16">
-              <!-- 任务卡片堆叠 -->
-              <div
-                class="task-stack-container trans-card-float relative flex h-28 w-28 items-center justify-center"
-              >
-                <div
-                  class="border-blue/20 absolute h-24 w-20 translate-x-4 -translate-y-4 rotate-6 rounded-xl border-2 bg-white shadow-sm"
-                ></div>
-                <div
-                  class="border-blue/40 absolute h-24 w-20 translate-x-2 -translate-y-2 rotate-3 rounded-xl border-2 bg-white shadow-md"
-                ></div>
-                <div
-                  class="border-blue relative flex h-24 w-20 flex-col rounded-xl border-2 bg-white p-3 shadow-lg"
-                >
-                  <div class="bg-blue/10 mb-2 h-1.5 w-full rounded"></div>
-                  <div class="bg-blue/10 mb-4 h-1.5 w-3/4 rounded"></div>
-                  <div class="mt-auto flex items-center justify-between">
-                    <div class="bg-blue/10 flex h-6 w-6 items-center justify-center rounded">
-                      <span class="material-symbols-outlined text-blue text-sm font-bold">
-                        settings
-                      </span>
-                    </div>
+                <!-- 文本 -->
+                <div class="min-w-0 flex-1 pt-0.5">
+                  <div
+                    class="text-red flex items-center gap-2 text-[14px] font-extrabold tracking-wide"
+                  >
+                    <span id="transition-error-title">同步出错</span>
                     <span
-                      class="material-symbols-outlined text-blue text-lg"
-                      style="font-variation-settings: 'FILL' 1"
+                      class="border-red/30 bg-red/10 text-red rounded-md border px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase"
                     >
-                      check_circle
+                      error
                     </span>
                   </div>
-                </div>
-              </div>
-              <!-- 同步图标 -->
-              <div class="flex flex-col items-center gap-2">
-                <div class="relative flex h-16 w-16 items-center justify-center">
                   <div
-                    class="border-blue/30 trans-ring-rotate absolute inset-0 rounded-full border-2 border-dashed"
+                    id="transition-error-text"
+                    class="text-red mt-1.5 text-[13px] leading-relaxed font-bold break-words"
                   ></div>
-                  <span class="material-symbols-outlined text-blue trans-sync-spin text-3xl">
-                    sync
-                  </span>
                 </div>
-                <div class="flex gap-1">
-                  <div class="bg-blue trans-dot-pulse h-1.5 w-1.5 rounded-full"></div>
-                  <div class="bg-blue trans-dot-pulse h-1.5 w-1.5 rounded-full"></div>
-                  <div class="bg-blue trans-dot-pulse h-1.5 w-1.5 rounded-full"></div>
-                </div>
-              </div>
-              <!-- 云端图标 -->
-              <div class="trans-cloud-float relative flex h-32 w-32 items-center justify-center">
-                <div class="bg-blue/15 absolute inset-[-16px] rounded-full blur-2xl"></div>
-                <div class="border-blue/20 absolute inset-0 rounded-full border"></div>
-                <span
-                  class="material-symbols-outlined text-blue text-7xl"
-                  style="font-variation-settings: 'FILL' 1"
+
+                <!-- 关闭按钮 -->
+                <button
+                  id="transition-error-close"
+                  class="text-red/70 hover:bg-red/15 hover:text-red -mt-1 -mr-1 flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-lg border-none bg-transparent transition-all"
+                  title="关闭提示"
+                  data-tauri-drag-region="false"
                 >
-                  cloud
-                </span>
-                <span class="material-symbols-outlined absolute translate-y-1 text-xl text-white">
-                  cloud_done
-                </span>
+                  <span class="material-symbols-outlined text-base">close</span>
+                </button>
               </div>
             </div>
-            <!-- 背景装饰 -->
-            <div
-              class="bg-blue/5 trans-glow-pulse absolute top-0 right-0 -mt-16 -mr-16 h-64 w-64 rounded-full blur-3xl"
-            ></div>
-            <div
-              class="bg-blue/5 trans-glow-pulse absolute bottom-0 left-0 -mb-16 -ml-16 h-64 w-64 rounded-full blur-3xl"
-              style="animation-delay: 3s"
-            ></div>
           </div>
 
-          <!-- 标题区 -->
-          <div class="flex items-center gap-3 px-8 pt-8 pb-4">
+          <!-- 主卡片 -->
+          <div
+            class="border-s200 w-full max-w-2xl shrink-0 overflow-hidden rounded-2xl border bg-white shadow-xl"
+          >
+            <!-- 顶部图形区（装饰区域，无交互元素 → 可拖动窗口） -->
             <div
-              class="bg-blue/10 text-blue flex h-10 w-10 items-center justify-center rounded-full"
+              class="border-s100 relative overflow-hidden border-b bg-gradient-to-b from-blue-50 to-white p-12"
+              data-tauri-drag-region
             >
-              <span class="material-symbols-outlined">sync_alt</span>
-            </div>
-            <div>
-              <h2
-                id="transition-title"
-                class="text-s800 font-mono text-xl font-bold tracking-tight"
-              >
-                任务同步过渡
-              </h2>
-              <p id="transition-subtitle" class="text-s400 text-sm font-medium tracking-wide">
-                正在进入多端任务检索流程
-              </p>
-            </div>
-          </div>
-
-          <!-- 分隔线 -->
-          <div class="px-8">
-            <div class="bg-s100 h-px w-full"></div>
-          </div>
-
-          <!-- 表单区 -->
-          <div class="p-8">
-            <div class="space-y-6">
-              <!-- 手机号输入 -->
-              <div>
-                <label
-                  class="text-s600 mb-2 block flex items-center gap-2 text-sm font-semibold tracking-wide"
-                  for="phone-numbers"
+              <div class="relative z-10 flex items-center justify-center gap-16">
+                <!-- 任务卡片堆叠 -->
+                <div
+                  class="task-stack-container trans-card-float relative flex h-28 w-28 items-center justify-center"
                 >
-                  关联手机号
-                  <span
-                    class="material-symbols-outlined text-s400 cursor-help text-base"
-                    title="关联后系统将自动下发任务到对应设备"
-                  >
-                    info
-                  </span>
-                </label>
-                <div class="group relative">
-                  <textarea
-                    class="bg-s50 border-s200 focus:ring-blue/20 focus:border-blue text-s800 placeholder:text-s400 w-full resize-none rounded-xl border px-4 py-3 font-medium transition-all focus:ring-2"
-                    id="phone-numbers"
-                    placeholder="请输入手机号，多个号码请换行分隔..."
-                    rows="5"
-                  ></textarea>
                   <div
-                    id="phone-counter"
-                    class="text-s500 bg-s100/80 border-s200 absolute bottom-3 rounded border px-2 py-0.5 font-mono text-[10px] font-medium backdrop-blur-sm"
+                    class="border-blue/20 absolute h-24 w-20 translate-x-4 -translate-y-4 rotate-6 rounded-xl border-2 bg-white shadow-sm"
+                  ></div>
+                  <div
+                    class="border-blue/40 absolute h-24 w-20 translate-x-2 -translate-y-2 rotate-3 rounded-xl border-2 bg-white shadow-md"
+                  ></div>
+                  <div
+                    class="border-blue relative flex h-24 w-20 flex-col rounded-xl border-2 bg-white p-3 shadow-lg"
                   >
-                    建议一次不超过 50 个
+                    <div class="bg-blue/10 mb-2 h-1.5 w-full rounded"></div>
+                    <div class="bg-blue/10 mb-4 h-1.5 w-3/4 rounded"></div>
+                    <div class="mt-auto flex items-center justify-between">
+                      <div class="bg-blue/10 flex h-6 w-6 items-center justify-center rounded">
+                        <span class="material-symbols-outlined text-blue text-sm font-bold">
+                          settings
+                        </span>
+                      </div>
+                      <span
+                        class="material-symbols-outlined text-blue text-lg"
+                        style="font-variation-settings: 'FILL' 1"
+                      >
+                        check_circle
+                      </span>
+                    </div>
                   </div>
                 </div>
-                <p class="text-s400 mt-3 flex items-center gap-1.5 text-xs">
+                <!-- 同步图标 -->
+                <div class="flex flex-col items-center gap-2">
+                  <div class="relative flex h-16 w-16 items-center justify-center">
+                    <div
+                      class="border-blue/30 trans-ring-rotate absolute inset-0 rounded-full border-2 border-dashed"
+                    ></div>
+                    <span class="material-symbols-outlined text-blue trans-sync-spin text-3xl">
+                      sync
+                    </span>
+                  </div>
+                  <div class="flex gap-1">
+                    <div class="bg-blue trans-dot-pulse h-1.5 w-1.5 rounded-full"></div>
+                    <div class="bg-blue trans-dot-pulse h-1.5 w-1.5 rounded-full"></div>
+                    <div class="bg-blue trans-dot-pulse h-1.5 w-1.5 rounded-full"></div>
+                  </div>
+                </div>
+                <!-- 云端图标 -->
+                <div class="trans-cloud-float relative flex h-32 w-32 items-center justify-center">
+                  <div class="bg-blue/15 absolute inset-[-16px] rounded-full blur-2xl"></div>
+                  <div class="border-blue/20 absolute inset-0 rounded-full border"></div>
                   <span
-                    class="material-symbols-outlined text-blue/60 shrink-0 text-sm"
+                    class="material-symbols-outlined text-blue text-7xl"
                     style="font-variation-settings: 'FILL' 1"
                   >
-                    lightbulb
+                    cloud
                   </span>
-                  <span id="transition-helper" class="font-medium">
-                    系统将根据填写的号码自动匹配当前任务队列，请确保设备均已登录并处于在线状态。
+                  <span class="material-symbols-outlined absolute translate-y-1 text-xl text-white">
+                    cloud_done
                   </span>
+                </div>
+              </div>
+              <!-- 背景装饰 -->
+              <div
+                class="bg-blue/5 trans-glow-pulse absolute top-0 right-0 -mt-16 -mr-16 h-64 w-64 rounded-full blur-3xl"
+              ></div>
+              <div
+                class="bg-blue/5 trans-glow-pulse absolute bottom-0 left-0 -mb-16 -ml-16 h-64 w-64 rounded-full blur-3xl"
+                style="animation-delay: 3s"
+              ></div>
+            </div>
+
+            <!-- 标题区 -->
+            <div class="flex items-center gap-3 px-8 pt-8 pb-4">
+              <div
+                class="bg-blue/10 text-blue flex h-10 w-10 items-center justify-center rounded-full"
+              >
+                <span class="material-symbols-outlined">sync_alt</span>
+              </div>
+              <div>
+                <h2
+                  id="transition-title"
+                  class="text-s800 font-mono text-xl font-bold tracking-tight"
+                >
+                  任务同步过渡
+                </h2>
+                <p id="transition-subtitle" class="text-s400 text-sm font-medium tracking-wide">
+                  正在进入多端任务检索流程
                 </p>
               </div>
+            </div>
 
-              <!-- Toggle 开关 -->
-              <div
-                class="bg-s50 border-s200 flex items-center gap-6 rounded-xl border border-dashed p-4"
+            <!-- 分隔线 -->
+            <div class="px-8">
+              <div class="bg-s100 h-px w-full"></div>
+            </div>
+
+            <!-- 表单区 -->
+            <div class="p-8">
+              <div class="space-y-6">
+                <!-- 手机号输入 -->
+                <div>
+                  <label
+                    class="text-s600 mb-2 block flex items-center gap-2 text-sm font-semibold tracking-wide"
+                    for="phone-numbers"
+                  >
+                    关联手机号
+                    <span
+                      class="material-symbols-outlined text-s400 cursor-help text-base"
+                      title="关联后系统将自动下发任务到对应设备"
+                    >
+                      info
+                    </span>
+                  </label>
+                  <div class="group relative">
+                    <textarea
+                      class="bg-s50 border-s200 focus:ring-blue/20 focus:border-blue text-s800 placeholder:text-s400 w-full resize-none rounded-xl border px-4 py-3 font-medium transition-all focus:ring-2"
+                      id="phone-numbers"
+                      placeholder="请输入手机号，多个号码请换行分隔..."
+                      rows="5"
+                      data-tauri-drag-region="false"
+                    ></textarea>
+                    <div
+                      id="phone-counter"
+                      class="text-s500 bg-s100/80 border-s200 absolute bottom-3 rounded border px-2 py-0.5 font-mono text-[10px] font-medium backdrop-blur-sm"
+                    >
+                      建议一次不超过 50 个
+                    </div>
+                  </div>
+                  <p class="text-s400 mt-3 flex items-center gap-1.5 text-xs">
+                    <span
+                      class="material-symbols-outlined text-blue/60 shrink-0 text-sm"
+                      style="font-variation-settings: 'FILL' 1"
+                    >
+                      lightbulb
+                    </span>
+                    <span id="transition-helper" class="font-medium">
+                      系统将根据填写的号码自动匹配当前任务队列，请确保设备均已登录并处于在线状态。
+                    </span>
+                  </p>
+                </div>
+
+                <!-- Toggle 开关 -->
+                <div
+                  class="bg-s50 border-s200 flex items-center gap-6 rounded-xl border border-dashed p-4"
+                >
+                  <label
+                    class="group flex cursor-pointer items-center gap-3"
+                    data-tauri-drag-region="false"
+                  >
+                    <div class="relative">
+                      <input checked type="checkbox" class="peer sr-only" id="chk-smart-match" />
+                      <div
+                        class="bg-s300 peer-checked:bg-blue h-5 w-10 rounded-full transition-colors"
+                      ></div>
+                      <div
+                        class="absolute top-1 left-1 h-3 w-3 rounded-full bg-white transition-transform peer-checked:translate-x-5"
+                      ></div>
+                    </div>
+                    <span
+                      class="text-s500 group-hover:text-s800 text-sm font-medium transition-colors"
+                    >
+                      智能匹配模式
+                    </span>
+                  </label>
+                  <label
+                    class="group flex cursor-pointer items-center gap-3"
+                    data-tauri-drag-region="false"
+                  >
+                    <div class="relative">
+                      <input type="checkbox" class="peer sr-only" id="chk-priority-override" />
+                      <div
+                        class="bg-s300 peer-checked:bg-blue h-5 w-10 rounded-full transition-colors"
+                      ></div>
+                      <div
+                        class="absolute top-1 left-1 h-3 w-3 rounded-full bg-white transition-transform peer-checked:translate-x-5"
+                      ></div>
+                    </div>
+                    <span
+                      class="text-s500 group-hover:text-s800 text-sm font-medium transition-colors"
+                    >
+                      任务优先级覆盖
+                    </span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <!-- 底部操作栏 -->
+            <div class="bg-s50/50 border-s100 flex items-center justify-between border-t px-8 py-6">
+              <button
+                id="btn-sync-reset"
+                class="text-s500 hover:bg-s200/50 flex items-center gap-2 rounded-lg px-6 py-2.5 text-sm font-medium transition-all"
+                data-tauri-drag-region="false"
               >
-                <label class="group flex cursor-pointer items-center gap-3">
-                  <div class="relative">
-                    <input checked type="checkbox" class="peer sr-only" id="chk-smart-match" />
-                    <div
-                      class="bg-s300 peer-checked:bg-blue h-5 w-10 rounded-full transition-colors"
-                    ></div>
-                    <div
-                      class="absolute top-1 left-1 h-3 w-3 rounded-full bg-white transition-transform peer-checked:translate-x-5"
-                    ></div>
-                  </div>
-                  <span
-                    class="text-s500 group-hover:text-s800 text-sm font-medium transition-colors"
-                  >
-                    智能匹配模式
-                  </span>
-                </label>
-                <label class="group flex cursor-pointer items-center gap-3">
-                  <div class="relative">
-                    <input type="checkbox" class="peer sr-only" id="chk-priority-override" />
-                    <div
-                      class="bg-s300 peer-checked:bg-blue h-5 w-10 rounded-full transition-colors"
-                    ></div>
-                    <div
-                      class="absolute top-1 left-1 h-3 w-3 rounded-full bg-white transition-transform peer-checked:translate-x-5"
-                    ></div>
-                  </div>
-                  <span
-                    class="text-s500 group-hover:text-s800 text-sm font-medium transition-colors"
-                  >
-                    任务优先级覆盖
-                  </span>
-                </label>
+                <span class="material-symbols-outlined text-lg">restart_alt</span>
+                重置
+              </button>
+              <div class="flex items-center gap-3">
+                <button
+                  id="btn-sync-start"
+                  class="bg-blue hover:bg-blue-dark shadow-blue/20 flex items-center gap-2 rounded-lg px-8 py-2.5 font-bold text-white shadow-lg transition-all active:scale-[0.98]"
+                  data-tauri-drag-region="false"
+                >
+                  <span class="material-symbols-outlined text-lg">sync</span>
+                  <span id="transition-submit-text" class="font-mono">开始同步</span>
+                </button>
               </div>
             </div>
           </div>
 
-          <!-- 底部操作栏 -->
-          <div class="bg-s50/50 border-s100 flex items-center justify-between border-t px-8 py-6">
-            <button
-              id="btn-sync-reset"
-              class="text-s500 hover:bg-s200/50 flex items-center gap-2 rounded-lg px-6 py-2.5 text-sm font-medium transition-all"
-            >
-              <span class="material-symbols-outlined text-lg">restart_alt</span>
-              重置
-            </button>
-            <div class="flex items-center gap-3">
-              <button
-                id="btn-sync-start"
-                class="bg-blue hover:bg-blue-dark shadow-blue/20 flex items-center gap-2 rounded-lg px-8 py-2.5 font-bold text-white shadow-lg transition-all active:scale-[0.98]"
-              >
-                <span class="material-symbols-outlined text-lg">sync</span>
-                <span id="transition-submit-text" class="font-mono">开始同步</span>
-              </button>
+          <!-- 页脚信息 -->
+          <div class="mt-8 flex shrink-0 flex-col items-center gap-4">
+            <div class="flex items-center gap-8 opacity-40 grayscale">
+              <div class="text-s600 flex items-center gap-1.5 text-xs font-semibold">
+                <span class="material-symbols-outlined text-sm">security</span>
+                数据加密传输
+              </div>
+              <div class="text-s600 flex items-center gap-1.5 text-xs font-semibold">
+                <span class="material-symbols-outlined text-sm">verified</span>
+                企业级安全审计
+              </div>
+              <div class="text-s600 flex items-center gap-1.5 text-xs font-semibold">
+                <span class="material-symbols-outlined text-sm">cloud_done</span>
+                多云同步支持
+              </div>
             </div>
+            <p class="text-s400 font-mono text-[10px] tracking-widest uppercase">
+              Version 1.0.2-STABLE Build 260301
+            </p>
           </div>
         </div>
-
-        <!-- 页脚信息 -->
-        <div class="mt-8 flex flex-col items-center gap-4">
-          <div class="flex items-center gap-8 opacity-40 grayscale">
-            <div class="text-s600 flex items-center gap-1.5 text-xs font-semibold">
-              <span class="material-symbols-outlined text-sm">security</span>
-              数据加密传输
-            </div>
-            <div class="text-s600 flex items-center gap-1.5 text-xs font-semibold">
-              <span class="material-symbols-outlined text-sm">verified</span>
-              企业级安全审计
-            </div>
-            <div class="text-s600 flex items-center gap-1.5 text-xs font-semibold">
-              <span class="material-symbols-outlined text-sm">cloud_done</span>
-              多云同步支持
-            </div>
-          </div>
-          <p class="text-s400 font-mono text-[10px] tracking-widest uppercase">
-            Version 1.0.2-STABLE Build 260301
-          </p>
-        </div>
+        <!-- /.transition-content -->
       </div>
 
       <!-- ===== 主应用 ===== -->

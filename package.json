@@ -10,6 +10,8 @@
     "tauri": "tauri",
     "package:doctor": "node scripts/package-doctor.mjs",
     "package:mac": "bash scripts/build-macos.sh",
+    "package:mac:intel": "bash scripts/build-macos.sh x86_64",
+    "package:mac:arm": "bash scripts/build-macos.sh arm64",
     "package:win": "bash scripts/build-windows.sh",
     "lint": "eslint frontends/",
     "format": "prettier --write \"frontends/**/*.{ts,css,html}\" \"index.html\"",
@@ -34,6 +36,8 @@
     "tailwindcss": "^4.2.2"
   },
   "devDependencies": {
+    "@csstools/postcss-color-mix-function": "^4.0.3",
+    "@csstools/postcss-oklab-function": "^5.0.3",
     "@eslint/js": "^10.0.1",
     "@tauri-apps/cli": "^2.10.1",
     "@trivago/prettier-plugin-sort-imports": "^6.0.2",

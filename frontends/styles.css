@@ -214,27 +214,43 @@
 }
 
 /* ─── Transition Page ─── */
+/*
+ * 拆成两层的原因（Windows 下拖拽自动回弹的根因）：
+ *  - 含 transform / overflow / 滚动容器的元素如果同时是 data-tauri-drag-region 的祖先，
+ *    WebView2 在 Windows 上对 hit-test 坐标换算会失真，触发原生 start_dragging 后
+ *    DWM 判定异常 → 松手后窗口弹回起点。
+ *  - 因此根层 .transition-page 只负责 fixed + 滚动 + opacity 入场（无 transform，不拖拽）；
+ *    内层 .transition-content 负责 flex 居中布局 + data-tauri-drag-region，
+ *    自身不带 transform / overflow，链路干净，Windows 才能正确 startDragging。
+ */
 .transition-page {
-  @apply fixed inset-0 z-40 flex flex-col items-center justify-center p-6;
+  @apply fixed inset-0 z-40;
   background-color: var(--premium-bg);
+  overflow-y: auto;
+  overflow-x: hidden;
   opacity: 0;
-  transform: translateY(30px);
-  transition:
-    opacity 0.5s ease,
-    transform 0.5s ease;
+  transition: opacity 0.5s ease;
 }
 
 .transition-page.show {
   opacity: 1;
-  transform: translateY(0);
 }
 
 .transition-page.out {
   opacity: 0;
-  transform: translateY(-20px);
-  transition:
-    opacity 0.4s ease,
-    transform 0.4s ease;
+  transition: opacity 0.4s ease;
+}
+
+/* 内容容器：挂 data-tauri-drag-region；无 transform、无 overflow */
+.transition-content {
+  @apply flex min-h-full flex-col items-center p-6;
+  /* 低分辨率兜底：内容能装下时居中，装不下时从顶部开始（允许根层滚动到底部按钮） */
+  justify-content: safe center;
+}
+
+/* 直接子元素不被 flex 压缩，保证主卡片完整显示（否则 overflow-hidden 会裁掉底部按钮） */
+.transition-content > * {
+  flex-shrink: 0;
 }
 
 /* 错误提示出现动画 + 图标脉冲，提升上方提示的醒目度 */

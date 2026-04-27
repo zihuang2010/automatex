@@ -663,6 +663,8 @@ window.addEventListener('DOMContentLoaded', () => {
     $('#btn-transition-mac-minimize')?.addEventListener('click', () => appWindow.minimize());
     $('#btn-transition-mac-maximize')?.addEventListener('click', () => appWindow.toggleMaximize());
   } else if (currentPlatform === 'windows') {
+    // 给 <html> 打 os-windows 标记，便于样式层做 Windows 专属兼容/覆盖
+    document.documentElement.classList.add('os-windows');
     // Windows: 显示方块按钮
     const winControls = document.getElementById('window-controls');
     if (winControls) {
