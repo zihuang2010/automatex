@@ -633,13 +633,9 @@ pub async fn adb_forward_remove(serial: &str, local_port: u16) {
 /// 调用方需自行 sleep 等待。命令幂等：设备已在监听时再次执行也成功。
 pub async fn enable_tcpip_async(serial: &str, port: u16) -> Result<(), String> {
     let port_str = port.to_string();
-    run_adb_async(
-        serial,
-        &["tcpip", &port_str],
-        crate::constants::timing::ADB_COMMAND_TIMEOUT_SECS,
-    )
-    .await
-    .map(|_| ())
+    run_adb_async(serial, &["tcpip", &port_str], crate::constants::timing::ADB_COMMAND_TIMEOUT_SECS)
+        .await
+        .map(|_| ())
 }
 
 /// 通过 `adb shell ip -f inet addr show wlan0` 抓设备 wlan0 的 IPv4 地址。
