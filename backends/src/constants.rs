@@ -135,8 +135,12 @@ pub mod timing {
     pub const WIFI_CONNECT_TIMEOUT_SECS: u64 = 5;
     /// USB→WiFi 切换时 connect 轮询最大尝试次数
     pub const WIFI_HANDSHAKE_MAX_RETRIES: u32 = 6;
+    /// USB→WiFi 切换时首次 connect 之前的等待（让手机 adbd 切到 TCP 监听 + ARP 上线）
+    /// 之前是 0，立即第一次连必然 fail，浪费一次重试预算
+    pub const WIFI_HANDSHAKE_INITIAL_DELAY_MS: u64 = 1500;
     /// USB→WiFi 切换时 connect 轮询间隔（毫秒）
-    pub const WIFI_HANDSHAKE_RETRY_INTERVAL_MS: u64 = 500;
+    /// 之前 500ms 太短，6 次重试总预算只 2.5s，慢一点的网络/手机会失败
+    pub const WIFI_HANDSHAKE_RETRY_INTERVAL_MS: u64 = 1500;
     /// MQTT keep-alive 间隔（10s：避免 NAT/防火墙 idle 超时，保持连接活跃）
     pub const MQTT_KEEP_ALIVE_SECS: u64 = 10;
     /// ADB shell/cmd 命令超时（防止永久阻塞）

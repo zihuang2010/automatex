@@ -2,6 +2,7 @@ use crate::connection::{DeviceManager, ShellResult};
 use crate::storage::DeviceRow;
 use crate::{connection, constants, AppState};
 use tauri::Emitter;
+use tracing::{info, warn};
 
 async fn ensure_registered_device(state: &AppState, serial: &str) -> Result<(), String> {
     if state.db.device_exists(serial).await {
@@ -150,20 +151,45 @@ pub async fn switch_device_to_wifi(
         return Err("当前已是无线连接，无需切换".to_string());
     }
 
+    let switch_started = std::time::Instant::now();
+    info!(serial = %serial, "[switch_to_wifi] 开始");
+
     let ip = connection::adb::fetch_wlan_ipv4_async(&serial).await?;
+    info!(serial = %serial, phone_ip = %ip, "[switch_to_wifi] 拿到手机 WLAN IP");
 
     // preflight：在断开 USB 之前确认本机能到达手机所在 WiFi 网段。
     // 否则 enable_tcpip 会让 USB 立刻断开，再卡 32.5s 在 connect_wifi 重试上才报错。
     let phone_ip: std::net::Ipv4Addr =
         ip.parse().map_err(|_| format!("手机返回的 IP 不是有效 IPv4: {}", ip))?;
-    connection::host_network::diagnose_for_target(phone_ip)
+    let matched_iface = connection::host_network::diagnose_for_target(phone_ip)
         .map_err(|e| format!("无法切换到无线：{}", e))?;
+    info!(
+        phone_ip = %phone_ip,
+        local_ip = %matched_iface.ip,
+        local_iface = %matched_iface.name,
+        netmask = %matched_iface.netmask,
+        "[switch_to_wifi] preflight 通过：本机有同网段接口"
+    );
 
+    info!(serial = %serial, "[switch_to_wifi] 调 enable_tcpip 5555 ← 此后 USB 会断开");
     connection::adb::enable_tcpip_async(&serial, 5555).await?;
+    info!(serial = %serial, "[switch_to_wifi] enable_tcpip 完成");
 
-    // adbd 重启后 ~1–2s 才能在 wifi 接口监听；不再用固定 sleep，改成轮询：
-    // 首次成功立即返回，最坏 MAX_RETRIES × INTERVAL_MS 后报错给前端。
     let address = format!("{}:5555", ip);
+
+    // 关键：清掉 adb server transport tracker 里可能存在的 stale 记录。
+    // adb server 是常驻 daemon，会缓存 endpoint 的 unreachable 状态，
+    // 之后的 `adb connect` 会读缓存直接返回 "No route to host"（25ms 内返回，不真做 TCP），
+    // 不管手机是否已经变得可达。disconnect 一个不存在的 endpoint 是 no-op，没副作用。
+    info!(address = %address, "[switch_to_wifi] 清 adb server stale tracker");
+    let _ = connection::adb::disconnect_wifi_via_adb_async(&address).await;
+
+    // 手机 adbd 切到 TCP 监听 + WiFi 网卡 ARP 上线通常要 1.5-3 秒。
+    // 第一次 connect 几乎必然 fail（OS 直接 ENETUNREACH/EHOSTUNREACH，不耗超时预算）。
+    // 所以先无脑等一段，再开始轮询。
+    let initial_delay = constants::timing::WIFI_HANDSHAKE_INITIAL_DELAY_MS;
+    info!(initial_delay_ms = initial_delay, "[switch_to_wifi] 等手机 adbd 切到 TCP 监听");
+    tokio::time::sleep(std::time::Duration::from_millis(initial_delay)).await;
     let mut last_err: Option<String> = None;
     let mut connected = false;
     for attempt in 0..constants::timing::WIFI_HANDSHAKE_MAX_RETRIES {
@@ -173,15 +199,31 @@ pub async fn switch_device_to_wifi(
             ))
             .await;
         }
+        info!(
+            attempt = attempt + 1,
+            max = constants::timing::WIFI_HANDSHAKE_MAX_RETRIES,
+            address = %address,
+            elapsed_ms = switch_started.elapsed().as_millis(),
+            "[switch_to_wifi] connect 尝试"
+        );
         match connection::adb::connect_wifi_via_adb_async(&address).await {
-            Ok(_) => {
+            Ok(msg) => {
+                info!(attempt = attempt + 1, msg = %msg, "[switch_to_wifi] connect 成功");
                 connected = true;
                 break;
             },
-            Err(e) => last_err = Some(e),
+            Err(e) => {
+                warn!(attempt = attempt + 1, error = %e, "[switch_to_wifi] connect 失败");
+                last_err = Some(e);
+            },
         }
     }
     if !connected {
+        warn!(
+            total_elapsed_ms = switch_started.elapsed().as_millis(),
+            last_err = ?last_err,
+            "[switch_to_wifi] 全部 connect 重试失败"
+        );
         return Err(last_err.unwrap_or_else(|| "ADB WiFi 连接超时".to_string()));
     }
 

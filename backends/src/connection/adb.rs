@@ -494,9 +494,29 @@ async fn run_adb_async_raw(args: &[&str], timeout_secs: u64) -> Result<String, S
         cmd.creation_flags(0x08000000);
     }
 
-    cmd.args(args)
+    // 与同步版 adb_command() 行为对齐：非默认端口必须显式 -P，
+    // 否则 `adb connect / disconnect` 会去找 5037 上的别人家 adb server，
+    // 导致设备状态不一致 + "No route to host" 这种诡异错误。
+    let port = adb_port();
+    let mut full_args: Vec<String> = Vec::new();
+    if port != 5037 {
+        full_args.push("-P".to_string());
+        full_args.push(port.to_string());
+    }
+    full_args.extend(args.iter().map(|s| s.to_string()));
+
+    cmd.args(&full_args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+
+    let started = std::time::Instant::now();
+    info!(
+        adb_path = adb_path(),
+        adb_port = port,
+        args = ?full_args,
+        timeout_secs,
+        "[run_adb_async_raw] 启动 adb"
+    );
 
     let mut child = cmd.spawn().map_err(|e| format!("spawn adb 失败: {}", e))?;
     let mut stdout = child.stdout.take();
@@ -505,29 +525,35 @@ async fn run_adb_async_raw(args: &[&str], timeout_secs: u64) -> Result<String, S
     match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), child.wait()).await {
         Ok(Ok(status)) => {
             let mut stdout_buf = Vec::new();
+            let mut stderr_buf = Vec::new();
             if let Some(ref mut out) = stdout {
                 use tokio::io::AsyncReadExt;
                 let _ = out.read_to_end(&mut stdout_buf).await;
             }
+            if let Some(ref mut err) = stderr {
+                use tokio::io::AsyncReadExt;
+                let _ = err.read_to_end(&mut stderr_buf).await;
+            }
+            let stdout_str = String::from_utf8_lossy(&stdout_buf).trim().to_string();
+            let stderr_str = String::from_utf8_lossy(&stderr_buf).trim().to_string();
+            info!(
+                exit = ?status.code(),
+                elapsed_ms = started.elapsed().as_millis(),
+                stdout = %stdout_str,
+                stderr = %stderr_str,
+                "[run_adb_async_raw] adb 退出"
+            );
             if status.success() {
-                Ok(String::from_utf8_lossy(&stdout_buf).trim().to_string())
+                Ok(stdout_str)
+            } else if stderr_str.is_empty() {
+                Err(stdout_str)
             } else {
-                let mut stderr_buf = Vec::new();
-                if let Some(ref mut err) = stderr {
-                    use tokio::io::AsyncReadExt;
-                    let _ = err.read_to_end(&mut stderr_buf).await;
-                }
-                let err = String::from_utf8_lossy(&stderr_buf).trim().to_string();
-                let stdout = String::from_utf8_lossy(&stdout_buf).trim().to_string();
-                if err.is_empty() {
-                    Err(stdout)
-                } else {
-                    Err(err)
-                }
+                Err(stderr_str)
             }
         },
         Ok(Err(e)) => Err(format!("等待 adb 失败: {}", e)),
         Err(_) => {
+            warn!(elapsed_ms = started.elapsed().as_millis(), "[run_adb_async_raw] 超时被 kill");
             let _ = child.kill().await;
             let _ = child.wait().await;
             Err(format!("ADB 命令超时 ({}s)", timeout_secs))
@@ -560,13 +586,17 @@ pub async fn connect_wifi_via_adb_async(address: &str) -> Result<String, String>
     let addr = parse_wifi_address(address)?;
     let addr_str = addr.to_string();
 
+    info!(address = %addr_str, adb_port = adb_port(), "[connect_wifi] 开始");
+
     let stdout = run_adb_async_raw(
         &["connect", &addr_str],
         crate::constants::timing::WIFI_CONNECT_TIMEOUT_SECS,
     )
     .await?;
 
-    if stdout.contains("failed") {
+    info!(address = %addr_str, stdout = %stdout, "[connect_wifi] adb connect 返回");
+
+    if stdout.contains("failed") || stdout.contains("cannot") {
         Err(format!("ADB WiFi 连接失败: {}", stdout.trim()))
     } else {
         Ok(format!("WiFi 设备已连接: {}", addr_str))
