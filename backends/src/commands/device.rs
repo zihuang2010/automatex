@@ -151,6 +151,14 @@ pub async fn switch_device_to_wifi(
     }
 
     let ip = connection::adb::fetch_wlan_ipv4_async(&serial).await?;
+
+    // preflight：在断开 USB 之前确认本机能到达手机所在 WiFi 网段。
+    // 否则 enable_tcpip 会让 USB 立刻断开，再卡 32.5s 在 connect_wifi 重试上才报错。
+    let phone_ip: std::net::Ipv4Addr =
+        ip.parse().map_err(|_| format!("手机返回的 IP 不是有效 IPv4: {}", ip))?;
+    connection::host_network::diagnose_for_target(phone_ip)
+        .map_err(|e| format!("无法切换到无线：{}", e))?;
+
     connection::adb::enable_tcpip_async(&serial, 5555).await?;
 
     // adbd 重启后 ~1–2s 才能在 wifi 接口监听；不再用固定 sleep，改成轮询：

@@ -129,6 +129,7 @@ jobs:
           ls -la "$BUNDLE/macos" || true
 
           mkdir -p stage
+          # updater 必需：.app.tar.gz + .sig（缺则 fail）
           if ! cp "$OUT"/*.app.tar.gz stage/ 2>/dev/null; then
             echo "::error::缺少 *.app.tar.gz —— build-macos.sh 没有产出 updater 包"
             exit 1
@@ -138,6 +139,11 @@ jobs:
             echo "::error::或密钥密码错误。检查上面的 verify 步骤输出。"
             exit 1
           fi
+          # 用户手动安装用：DMG（双击 → 拖到 /Applications）
+          # 不收 install.sh，因为合并 artifact 时 arm64/x86_64 会同名冲突
+          cp "$OUT"/*.dmg stage/ 2>/dev/null \
+            && echo "  + $(basename "$OUT"/*.dmg)" \
+            || echo "::warning::缺少 .dmg，用户只能用 .app.tar.gz 手动解压安装"
           echo "── stage ──"
           ls -la stage/
 

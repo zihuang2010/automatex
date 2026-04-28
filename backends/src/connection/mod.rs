@@ -6,6 +6,7 @@
 //! - `mod.rs` — DeviceManager 设备管理器
 
 pub mod adb;
+pub mod host_network;
 pub mod phone_client;
 pub mod types;
 
