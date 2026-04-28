@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────
-#  AutomateX — Windows 交叉编译构建脚本 (从 macOS 构建)
+#  AutomateX — Windows 构建脚本
 #
 #  两种产物模式（通过环境变量 BUILD_MODE 切换）:
-#    BUILD_MODE=single (默认)  → 单文件 EXE，内嵌 adb/scrcpy-server/DLL
-#                                位于 backends/target/output/windows-x64-single/
-#                                适合手动分发，**不支持 tauri-plugin-updater 自动更新**
-#    BUILD_MODE=nsis           → NSIS 安装包 + updater 用的 nsis.zip
-#                                位于 backends/target/output/windows-x64-nsis/
-#                                需要 makensis (brew install makensis)
-#                                这是配合自动更新的标准产物
 #
-#  前置依赖 (一次性安装):
+#    BUILD_MODE=single (默认)
+#      从 macOS 交叉编译产出单文件 EXE，内嵌 adb/scrcpy-server/DLL
+#      位于 backends/target/output/windows-x64-single/
+#      适合手动分发，**不支持 tauri-plugin-updater 自动更新**
+#
+#    BUILD_MODE=nsis
+#      产出标准 NSIS 安装包 + updater 用的 nsis.zip + .sig
+#      位于 backends/target/output/windows-x64-nsis/
+#      ⚠ 必须在 Windows 主机上运行（tauri-cli 不支持从 macOS 跨平台 NSIS bundling）
+#      推荐通过 .github/workflows/release-windows.yml 在 GitHub Actions 上跑
+#
+#  前置依赖（仅 single 模式从 macOS 跨编译时需要）:
 #    1. rustup target add x86_64-pc-windows-msvc
 #    2. cargo install cargo-xwin
 #    3. cargo install xwin         (用于预下载 MSVC SDK)
-#    4. brew install makensis      (仅 nsis 模式需要)
 #
 #  国内网络: 如需代理，设置环境变量后运行:
 #    HTTPS_PROXY=http://127.0.0.1:7890 bash scripts/build-windows.sh
@@ -53,18 +56,32 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 command -v node  >/dev/null 2>&1 || error "未找到 node，请先安装 Node.js"
 command -v cargo >/dev/null 2>&1 || error "未找到 cargo，请先安装 Rust"
 command -v npm   >/dev/null 2>&1 || error "未找到 npm"
-command -v xwin  >/dev/null 2>&1 || error "未找到 xwin，请安装: cargo install xwin"
 
-# 检查 cargo-xwin
-if ! command -v cargo-xwin >/dev/null 2>&1; then
-    warn "未找到 cargo-xwin，正在安装..."
-    cargo install cargo-xwin || error "安装 cargo-xwin 失败"
-fi
-
-# nsis 模式额外检查 makensis
+# nsis 模式：必须在 Windows host 上跑（tauri-cli 不支持从 macOS 产出 NSIS bundle）
 if [ "$BUILD_MODE" = "nsis" ]; then
-    command -v makensis >/dev/null 2>&1 \
-        || error "未找到 makensis (BUILD_MODE=nsis 必需)。安装: brew install makensis"
+    HOST_OS=$(uname -s)
+    case "$HOST_OS" in
+        MINGW*|MSYS*|CYGWIN*|Windows_NT)
+            : # 在 Windows host，继续
+            ;;
+        *)
+            error "BUILD_MODE=nsis 必须在 Windows 主机上运行。
+       原因：tauri-cli 在 macOS/Linux host 上 --bundles 仅接受当前 host 平台的类型，
+            无法产出 Windows NSIS。错误示例：
+              error: invalid value 'nsis' for '--bundles'
+              [possible values: ios, app, dmg]
+       推荐方案：通过 GitHub Actions 跑 .github/workflows/release-windows.yml
+            （已配置好 windows-latest runner + tauri build --bundles nsis）。
+       备选：在本地 Windows 虚拟机/物理机上运行同一脚本。"
+            ;;
+    esac
+else
+    # single 模式：从 macOS 跨编译，需要 cargo-xwin
+    command -v xwin >/dev/null 2>&1 || error "未找到 xwin，请安装: cargo install xwin"
+    if ! command -v cargo-xwin >/dev/null 2>&1; then
+        warn "未找到 cargo-xwin，正在安装..."
+        cargo install cargo-xwin || error "安装 cargo-xwin 失败"
+    fi
 fi
 
 info "Node $(node -v) | npm $(npm -v)"
@@ -86,21 +103,23 @@ elif [ -n "${https_proxy:-}" ]; then
     PROXY_ARGS=(--https-proxy "$https_proxy")
 fi
 
-# ── 预下载 MSVC SDK (xwin splat) ──
-if [ -d "$XWIN_SPLAT/crt" ] && [ -d "$XWIN_SPLAT/sdk" ]; then
-    info "MSVC SDK 缓存已存在: $XWIN_SPLAT"
-else
-    info "下载 MSVC SDK (首次下载约 60MB，之后使用缓存)..."
-    xwin \
-        --accept-license \
-        --arch x86_64 \
-        --cache-dir "$XWIN_CACHE" \
-        ${PROXY_ARGS[@]+"${PROXY_ARGS[@]}"} \
-        --http-retry 5 \
-        --timeout 120s \
-        splat \
-        --output "$XWIN_SPLAT"
-    info "MSVC SDK 下载完成"
+# ── 预下载 MSVC SDK (xwin splat) —— 仅 single 模式跨编译需要 ──
+if [ "$BUILD_MODE" != "nsis" ]; then
+    if [ -d "$XWIN_SPLAT/crt" ] && [ -d "$XWIN_SPLAT/sdk" ]; then
+        info "MSVC SDK 缓存已存在: $XWIN_SPLAT"
+    else
+        info "下载 MSVC SDK (首次下载约 60MB，之后使用缓存)..."
+        xwin \
+            --accept-license \
+            --arch x86_64 \
+            --cache-dir "$XWIN_CACHE" \
+            ${PROXY_ARGS[@]+"${PROXY_ARGS[@]}"} \
+            --http-retry 5 \
+            --timeout 120s \
+            splat \
+            --output "$XWIN_SPLAT"
+        info "MSVC SDK 下载完成"
+    fi
 fi
 
 # ── 安装 Rust Windows 目标 ──
@@ -120,14 +139,14 @@ npm run build
 info "交叉编译 $APP_NAME for Windows..."
 cd "$ROOT_DIR/backends"
 
-# 设置 xwin 缓存路径，cargo-xwin 会自动使用已下载的 SDK
-export XWIN_CACHE_DIR="$XWIN_CACHE"
+# single 模式才需要 xwin 缓存路径
+[ "$BUILD_MODE" != "nsis" ] && export XWIN_CACHE_DIR="$XWIN_CACHE"
 
 if [ "$BUILD_MODE" = "nsis" ]; then
-    # nsis 模式：走 tauri build，由 tauri-bundler 调用 makensis 生成 NSIS 安装包
-    # 同时产出 *_x64-setup.exe (安装程序) 和 *_x64-setup.nsis.zip (updater 用)
+    # nsis 模式：在 Windows host 上跑标准 tauri build
+    # 自动产出 *_x64-setup.exe (安装程序) 和 *.nsis.zip (+ .sig，如有签名密钥)
     cd "$ROOT_DIR"
-    npx tauri build --target "$TARGET" --runner cargo-xwin --bundles nsis,updater
+    npx tauri build --target "$TARGET" --bundles nsis
 else
     # 关键: --features custom-protocol
     # Tauri 的 build.rs 中: dev = !has_feature("custom-protocol")
