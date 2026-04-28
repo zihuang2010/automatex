@@ -484,11 +484,7 @@ impl Database {
     /// 否则 monitor 的 placeholder 路径或同时上报的 USB transport 事件会与之 race，
     /// 留下幽灵 OFFLINE 行。把两步并入同一事务（IMMEDIATE 抢写锁），中间态对其他
     /// 写者不可见，关闭这个 race window。
-    pub async fn upsert_and_reconcile_by_hw_serial(
-        &self,
-        row: &DeviceRow,
-        hw_serial: &str,
-    ) {
+    pub async fn upsert_and_reconcile_by_hw_serial(&self, row: &DeviceRow, hw_serial: &str) {
         if hw_serial.trim().is_empty() {
             // hw_serial 缺失时回退到分步调用，避免错误把 placeholder 行误合并
             self.upsert_device(row).await;

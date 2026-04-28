@@ -189,10 +189,7 @@ pub async fn switch_device_to_wifi(
     wifi_row.address = Some(address.clone());
     wifi_row.state = constants::device_state::DEVICE.to_string();
     wifi_row.updated_at = now_ts;
-    state
-        .db
-        .upsert_and_reconcile_by_hw_serial(&wifi_row, &usb_row.hw_serial)
-        .await;
+    state.db.upsert_and_reconcile_by_hw_serial(&wifi_row, &usb_row.hw_serial).await;
 
     let _ = app.emit(constants::tauri_event::DEVICES_CHANGED, ());
     Ok(format!("已切换到无线 {}，可拔出 USB 数据线", address))
