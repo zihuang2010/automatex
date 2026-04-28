@@ -57,17 +57,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-14    # Apple Silicon (arm64)
-            target: aarch64-apple-darwin
+          - target: aarch64-apple-darwin
             arch_arg: arm64
             out_dir: macos-arm64
             label: arm64
-          - runner: macos-13    # Intel (x86_64)
-            target: x86_64-apple-darwin
+          - target: x86_64-apple-darwin
             arch_arg: x86_64
             out_dir: macos-x64
             label: x86_64
-    runs-on: ${{ matrix.runner }}
+    # 统一用 macos-14（Apple Silicon）跑两个 arch：
+    #   - arm64：原生编译
+    #   - x86_64：跨编译（同 macOS 同 SDK，只是不同 CPU，零额外工具）
+    # 之前用 macos-13 跑 Intel 经常排不到 runner（GH 在淘汰 Intel macOS），改 macos-14 后可用性更稳定
+    runs-on: macos-14
     env:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
