@@ -2,7 +2,7 @@
 # ──────────────────────────────────────────────────────────
 #  AutomateX — 生成 latest.json (updater manifest)
 #
-#  扫描 dist-release/${VERSION}/ 下的 .app.tar.gz / .nsis.zip + .sig 文件，
+#  扫描 dist-release/${VERSION}/ 下的 .app.tar.gz / -setup.exe + .sig 文件，
 #  生成对应的 latest.json。缺失的平台不会写入 manifest（只 warn）。
 #
 #  典型流程:
@@ -61,10 +61,11 @@ ARM_SIG=$(read_sig "$DIST_DIR/${ARM_TARBALL}.sig")
 X64_TARBALL="${APP_NAME}_${VERSION}_x86_64.app.tar.gz"
 X64_SIG=$(read_sig "$DIST_DIR/${X64_TARBALL}.sig")
 
-WIN_ZIP=$(find "$DIST_DIR" -maxdepth 1 -name "*.nsis.zip" 2>/dev/null | head -1)
+# Tauri 2 v2 updater 格式：Windows updater 包是 *-setup.exe（直接静默执行更新）+ .exe.sig
+WIN_INSTALLER=$(find "$DIST_DIR" -maxdepth 1 -name "*-setup.exe" 2>/dev/null | head -1)
 WIN_SIG=""
-if [ -n "$WIN_ZIP" ]; then
-    WIN_SIG=$(read_sig "${WIN_ZIP}.sig")
+if [ -n "$WIN_INSTALLER" ]; then
+    WIN_SIG=$(read_sig "${WIN_INSTALLER}.sig")
 fi
 
 # 校验：每个平台要么有 (tarball + sig) 要么完全没有
@@ -72,8 +73,8 @@ fi
     && warn "macOS arm64 tarball 存在但缺 .sig，将不写入 manifest"
 [ -f "$DIST_DIR/$X64_TARBALL" ] && [ -z "$X64_SIG" ] \
     && warn "macOS x86_64 tarball 存在但缺 .sig，将不写入 manifest"
-[ -n "$WIN_ZIP" ] && [ -z "$WIN_SIG" ] \
-    && warn "Windows nsis.zip 存在但缺 .sig，将不写入 manifest"
+[ -n "$WIN_INSTALLER" ] && [ -z "$WIN_SIG" ] \
+    && warn "Windows -setup.exe 存在但缺 .sig，将不写入 manifest"
 
 LATEST_JSON="$DIST_DIR/latest.json"
 jq -n \
@@ -85,7 +86,7 @@ jq -n \
     --arg arm_sig "$ARM_SIG" \
     --arg x64_tarball "$X64_TARBALL" \
     --arg x64_sig "$X64_SIG" \
-    --arg win_zip "$([ -n "$WIN_ZIP" ] && basename "$WIN_ZIP" || echo "")" \
+    --arg win_installer "$([ -n "$WIN_INSTALLER" ] && basename "$WIN_INSTALLER" || echo "")" \
     --arg win_sig "$WIN_SIG" \
     '{
         version: $version,
@@ -107,7 +108,7 @@ jq -n \
             + (if $win_sig != "" then {
                 "windows-x86_64": {
                     signature: $win_sig,
-                    url: "\($base)/\($version)/\($win_zip)"
+                    url: "\($base)/\($version)/\($win_installer)"
                 }
             } else {} end)
         )

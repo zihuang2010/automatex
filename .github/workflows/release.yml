@@ -51,7 +51,7 @@ jobs:
           fi
 
   build-macos:
-    name: macOS ${{ matrix.label }}
+    name: MacOS ${{ matrix.label }}
     needs: meta
     strategy:
       fail-fast: false
@@ -199,17 +199,16 @@ jobs:
           echo "── tauri 原始 bundle/nsis ──"
           ls -la "$BUNDLE" || true
 
+          # Tauri 2 + createUpdaterArtifacts:true 的 v2 格式：
+          # Windows updater 直接复用 *-setup.exe（运行 /S 静默安装），签名是 .exe.sig
+          # 不再产出 v1 时代的 .nsis.zip
           mkdir -p stage
           if ! cp "$BUNDLE"/*-setup.exe stage/ 2>/dev/null; then
             echo "::error::缺少 *-setup.exe —— NSIS 安装包未生成"
             exit 1
           fi
-          if ! cp "$BUNDLE"/*.nsis.zip stage/ 2>/dev/null; then
-            echo "::error::缺少 *.nsis.zip —— updater 包未生成"
-            exit 1
-          fi
-          if ! cp "$BUNDLE"/*.nsis.zip.sig stage/ 2>/dev/null; then
-            echo "::error::缺少 *.nsis.zip.sig —— TAURI_SIGNING_PRIVATE_KEY 没正确签名"
+          if ! cp "$BUNDLE"/*-setup.exe.sig stage/ 2>/dev/null; then
+            echo "::error::缺少 *-setup.exe.sig —— TAURI_SIGNING_PRIVATE_KEY 没正确签名 setup.exe"
             exit 1
           fi
           echo "── stage ──"

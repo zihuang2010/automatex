@@ -105,11 +105,12 @@ else
 fi
 
 # Windows 产物如果之前已经下载到 dist-release/ 也一起包进 manifest，否则只 warn
-if compgen -G "$DIST_DIR/*.nsis.zip" > /dev/null; then
+# Tauri 2 v2 updater 在 Windows 用 *-setup.exe（不是 .nsis.zip）
+if compgen -G "$DIST_DIR/*-setup.exe" > /dev/null; then
     info "检测到 Windows NSIS 产物（来自之前下载的 GH Actions artifact）"
 else
-    warn "dist-release/${NEW_VERSION}/ 下未找到 Windows 产物（*.nsis.zip）"
-    warn "Windows 流程：触发 .github/workflows/release-windows.yml，下载 artifact 解压到此目录后"
+    warn "dist-release/${NEW_VERSION}/ 下未找到 Windows 产物（*-setup.exe）"
+    warn "Windows 流程：触发 .github/workflows/release.yml，下载 artifact 解压到此目录后"
     warn "  bash scripts/make-manifest.sh ${NEW_VERSION}  # 重新生成含 windows 平台的 latest.json"
 fi
 
@@ -134,7 +135,7 @@ echo "       git push && git push --tags"
 echo ""
 echo "  2) 等 Actions 完成（看 https://github.com/<org>/<repo>/actions）"
 echo "     完成后下载 artifact \"AutomateX-release-${NEW_VERSION}\""
-echo "     里面已经含全平台 .app.tar.gz / .nsis.zip / .sig + 完整 latest.json"
+echo "     里面已经含全平台 .app.tar.gz / -setup.exe / .sig + 完整 latest.json"
 echo ""
 echo "  3) 上传到 OSS"
 echo "       unzip AutomateX-release-${NEW_VERSION}.zip -d dist-release/${NEW_VERSION}/"
