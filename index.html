@@ -1417,6 +1417,86 @@
         </div>
       </div>
 
+      <!-- 应用更新弹窗 -->
+      <div class="modal-mask" id="update-modal" style="display: none">
+        <div
+          class="border-s200 w-full max-w-[440px] overflow-hidden rounded-2xl border bg-white shadow-2xl"
+          style="animation: m-up 200ms var(--ease-smooth)"
+        >
+          <!-- 顶部图标区 -->
+          <div class="relative overflow-hidden px-8 pt-8 pb-4">
+            <div
+              class="absolute top-0 right-0 -mt-12 -mr-12 h-40 w-40 rounded-full opacity-40 blur-3xl"
+              style="background: radial-gradient(circle, rgba(37, 99, 235, 0.18), transparent 70%)"
+            ></div>
+            <div class="relative z-10 flex flex-col items-center text-center">
+              <div
+                class="mb-4 flex h-14 w-14 items-center justify-center rounded-full border border-blue-100 bg-blue-50"
+              >
+                <span
+                  class="material-symbols-outlined text-2xl text-blue-500"
+                  style="font-variation-settings: 'FILL' 1"
+                >
+                  system_update
+                </span>
+              </div>
+              <h3 class="text-s800 text-base font-bold tracking-tight">发现新版本</h3>
+              <p class="text-s400 mt-1 text-[12px] font-medium">
+                <span id="update-modal-version" class="font-semibold">-</span>
+                <span class="mx-1">·</span>
+                当前版本
+                <span id="update-modal-current">-</span>
+              </p>
+            </div>
+          </div>
+
+          <!-- 更新说明 -->
+          <div class="px-8 pb-3">
+            <div
+              id="update-modal-notes"
+              class="border-s100 text-s600 max-h-[180px] overflow-y-auto rounded-lg border bg-slate-50 px-4 py-3 text-[12px] leading-relaxed whitespace-pre-wrap"
+            ></div>
+          </div>
+
+          <!-- 进度条 -->
+          <div id="update-modal-progress" class="px-8 pb-3" style="display: none">
+            <div class="bg-s100 h-2 overflow-hidden rounded-full">
+              <div
+                id="update-modal-progress-bar"
+                class="h-full bg-blue-500 transition-all duration-150"
+                style="width: 0%"
+              ></div>
+            </div>
+            <p
+              id="update-modal-progress-text"
+              class="text-s400 mt-2 text-center text-[11px] font-medium"
+            ></p>
+          </div>
+
+          <!-- 操作按钮 -->
+          <div class="border-s100 flex items-center justify-end gap-2.5 border-t px-8 py-4">
+            <button
+              id="update-modal-skip"
+              class="text-s500 hover:bg-s100 cursor-pointer rounded-lg px-4 py-2 text-xs font-medium transition-all duration-150 active:scale-[0.98]"
+            >
+              跳过此版本
+            </button>
+            <button
+              id="update-modal-later"
+              class="border-s200 text-s700 hover:bg-s100 cursor-pointer rounded-lg border bg-white px-4 py-2 text-xs font-medium transition-all duration-150 active:scale-[0.98]"
+            >
+              稍后提醒
+            </button>
+            <button
+              id="update-modal-install"
+              class="bg-blue hover:bg-blue-dark cursor-pointer rounded-lg px-6 py-2 text-xs font-bold text-white shadow-sm transition-all duration-150 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              立即更新
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- 设置弹窗 -->
       <div class="modal-mask" id="settings-overlay" style="display: none">
         <div

@@ -163,6 +163,30 @@ if [ -n "$DMG_PATH" ]; then
     xattr -cr "$DMG_PATH" 2>/dev/null || true
 fi
 
+# ── 生成 updater 用的 .app.tar.gz 和签名文件 ──
+# tauri-plugin-updater 在 macOS 走 .app.tar.gz 路径替换 .app
+# 没有签名密钥时跳过 .sig 生成，仅打 tar 包以便手动测试
+if [ -n "$APP" ] && [ -d "$APP" ]; then
+    VERSION=$(node -p "require('$ROOT_DIR/package.json').version")
+    TARBALL_NAME="${APP_NAME}_${VERSION}_${ARCH}.app.tar.gz"
+    TARBALL_PATH="$OUTPUT_DIR/$TARBALL_NAME"
+
+    info "打包 updater 产物 ${TARBALL_NAME} ..."
+    (cd "$OUTPUT_DIR" && tar czf "$TARBALL_NAME" "$(basename "$APP")")
+
+    if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+        info "对 updater 包进行 ed25519 签名..."
+        # tauri signer sign 会读取 TAURI_SIGNING_PRIVATE_KEY 与
+        # TAURI_SIGNING_PRIVATE_KEY_PASSWORD 环境变量，输出 ${file}.sig
+        npx @tauri-apps/cli signer sign "$TARBALL_PATH" \
+            || error "updater 包签名失败"
+        info "签名生成: ${TARBALL_NAME}.sig"
+    else
+        warn "未设置 TAURI_SIGNING_PRIVATE_KEY，跳过 .sig 生成"
+        warn "  发布到 OSS 前请用 'npx @tauri-apps/cli signer sign' 单独签名"
+    fi
+fi
+
 # ── 生成用户端一键安装脚本 install.sh ──
 cat > "$OUTPUT_DIR/install.sh" <<'INSTALL_EOF'
 #!/usr/bin/env bash

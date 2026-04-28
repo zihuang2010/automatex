@@ -10,6 +10,7 @@ mod startup;
 mod storage;
 mod task_provider;
 mod task_sync;
+mod updater;
 pub mod utils;
 
 use commands::*;
@@ -65,6 +66,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let app_data_dir =
                 app.path().app_data_dir().map_err(|e| format!("获取数据目录失败: {}", e))?;
@@ -328,6 +330,18 @@ pub fn run() {
             let scrcpy = Arc::new(scrcpy::session::SessionManager::new());
             app.manage(AppState { db, mqtt, engine, http, scrcpy });
 
+            // ── 自动更新静默检查（延迟执行，避免与首屏 IO 抢资源）──
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(
+                        constants::timing::UPDATE_CHECK_INITIAL_DELAY_SECS,
+                    ))
+                    .await;
+                    updater::check_for_update_silent(app_handle).await;
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -380,6 +394,8 @@ pub fn run() {
             scrcpy_inject_text,
             scrcpy_press_back,
             scrcpy_reset_video,
+            updater::check_for_update,
+            updater::install_update,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

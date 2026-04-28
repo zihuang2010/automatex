@@ -1,6 +1,6 @@
 [package]
 name = "automatex"
-version = "0.1.0"
+version = "1.0.3"
 description = "AutomateX — ADB Device Manager"
 authors = ["you"]
 edition = "2021"
@@ -30,6 +30,7 @@ rumqttc = "0.24"
 chrono = "0.4"
 tokio-util = "0.7"
 tauri-plugin-os = "2.3.2"
+tauri-plugin-updater = "2"
 rand = "0.10.0"
 uuid = { version = "1", features = ["v4"] }
 async-trait = "0.1.89"

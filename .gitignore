@@ -35,3 +35,11 @@ mock_server/
 
 # claude code rule
 CLAUDE.md
+
+# Tauri updater signing keys (NEVER commit private keys)
+*.key
+*.key.pub
+.tauri/
+
+# Release artifacts
+dist-release/

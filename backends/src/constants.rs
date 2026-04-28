@@ -67,6 +67,9 @@ pub mod tauri_event {
     pub const REQUIRE_PHONE_BIND: &str = "require-phone-bind";
     /// 启动同步状态通知
     pub const STARTUP_SYNC_STATUS: &str = "startup-sync-status";
+    pub const UPDATER_AVAILABLE: &str = "updater://available";
+    pub const UPDATER_PROGRESS: &str = "updater://progress";
+    pub const UPDATER_ERROR: &str = "updater://error";
     /// 已同步手机号变更通知（payload: { phones: string[] }）
     pub const ACCOUNT_SYNC_CHANGED: &str = "account://sync-changed";
     /// scrcpy 会话状态变化
@@ -156,6 +159,8 @@ pub mod timing {
     pub const WIFI_RECONNECT_BASE_DELAY_SECS: u64 = 30;
     /// WiFi 设备重连最大退避（秒）
     pub const WIFI_RECONNECT_MAX_DELAY_SECS: u64 = 300;
+    /// 启动后延迟多久执行首次自动更新静默检查（避免与首屏 IO 抢资源）
+    pub const UPDATE_CHECK_INITIAL_DELAY_SECS: u64 = 30;
 }
 
 /// 并发限制

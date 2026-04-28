@@ -36,6 +36,7 @@ import {
   showTransition,
   updateStartupStatusUI,
 } from './transition';
+import { setupUpdaterListeners } from './updater';
 import { $, showToast } from './utils';
 
 let appBootstrapped = false;
@@ -882,6 +883,10 @@ window.addEventListener('DOMContentLoaded', () => {
         getCurrentWindow().close();
       }),
     );
+
+    // ── 监听应用自动更新事件 ──
+    const updaterUnlisteners = await setupUpdaterListeners();
+    appUnlisteners.push(...updaterUnlisteners);
   })();
 
   invoke<string>('mqtt_status')

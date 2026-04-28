@@ -1,7 +1,7 @@
 {
   "name": "tauri-app",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "package:doctor": "node scripts/package-doctor.mjs",
+    "version:bump": "node scripts/bump-version.mjs",
     "package:mac": "bash scripts/build-macos.sh",
     "package:mac:intel": "bash scripts/build-macos.sh x86_64",
     "package:mac:arm": "bash scripts/build-macos.sh arm64",

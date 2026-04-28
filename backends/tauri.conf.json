@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AutomateX",
-  "version": "0.1.0",
+  "version": "1.0.3",
   "identifier": "com.ris0si0n.automatex",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -48,7 +48,22 @@
     "windows": {
       "webviewInstallMode": {
         "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "perMachine",
+        "languages": ["SimpChinese", "English"],
+        "displayLanguageSelector": false
       }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://jdd-rh-test1.oss-cn-zhangjiakou.aliyuncs.com/automatex-releases/latest.json"
+      ],
+      "dialog": false,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFGNDg2MDk2OTk3Nzg0NApSV1JFZUpkcENZYjBDcGthOXJIMC9oUTJFM3ByWTBDTk9lejA3ZHZvSHVTUkRyeWVQZUlIQ2ZVYwo="
     }
   }
 }
