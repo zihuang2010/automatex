@@ -91,8 +91,7 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
             move |chunk_len, content_len| {
                 downloaded = downloaded.saturating_add(chunk_len as u64);
                 let progress = UpdateProgress { downloaded, total: content_len };
-                let _ =
-                    app_for_progress.emit(constants::tauri_event::UPDATER_PROGRESS, &progress);
+                let _ = app_for_progress.emit(constants::tauri_event::UPDATER_PROGRESS, &progress);
             },
             || {
                 info!("更新下载完成，准备安装");
