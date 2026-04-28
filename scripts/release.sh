@@ -1,22 +1,25 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────
-#  AutomateX — 发布脚本（macOS 本地运行）
+#  AutomateX — 本地 macOS smoke-test 发布脚本
+#
+#  ⚠ 生产发布走 .github/workflows/release.yml（mac arm64 + mac x86_64 + windows nsis 全平台）
+#     正常发布流程是:
+#       1) npm run version:bump 1.0.4
+#       2) git commit -am "release: v1.0.4"
+#       3) git tag v1.0.4 && git push --tags    ← 触发 workflow，全平台并行打包
+#       4) Actions 完成后下载 AutomateX-release-1.0.4 artifact
+#       5) 解压上传 OSS（手动 ossutil cp）
+#
+#  本脚本的用途：在 push tag 之前先在本地 mac 上跑一遍验证打包能过。
+#                Windows 不在本脚本范围内（tauri-cli 不支持从 macOS 跨平台 NSIS bundling）。
 #
 #  做的事:
 #    1. 校验：git 工作区干净、签名密钥/OSS_BASE_URL 已设置
 #    2. bump-version 同步三处版本号
 #    3. 跑 macOS arm64 / macOS x86_64 两套打包
 #    4. 把 mac 产物（含 .sig）汇总到 dist-release/${VERSION}/
-#    5. 调 make-manifest.sh 生成 latest.json（仅含目前 dist-release/ 中的平台）
-#    6. 提示如何获取 Windows 产物（GH Actions）+ 上传 OSS
-#
-#  Windows 产物**不在本脚本中产出**（tauri-cli 不支持从 macOS 跨平台 NSIS bundling）
-#  Windows 流程见 .github/workflows/release-windows.yml：
-#    - git push v${VERSION} 标签触发，或手动 dispatch
-#    - workflow 跑 windows-latest 上的 tauri build --bundles nsis
-#    - 完成后下载 workflow artifact "AutomateX-windows-x64-nsis-${VERSION}"
-#    - 解压后把内容（*.nsis.zip + .sig + *-setup.exe）放到 dist-release/${VERSION}/
-#    - 重新跑 bash scripts/make-manifest.sh ${VERSION} 生成完整 manifest
+#    5. 调 make-manifest.sh 生成 mac-only latest.json
+#    6. 提示后续走 GH Actions 的步骤
 #
 #  必需环境变量:
 #    TAURI_SIGNING_PRIVATE_KEY              (私钥文件路径或 base64)
@@ -121,24 +124,22 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 ls -lh "$DIST_DIR"
 echo ""
-echo "后续步骤："
+echo "后续步骤（生产发布走 GH Actions）："
 echo ""
-echo "  1) 触发 Windows 打包（GitHub Actions）"
+echo "  1) 提交版本号变更并打 tag —— tag 推送会触发 release.yml 全平台并行打包"
 echo "       git add package.json backends/Cargo.toml backends/tauri.conf.json"
 echo "       git commit -m \"release: v${NEW_VERSION}\""
 echo "       git tag v${NEW_VERSION}"
-echo "       git push && git push --tags    # tag 推送会自动触发 release-windows.yml"
+echo "       git push && git push --tags"
 echo ""
-echo "  2) 等 Actions 跑完，下载 artifact \"AutomateX-windows-x64-nsis-${NEW_VERSION}\""
-echo "     解压把 *.nsis.zip / *.nsis.zip.sig / *-setup.exe 放到:"
-echo "       $DIST_DIR/"
+echo "  2) 等 Actions 完成（看 https://github.com/<org>/<repo>/actions）"
+echo "     完成后下载 artifact \"AutomateX-release-${NEW_VERSION}\""
+echo "     里面已经含全平台 .app.tar.gz / .nsis.zip / .sig + 完整 latest.json"
 echo ""
-echo "  3) 重新生成完整 manifest（含 windows 平台）"
-echo "       bash scripts/make-manifest.sh ${NEW_VERSION}"
+echo "  3) 上传到 OSS"
+echo "       unzip AutomateX-release-${NEW_VERSION}.zip -d dist-release/${NEW_VERSION}/"
+echo "       ossutil cp -r dist-release/${NEW_VERSION}/ oss://your-bucket/${NEW_VERSION}/ --exclude latest.json"
+echo "       ossutil cp dist-release/${NEW_VERSION}/latest.json oss://your-bucket/latest.json --meta=Cache-Control:max-age=300"
 echo ""
-echo "  4) 上传到 OSS（示例：阿里云 ossutil）"
-echo "       ossutil cp -r \"$DIST_DIR/\" oss://your-bucket/${NEW_VERSION}/ --exclude latest.json"
-echo "       ossutil cp \"$DIST_DIR/latest.json\" oss://your-bucket/latest.json --meta=Cache-Control:max-age=300"
-echo ""
-echo "  5) 在干净测试机验证升级路径（启动旧版 → 30s 弹窗 → 立即更新 → 重启验证版本号）"
+echo "  4) 在干净测试机验证升级路径（启动旧版 → 30s 弹窗 → 立即更新 → 重启验证版本号）"
 echo ""
