@@ -24,8 +24,11 @@ dist-ssr
 *.sw?
 
 # Tauri
-backends/binaries/*
 backends/target/*
+# 注意：backends/binaries/ 中的 adb sidecar 已纳入 git（CI 构建依赖）
+# 仅排除运行时下载/生成的临时文件
+backends/binaries/.tmp/
+backends/binaries/*.bak
 
 # Mock Server
 mock_server/
