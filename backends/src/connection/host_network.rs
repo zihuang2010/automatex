@@ -5,7 +5,7 @@
 //!
 //! 不做实际网络 IO，只读 OS 接口表，<10ms 完成。
 
-use if_addrs::{IfAddr, get_if_addrs};
+use if_addrs::{get_if_addrs, IfAddr};
 use std::net::Ipv4Addr;
 
 #[derive(Debug, Clone)]
@@ -57,9 +57,7 @@ pub fn diagnose_for_target(target: Ipv4Addr) -> Result<HostInterface, String> {
         );
     }
 
-    if let Some(idx) =
-        interfaces.iter().position(|i| in_same_subnet(i.ip, i.netmask, target))
-    {
+    if let Some(idx) = interfaces.iter().position(|i| in_same_subnet(i.ip, i.netmask, target)) {
         return Ok(interfaces.swap_remove(idx));
     }
 
