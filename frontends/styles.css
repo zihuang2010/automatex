@@ -243,7 +243,10 @@
 
 /* 内容容器：挂 data-tauri-drag-region；无 transform、无 overflow */
 .transition-content {
-  @apply flex min-h-full flex-col items-center p-6;
+  /* w-full 必需 —— 否则容器 = 内部卡片宽度（max-w-2xl），items-center 形同虚设，
+     卡片左对齐；同时 data-tauri-drag-region 范围只覆盖卡片宽度，
+     右侧空白无法拖动窗口。macOS 因为 transparent 真透明看不出来；Windows 暴露此 bug。 */
+  @apply flex min-h-full w-full flex-col items-center p-6;
   /* 低分辨率兜底：内容能装下时居中，装不下时从顶部开始（允许根层滚动到底部按钮） */
   justify-content: safe center;
 }

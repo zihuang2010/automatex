@@ -74,6 +74,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify signing key is injected
+        shell: bash
+        run: |
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY secret 未配置或未注入到本 job"
+            echo "::error::到 Settings → Secrets and variables → Actions → New repository secret 添加："
+            echo "::error::  Name: TAURI_SIGNING_PRIVATE_KEY"
+            echo "::error::  Value: 本地 ~/.tauri/automatex.key 整个文件内容（包含 untrusted comment 行）"
+            exit 1
+          fi
+          echo "TAURI_SIGNING_PRIVATE_KEY length: ${#TAURI_SIGNING_PRIVATE_KEY}"
+          if [ -n "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD: 已设置"
+          else
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY_PASSWORD 未设置（如果你的密钥有密码会签名失败）"
+          fi
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -102,11 +119,24 @@ jobs:
       - name: Stage artifacts
         shell: bash
         run: |
-          mkdir -p stage
           OUT="backends/target/output/${{ matrix.out_dir }}"
-          ls -la "$OUT"
-          cp "$OUT"/*.app.tar.gz     stage/
-          cp "$OUT"/*.app.tar.gz.sig stage/
+          BUNDLE="backends/target/${{ matrix.target }}/release/bundle"
+          echo "── output dir ──"
+          ls -la "$OUT" || true
+          echo "── tauri 原始 bundle/macos（包含 .app.tar.gz + .sig）──"
+          ls -la "$BUNDLE/macos" || true
+
+          mkdir -p stage
+          if ! cp "$OUT"/*.app.tar.gz stage/ 2>/dev/null; then
+            echo "::error::缺少 *.app.tar.gz —— build-macos.sh 没有产出 updater 包"
+            exit 1
+          fi
+          if ! cp "$OUT"/*.app.tar.gz.sig stage/ 2>/dev/null; then
+            echo "::error::缺少 *.app.tar.gz.sig —— TAURI_SIGNING_PRIVATE_KEY 没正确传给 tauri build"
+            echo "::error::或密钥密码错误。检查上面的 verify 步骤输出。"
+            exit 1
+          fi
+          echo "── stage ──"
           ls -la stage/
 
       - uses: actions/upload-artifact@v4
@@ -125,6 +155,15 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify signing key is injected
+        shell: bash
+        run: |
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY secret 未配置或未注入到本 job"
+            exit 1
+          fi
+          echo "TAURI_SIGNING_PRIVATE_KEY length: ${#TAURI_SIGNING_PRIVATE_KEY}"
 
       - uses: actions/setup-node@v4
         with:
@@ -154,12 +193,24 @@ jobs:
       - name: Stage artifacts
         shell: bash
         run: |
-          mkdir -p stage
           BUNDLE="backends/target/x86_64-pc-windows-msvc/release/bundle/nsis"
+          echo "── tauri 原始 bundle/nsis ──"
           ls -la "$BUNDLE" || true
-          cp "$BUNDLE"/*-setup.exe       stage/ 2>/dev/null || true
-          cp "$BUNDLE"/*.nsis.zip        stage/ 2>/dev/null || true
-          cp "$BUNDLE"/*.nsis.zip.sig    stage/ 2>/dev/null || true
+
+          mkdir -p stage
+          if ! cp "$BUNDLE"/*-setup.exe stage/ 2>/dev/null; then
+            echo "::error::缺少 *-setup.exe —— NSIS 安装包未生成"
+            exit 1
+          fi
+          if ! cp "$BUNDLE"/*.nsis.zip stage/ 2>/dev/null; then
+            echo "::error::缺少 *.nsis.zip —— updater 包未生成"
+            exit 1
+          fi
+          if ! cp "$BUNDLE"/*.nsis.zip.sig stage/ 2>/dev/null; then
+            echo "::error::缺少 *.nsis.zip.sig —— TAURI_SIGNING_PRIVATE_KEY 没正确签名"
+            exit 1
+          fi
+          echo "── stage ──"
           ls -la stage/
 
       - uses: actions/upload-artifact@v4

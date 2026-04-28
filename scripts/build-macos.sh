@@ -163,27 +163,52 @@ if [ -n "$DMG_PATH" ]; then
     xattr -cr "$DMG_PATH" 2>/dev/null || true
 fi
 
-# ── 生成 updater 用的 .app.tar.gz 和签名文件 ──
-# tauri-plugin-updater 在 macOS 走 .app.tar.gz 路径替换 .app
-# 没有签名密钥时跳过 .sig 生成，仅打 tar 包以便手动测试
+# ── 收集 updater 用的 .app.tar.gz + .sig ──
+# tauri build 在以下条件齐备时会自动产出 bundle/macos/*.app.tar.gz + .sig：
+#   1) tauri.conf.json 配置了 plugins.updater
+#   2) bundle.targets 包含 macOS 构建（"all" 或显式列表）
+#   3) TAURI_SIGNING_PRIVATE_KEY 环境变量已注入构建过程
+# 我们直接复用并重命名为 OSS layout 期望的 ${APP}_${VERSION}_${ARCH}.app.tar.gz
 if [ -n "$APP" ] && [ -d "$APP" ]; then
     VERSION=$(node -p "require('$ROOT_DIR/package.json').version")
     TARBALL_NAME="${APP_NAME}_${VERSION}_${ARCH}.app.tar.gz"
     TARBALL_PATH="$OUTPUT_DIR/$TARBALL_NAME"
 
-    info "打包 updater 产物 ${TARBALL_NAME} ..."
-    (cd "$OUTPUT_DIR" && tar czf "$TARBALL_NAME" "$(basename "$APP")")
+    AUTO_TARBALL=$(find "$BUNDLE_DIR/macos" -maxdepth 1 -name "*.app.tar.gz" 2>/dev/null | head -1)
+    AUTO_SIG=$(find "$BUNDLE_DIR/macos" -maxdepth 1 -name "*.app.tar.gz.sig" 2>/dev/null | head -1)
 
-    if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
-        info "对 updater 包进行 ed25519 签名..."
-        # tauri signer sign 会读取 TAURI_SIGNING_PRIVATE_KEY 与
-        # TAURI_SIGNING_PRIVATE_KEY_PASSWORD 环境变量，输出 ${file}.sig
-        npx @tauri-apps/cli signer sign "$TARBALL_PATH" \
-            || error "updater 包签名失败"
-        info "签名生成: ${TARBALL_NAME}.sig"
+    if [ -n "$AUTO_TARBALL" ]; then
+        info "复用 tauri 自动产出的 updater 包: $(basename "$AUTO_TARBALL")"
+        cp "$AUTO_TARBALL" "$TARBALL_PATH"
+
+        if [ -n "$AUTO_SIG" ]; then
+            cp "$AUTO_SIG" "${TARBALL_PATH}.sig"
+            info "  ✓ ${TARBALL_NAME} + .sig"
+        elif [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            # 极少见：tarball 有但 sig 没产出。手动补签。
+            warn "tauri 未产出 .sig，尝试手动签名..."
+            npx @tauri-apps/cli signer sign \
+                -k "$TAURI_SIGNING_PRIVATE_KEY" "$TARBALL_PATH" \
+                || error "手动签名失败"
+            info "  ✓ 手动 .sig 已生成"
+        else
+            error "缺少签名文件且未设置 TAURI_SIGNING_PRIVATE_KEY。
+       updater 必须有 ed25519 签名才能验证更新包。
+       本地：export TAURI_SIGNING_PRIVATE_KEY=\$(cat ~/.tauri/automatex.key)
+       CI：在 Settings → Secrets and variables → Actions 添加同名 secret"
+        fi
     else
-        warn "未设置 TAURI_SIGNING_PRIVATE_KEY，跳过 .sig 生成"
-        warn "  发布到 OSS 前请用 'npx @tauri-apps/cli signer sign' 单独签名"
+        # 兜底：tauri 未配置 updater 或其他原因没有自动产出 — 手动 tar
+        warn "tauri 未自动产出 .app.tar.gz，手动打包"
+        (cd "$OUTPUT_DIR" && tar czf "$TARBALL_NAME" "$(basename "$APP")")
+        if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            npx @tauri-apps/cli signer sign \
+                -k "$TAURI_SIGNING_PRIVATE_KEY" "$TARBALL_PATH" \
+                || error "手动签名失败"
+            info "  ✓ 手动 ${TARBALL_NAME} + .sig"
+        else
+            warn "未设置 TAURI_SIGNING_PRIVATE_KEY，仅产出 tar 包（无 .sig）"
+        fi
     fi
 fi
 
