@@ -16,9 +16,10 @@
 #    OSS_BASE_URL                           (latest.json 中产物的 base URL)
 #                                            如 https://automatex-releases.oss-cn-hangzhou.aliyuncs.com
 #
-#  可选环境变量:
-#    SKIP_MAC_INTEL=1   只打 mac arm64，不跑 x86_64（节约时间）
-#    SKIP_WINDOWS=1     不跑 windows nsis 打包
+#  可选环境变量（重试某个平台时跳过已成功的部分）:
+#    SKIP_MAC_ARM=1     跳过 macOS arm64 打包（要求该产物已存在于 target/output/macos-arm64/）
+#    SKIP_MAC_INTEL=1   跳过 macOS x86_64 打包
+#    SKIP_WINDOWS=1     跳过 Windows NSIS 打包
 #    RELEASE_NOTES      更新说明（多行，写进 latest.json 的 notes）
 #
 #  用法:
@@ -66,29 +67,47 @@ DIST_DIR="$ROOT_DIR/dist-release/$NEW_VERSION"
 rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR"
 
-info "打包 macOS arm64..."
-bash "$ROOT_DIR/scripts/build-macos.sh" arm64
-cp "$ROOT_DIR/backends/target/output/macos-arm64/${APP_NAME}_${NEW_VERSION}_arm64.app.tar.gz"     "$DIST_DIR/"
-cp "$ROOT_DIR/backends/target/output/macos-arm64/${APP_NAME}_${NEW_VERSION}_arm64.app.tar.gz.sig" "$DIST_DIR/"
+if [ -z "${SKIP_MAC_ARM:-}" ]; then
+    info "打包 macOS arm64..."
+    bash "$ROOT_DIR/scripts/build-macos.sh" arm64
+else
+    warn "跳过 macOS arm64 打包 (SKIP_MAC_ARM=1)"
+fi
+ARM_OUT="$ROOT_DIR/backends/target/output/macos-arm64"
+if [ -f "$ARM_OUT/${APP_NAME}_${NEW_VERSION}_arm64.app.tar.gz" ]; then
+    cp "$ARM_OUT/${APP_NAME}_${NEW_VERSION}_arm64.app.tar.gz"     "$DIST_DIR/"
+    cp "$ARM_OUT/${APP_NAME}_${NEW_VERSION}_arm64.app.tar.gz.sig" "$DIST_DIR/" 2>/dev/null || true
+else
+    warn "macOS arm64 产物缺失，将不写入 latest.json"
+fi
 
 if [ -z "${SKIP_MAC_INTEL:-}" ]; then
     info "打包 macOS x86_64..."
     bash "$ROOT_DIR/scripts/build-macos.sh" x86_64
-    cp "$ROOT_DIR/backends/target/output/macos-x64/${APP_NAME}_${NEW_VERSION}_x86_64.app.tar.gz"     "$DIST_DIR/"
-    cp "$ROOT_DIR/backends/target/output/macos-x64/${APP_NAME}_${NEW_VERSION}_x86_64.app.tar.gz.sig" "$DIST_DIR/"
 else
     warn "跳过 macOS x86_64 打包 (SKIP_MAC_INTEL=1)"
+fi
+INTEL_OUT="$ROOT_DIR/backends/target/output/macos-x64"
+if [ -f "$INTEL_OUT/${APP_NAME}_${NEW_VERSION}_x86_64.app.tar.gz" ]; then
+    cp "$INTEL_OUT/${APP_NAME}_${NEW_VERSION}_x86_64.app.tar.gz"     "$DIST_DIR/"
+    cp "$INTEL_OUT/${APP_NAME}_${NEW_VERSION}_x86_64.app.tar.gz.sig" "$DIST_DIR/" 2>/dev/null || true
+else
+    warn "macOS x86_64 产物缺失，将不写入 latest.json"
 fi
 
 if [ -z "${SKIP_WINDOWS:-}" ]; then
     info "打包 Windows NSIS..."
     BUILD_MODE=nsis bash "$ROOT_DIR/scripts/build-windows.sh"
-    WIN_OUT="$ROOT_DIR/backends/target/output/windows-x64-nsis"
-    cp "$WIN_OUT"/*.nsis.zip      "$DIST_DIR/"
-    cp "$WIN_OUT"/*.nsis.zip.sig  "$DIST_DIR/"
-    cp "$WIN_OUT"/*-setup.exe     "$DIST_DIR/"
 else
     warn "跳过 Windows 打包 (SKIP_WINDOWS=1)"
+fi
+WIN_OUT="$ROOT_DIR/backends/target/output/windows-x64-nsis"
+if compgen -G "$WIN_OUT/*.nsis.zip" > /dev/null; then
+    cp "$WIN_OUT"/*.nsis.zip      "$DIST_DIR/"
+    cp "$WIN_OUT"/*.nsis.zip.sig  "$DIST_DIR/" 2>/dev/null || true
+    cp "$WIN_OUT"/*-setup.exe     "$DIST_DIR/" 2>/dev/null || true
+else
+    warn "Windows NSIS 产物缺失，将不写入 latest.json"
 fi
 
 # ── Step 3: 生成 latest.json ──

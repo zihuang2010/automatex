@@ -27,12 +27,14 @@ pkg.version = next;
 writeFileSync(PACKAGE_JSON, JSON.stringify(pkg, null, 2) + '\n', 'utf8');
 
 const cargo = readFileSync(CARGO_TOML, 'utf8');
-const cargoPatched = cargo.replace(
-  /^(version\s*=\s*")[^"]+(")/m,
-  `$1${next}$2`,
-);
-if (cargoPatched === cargo) fail('Failed to update version in backends/Cargo.toml');
-writeFileSync(CARGO_TOML, cargoPatched, 'utf8');
+const cargoVersionRe = /^(version\s*=\s*")[^"]+(")/m;
+if (!cargoVersionRe.test(cargo)) {
+  fail('Failed to find [package].version line in backends/Cargo.toml');
+}
+const cargoPatched = cargo.replace(cargoVersionRe, `$1${next}$2`);
+if (cargoPatched !== cargo) {
+  writeFileSync(CARGO_TOML, cargoPatched, 'utf8');
+}
 
 const conf = JSON.parse(readFileSync(TAURI_CONF, 'utf8'));
 conf.version = next;
