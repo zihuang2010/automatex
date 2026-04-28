@@ -12,6 +12,11 @@ let _onStartMirror: ((serial: string) => void) | null = null;
 let _onSwitchToWifi: ((serial: string) => void | Promise<void>) | null = null;
 let _pendingRafId: number | null = null;
 let _deviceCache: DeviceRow[] = [];
+// 正在切到无线的 serial 集合：作为 spinner 状态的唯一来源，
+// 让 monitor 触发的中间 re-render 不会把 progress_activity 旋转抹掉
+const _switchingSerials = new Set<string>();
+// 委托监听只挂一次到 #device-tree，避免 re-render 累积监听器
+let _treeListenerAttached = false;
 
 export function rerenderDeviceCardsFromCache() {
   if (_deviceCache.length > 0) {
@@ -104,18 +109,70 @@ export function getCachedDeviceResolution(
   return { width, height };
 }
 
-/** 卡片角标：直观区分当前 ADB transport 是 USB 还是 WiFi */
-function transportChip(d: DeviceRow, dimmed = false): string {
+interface TransportCtx {
+  running: boolean;
+  flagged: boolean;
+  hasError: boolean;
+  offline: boolean;
+}
+
+/**
+ * 左侧 transport 图标按钮：兼任三件事 ——
+ * 1. 视觉传达 transport（USB / WiFi 用配色 + 角标区分）
+ * 2. ready USB 卡上点击触发切到无线（其他状态 disabled）
+ * 3. 切换中由事件 handler 切换为 progress_activity 旋转
+ */
+function transportIconButton(d: DeviceRow, ctx: TransportCtx): string {
   const isWifi = d.device_type === 'wifi';
-  const text = isWifi ? 'WiFi' : 'USB';
-  const cls = isWifi
-    ? dimmed
-      ? 'bg-blue-50/60 text-blue-400 border-blue-100'
-      : 'bg-blue-50 text-blue-600 border-blue-100'
-    : dimmed
-      ? 'bg-s100 text-s400 border-s200'
-      : 'bg-s100 text-s500 border-s200';
-  return `<span class="text-[9px] font-black px-1 py-px rounded border uppercase tracking-wider shrink-0 ${cls}">${text}</span>`;
+  const switching = _switchingSerials.has(d.serial);
+  const clickable =
+    !isWifi && !ctx.running && !ctx.flagged && !ctx.hasError && !ctx.offline && !switching;
+
+  let frameCls: string;
+  if (ctx.offline) {
+    frameCls = 'bg-s200 border-s300 text-s400';
+  } else if (ctx.hasError) {
+    frameCls = 'bg-red-50 border-red-200 text-red-400';
+  } else if (ctx.flagged) {
+    frameCls = 'bg-orange-50 border-orange-200 text-orange-400';
+  } else if (isWifi) {
+    frameCls = 'bg-blue-50 border-blue-200 text-blue-600';
+  } else if (ctx.running) {
+    frameCls = 'bg-white border-blue-100 text-blue-500';
+  } else {
+    frameCls = 'bg-white border-blue-100 text-blue-500';
+  }
+
+  let title: string;
+  if (switching) {
+    title = '切换中…';
+  } else if (isWifi) {
+    title = '已是无线连接';
+  } else if (ctx.offline) {
+    title = '设备离线';
+  } else if (ctx.hasError) {
+    title = '任务异常，不可切换';
+  } else if (ctx.flagged) {
+    title = '设备已风控，不可切换';
+  } else if (ctx.running) {
+    title = '任务执行中，无法切换';
+  } else {
+    title = '切到无线';
+  }
+
+  // switching 状态由 _switchingSerials Set 驱动，跨 re-render 保持
+  const switchAttr = clickable ? `data-transport-switch="${esc(d.serial)}"` : 'disabled';
+  const loadingCls = switching ? ' is-loading' : '';
+  const mainIcon = switching ? 'progress_activity' : 'smartphone';
+  const wifiBadge =
+    isWifi && !switching
+      ? '<span class="dev-transport-wifi-badge material-symbols-outlined">wifi</span>'
+      : '';
+
+  return `<button type="button" class="dev-transport-btn${loadingCls} h-9 w-9 rounded-md ${frameCls} border flex items-center justify-center shrink-0 relative" title="${esc(title)}" ${switchAttr}>
+      <span class="dev-transport-main material-symbols-outlined text-xl fill-1">${mainIcon}</span>
+      ${wifiBadge}
+    </button>`;
 }
 
 function renderDeviceCards(devs: DeviceRow[]) {
@@ -181,9 +238,7 @@ function renderDeviceCards(devs: DeviceRow[]) {
 
     return `<div class="dev-card device-card-running border rounded-md p-2.5 transition-all hover:shadow-sm cursor-pointer ${isSel ? 'ring-2 ring-blue-300' : ''}" data-s="${esc(d.serial)}" data-state="running">
       <div class="flex items-start gap-3">
-        <div class="h-9 w-9 rounded-md bg-white border border-blue-100 flex items-center justify-center text-blue-500 shrink-0">
-          <span class="material-symbols-outlined text-xl fill-1">smartphone</span>
-        </div>
+        ${transportIconButton(d, { running: true, flagged: false, hasError: false, offline: false })}
         <div class="min-w-0 flex-1">
           <div class="flex justify-between items-center mb-0.5">
             <h3 class="text-[11px] font-bold text-s900 truncate">${esc(displayName)}</h3>
@@ -192,10 +247,7 @@ function renderDeviceCards(devs: DeviceRow[]) {
               <span class="text-[10px] font-bold ${statusTextClass}">${statusLabel}</span>
             </div>
           </div>
-          <div class="flex items-center gap-1.5 min-w-0">
-            <span class="mono-technical text-[10px] text-s500 font-medium truncate">${esc(shortHwid)}</span>
-            ${transportChip(d)}
-          </div>
+          <p class="mono-technical text-[10px] text-s500 font-medium truncate">${esc(shortHwid)}</p>
         </div>
       </div>
       <div class="mt-2.5">
@@ -217,7 +269,7 @@ function renderDeviceCards(devs: DeviceRow[]) {
           </span>
         </div>
         <button class="dev-mirror-btn" data-mirror="${esc(d.serial)}" title="投屏观察">
-          <span class="material-symbols-outlined">cast</span>
+          <span class="material-symbols-outlined">screen_share</span>
         </button>
       </div>
     </div>`;
@@ -252,11 +304,6 @@ function renderDeviceCards(devs: DeviceRow[]) {
         ? 'bg-orange-50 text-orange-600 border-orange-200'
         : 'bg-blue-50 text-blue-600 border-blue-100';
     const badgeText = hasError ? '任务异常' : flagged ? '风控' : '就绪';
-    const iconBorderCls = hasError
-      ? 'bg-red-50 border-red-200 text-red-400'
-      : flagged
-        ? 'bg-orange-50 border-orange-200 text-orange-400'
-        : 'bg-s50 border-s100 text-s400';
     const opacityCls = flagged && !hasError ? 'opacity-70' : '';
     const ringCls = isSel
       ? hasError
@@ -276,15 +323,10 @@ function renderDeviceCards(devs: DeviceRow[]) {
     return `<div class="dev-card device-card-ready border rounded-md p-2.5 transition-all hover:border-blue-200 cursor-pointer relative ${opacityCls} ${ringCls}" data-s="${esc(d.serial)}" data-state="ready" data-flagged="${flagged ? '1' : '0'}" data-error="${hasError ? '1' : '0'}">
       <div class="absolute top-2.5 right-2.5 px-1.5 py-0.5 ${badgeCls} text-[10px] font-black rounded border uppercase tracking-normal">${badgeText}</div>
       <div class="flex items-start gap-3">
-        <div class="h-9 w-9 rounded-md ${iconBorderCls} border flex items-center justify-center shrink-0">
-          <span class="material-symbols-outlined text-xl fill-1">smartphone</span>
-        </div>
+        ${transportIconButton(d, { running: false, flagged, hasError, offline: false })}
         <div class="min-w-0 flex-1">
           <h3 class="text-[11px] font-bold text-s700 truncate pr-8">${esc(displayName)}</h3>
-          <div class="flex items-center gap-1.5 mt-0.5 min-w-0 pr-8">
-            <span class="mono-technical text-[10px] text-s500 font-medium truncate">${esc(shortHwid)}</span>
-            ${transportChip(d)}
-          </div>
+          <p class="mono-technical text-[10px] text-s500 mt-0.5 font-medium truncate pr-8">${esc(shortHwid)}</p>
         </div>
       </div>
       <div class="mt-2.5 flex items-center justify-between text-[10px] font-bold">
@@ -297,13 +339,8 @@ function renderDeviceCards(devs: DeviceRow[]) {
           </span>
         </div>
         <div class="flex items-center gap-1">
-          ${
-            d.device_type === 'usb' && !flagged && !hasError
-              ? `<button class="dev-wifi-btn" data-wifi="${esc(d.serial)}" title="切到无线"><span class="material-symbols-outlined">wifi</span></button>`
-              : ''
-          }
           <button class="dev-mirror-btn" data-mirror="${esc(d.serial)}" title="投屏">
-            <span class="material-symbols-outlined">cast</span>
+            <span class="material-symbols-outlined">screen_share</span>
           </button>
         </div>
       </div>
@@ -322,15 +359,10 @@ function renderDeviceCards(devs: DeviceRow[]) {
     return `<div class="dev-card device-card-offline border rounded-md p-2.5 cursor-pointer relative ${isSel ? 'ring-2 ring-s400' : ''}" data-s="${esc(d.serial)}" data-state="offline">
       <div class="absolute top-2.5 right-2.5 px-1.5 py-0.5 bg-s200 text-s500 text-[10px] font-black rounded border border-s300 uppercase tracking-normal">离线</div>
       <div class="flex items-start gap-3">
-        <div class="h-9 w-9 rounded-md bg-s200 border border-s300 flex items-center justify-center text-s400 shrink-0">
-          <span class="material-symbols-outlined text-xl fill-1">smartphone</span>
-        </div>
+        ${transportIconButton(d, { running: false, flagged: false, hasError: false, offline: true })}
         <div class="min-w-0 flex-1">
           <h3 class="text-[11px] font-bold text-s600 truncate pr-8">${esc(displayName)}</h3>
-          <div class="flex items-center gap-1.5 mt-0.5 min-w-0 pr-8">
-            <span class="mono-technical text-[10px] text-s400 font-medium truncate">${esc(shortHwid)}</span>
-            ${transportChip(d, true)}
-          </div>
+          <p class="mono-technical text-[10px] text-s400 mt-0.5 font-medium truncate pr-8">${esc(shortHwid)}</p>
         </div>
       </div>
       <div class="mt-2.5 flex items-center justify-between text-[10px] font-bold">
@@ -412,59 +444,79 @@ function renderDeviceCards(devs: DeviceRow[]) {
       }
     });
 
-    tree.querySelectorAll('.dev-card').forEach(el => {
-      const s = (el as HTMLElement).dataset.s!;
-      const state = (el as HTMLElement).dataset.state;
-
-      if (state === 'running' || state === 'offline' || state === 'ready') {
-        el.addEventListener('click', e => {
-          e.stopPropagation();
-          selectDevice(s);
-        });
-      }
-
-      el.addEventListener('dblclick', e => {
-        e.stopPropagation();
-        _onShowDeviceInfo?.(s);
-      });
-    });
-
-    // 投屏按钮事件
-    tree.querySelectorAll('.dev-mirror-btn').forEach(btn => {
-      btn.addEventListener('click', e => {
-        e.stopPropagation();
-        const serial = (btn as HTMLElement).dataset.mirror;
-        if (serial) _onStartMirror?.(serial);
-      });
-    });
-
-    // 切到无线按钮事件
-    tree.querySelectorAll('.dev-wifi-btn').forEach(btn => {
-      btn.addEventListener('click', async e => {
-        e.stopPropagation();
-        const button = btn as HTMLButtonElement;
-        const serial = button.dataset.wifi;
-        if (!serial || button.disabled || !_onSwitchToWifi) return;
-
-        const icon = button.querySelector('.material-symbols-outlined');
-        const originalIcon = icon?.textContent ?? 'wifi';
-        button.disabled = true;
-        button.classList.add('is-loading');
-        button.title = '切换中…';
-        if (icon) icon.textContent = 'progress_activity';
-
-        try {
-          await _onSwitchToWifi(serial);
-        } finally {
-          // 重渲染后该按钮可能已被卸载；finally 仍安全地恢复以防失败留下假死状态
-          button.disabled = false;
-          button.classList.remove('is-loading');
-          button.title = '切到无线';
-          if (icon) icon.textContent = originalIcon;
-        }
-      });
-    });
+    attachDelegatedListeners(tree);
   });
+}
+
+/**
+ * 单次挂载到 #device-tree 的事件委托：用 closest() 路由所有卡片交互。
+ * 每次 re-render 替换 innerHTML 后旧节点连同其内联监听一起被 GC，
+ * 这里挂在容器上的监听则跨 re-render 持续存活，避免累积/双触发。
+ */
+function attachDelegatedListeners(tree: HTMLElement) {
+  if (_treeListenerAttached) return;
+  _treeListenerAttached = true;
+
+  tree.addEventListener('click', e => {
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+
+    // 1) transport 按钮（USB→WiFi 切换）—— 优先于 mirror / card 路由
+    const transportBtn = target.closest<HTMLButtonElement>(
+      '.dev-transport-btn[data-transport-switch]',
+    );
+    if (transportBtn) {
+      e.stopPropagation();
+      const serial = transportBtn.dataset.transportSwitch;
+      if (!serial || transportBtn.disabled || !_onSwitchToWifi) return;
+      void handleSwitchToWifi(serial);
+      return;
+    }
+
+    // 2) 投屏按钮
+    const mirrorBtn = target.closest<HTMLElement>('.dev-mirror-btn');
+    if (mirrorBtn) {
+      e.stopPropagation();
+      const serial = mirrorBtn.dataset.mirror;
+      if (serial) _onStartMirror?.(serial);
+      return;
+    }
+
+    // 3) 卡片选中（点击空白区域）
+    const card = target.closest<HTMLElement>('.dev-card');
+    if (card) {
+      const s = card.dataset.s;
+      const state = card.dataset.state;
+      if (s && (state === 'running' || state === 'offline' || state === 'ready')) {
+        e.stopPropagation();
+        selectDevice(s);
+      }
+    }
+  });
+
+  tree.addEventListener('dblclick', e => {
+    const target = e.target as HTMLElement | null;
+    const card = target?.closest<HTMLElement>('.dev-card');
+    if (!card) return;
+    e.stopPropagation();
+    const s = card.dataset.s;
+    if (s) _onShowDeviceInfo?.(s);
+  });
+}
+
+async function handleSwitchToWifi(serial: string) {
+  if (_switchingSerials.has(serial) || !_onSwitchToWifi) return;
+  _switchingSerials.add(serial);
+  // 立即重渲染让 spinner 来源于 Set，跨后续 monitor re-render 都能保持
+  rerenderDeviceCardsFromCache();
+  try {
+    await _onSwitchToWifi(serial);
+  } finally {
+    _switchingSerials.delete(serial);
+    // 命令成功通常会触发 devices-changed → refreshDevices；
+    // 失败时这一步用缓存重绘把 spinner 状态清回正常，避免假死
+    rerenderDeviceCardsFromCache();
+  }
 }
 
 export function filterDeviceCards(query: string) {

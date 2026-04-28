@@ -477,4 +477,160 @@ impl Database {
             })
             .await;
     }
+
+    /// 在单个 IMMEDIATE 事务里完成 upsert + 按 hw_serial 合并旧 transport 行。
+    ///
+    /// USB→WiFi 切换场景：connect 成功后必须立刻让 DB 进入"只剩一行 wifi"的终态，
+    /// 否则 monitor 的 placeholder 路径或同时上报的 USB transport 事件会与之 race，
+    /// 留下幽灵 OFFLINE 行。把两步并入同一事务（IMMEDIATE 抢写锁），中间态对其他
+    /// 写者不可见，关闭这个 race window。
+    pub async fn upsert_and_reconcile_by_hw_serial(
+        &self,
+        row: &DeviceRow,
+        hw_serial: &str,
+    ) {
+        if hw_serial.trim().is_empty() {
+            // hw_serial 缺失时回退到分步调用，避免错误把 placeholder 行误合并
+            self.upsert_device(row).await;
+            return;
+        }
+        let row = row.clone();
+        let new_serial = row.serial.clone();
+        let hw_serial = hw_serial.to_string();
+        let Ok(conn) = self.pool.get().await else { return };
+        let _ = conn
+            .interact(move |conn| {
+                let tx = match conn
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                {
+                    Ok(tx) => tx,
+                    Err(e) => {
+                        error!(op = "upsert_and_reconcile", error = %e, "事务开始失败");
+                        return;
+                    },
+                };
+
+                log_exec(
+                    tx.execute(
+                        "INSERT INTO a_devices
+                        (serial, hw_serial, name, device_type, address, state,
+                         model, brand, android_version, sdk_version, display_resolution,
+                         battery_level, battery_temperature, is_flagged, updated_at)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
+                     ON CONFLICT(serial) DO UPDATE SET
+                         hw_serial = excluded.hw_serial,
+                         name = excluded.name,
+                         device_type = excluded.device_type,
+                         address = excluded.address,
+                         state = excluded.state,
+                         model = excluded.model,
+                         brand = excluded.brand,
+                         android_version = excluded.android_version,
+                         sdk_version = excluded.sdk_version,
+                         display_resolution = excluded.display_resolution,
+                         battery_level = excluded.battery_level,
+                         battery_temperature = excluded.battery_temperature,
+                         updated_at = excluded.updated_at",
+                        params![
+                            row.serial,
+                            row.hw_serial,
+                            row.name,
+                            row.device_type,
+                            row.address,
+                            row.state,
+                            row.model,
+                            row.brand,
+                            row.android_version,
+                            row.sdk_version,
+                            row.display_resolution,
+                            row.battery_level,
+                            row.battery_temperature,
+                            row.is_flagged as i32,
+                            row.updated_at,
+                        ],
+                    ),
+                    "upsert_and_reconcile.upsert",
+                );
+
+                let old_rows: Vec<(String, Option<i64>)> = {
+                    let mut stmt = match tx.prepare(
+                        "SELECT serial, local_port FROM a_devices
+                         WHERE hw_serial = ?1 AND serial != ?2",
+                    ) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            error!(op = "upsert_and_reconcile", error = %e, "查询旧行失败");
+                            return;
+                        },
+                    };
+                    let mapped = match stmt.query_map(params![hw_serial, new_serial], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+                    }) {
+                        Ok(rows) => rows,
+                        Err(e) => {
+                            error!(op = "upsert_and_reconcile", error = %e, "迭代旧行失败");
+                            return;
+                        },
+                    };
+                    mapped.filter_map(|r| r.ok()).collect()
+                };
+
+                let inherited_port: Option<i64> = old_rows.iter().find_map(|(_, p)| *p);
+
+                for (old_serial, _) in &old_rows {
+                    log_exec(
+                        tx.execute(
+                            "UPDATE a_task_state SET assigned_device = ?1 WHERE assigned_device = ?2",
+                            params![new_serial, old_serial],
+                        ),
+                        "upsert_and_reconcile.task_state",
+                    );
+                    log_exec(
+                        tx.execute(
+                            "UPDATE a_task_runs SET device_serial = ?1 WHERE device_serial = ?2",
+                            params![new_serial, old_serial],
+                        ),
+                        "upsert_and_reconcile.task_runs",
+                    );
+                    log_exec(
+                        tx.execute(
+                            "UPDATE a_task_progress SET device_serial = ?1 WHERE device_serial = ?2",
+                            params![new_serial, old_serial],
+                        ),
+                        "upsert_and_reconcile.task_progress",
+                    );
+                    log_exec(
+                        tx.execute(
+                            "DELETE FROM a_devices WHERE serial = ?1",
+                            params![old_serial],
+                        ),
+                        "upsert_and_reconcile.delete_old",
+                    );
+                }
+
+                if let Some(port) = inherited_port {
+                    log_exec(
+                        tx.execute(
+                            "UPDATE a_devices
+                             SET local_port = COALESCE(local_port, ?1)
+                             WHERE serial = ?2",
+                            params![port, new_serial],
+                        ),
+                        "upsert_and_reconcile.inherit_port",
+                    );
+                }
+
+                if let Err(e) = tx.commit() {
+                    error!(op = "upsert_and_reconcile", error = %e, "事务提交失败");
+                } else if !old_rows.is_empty() {
+                    info!(
+                        hw_serial = %hw_serial,
+                        new_serial = %new_serial,
+                        merged = old_rows.len(),
+                        "原子 upsert+合并设备行"
+                    );
+                }
+            })
+            .await;
+    }
 }

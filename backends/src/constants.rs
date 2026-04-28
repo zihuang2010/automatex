@@ -130,6 +130,10 @@ pub mod timing {
     pub const ADB_RECONNECT_WAIT_SECS: u64 = 5;
     /// WiFi 设备连接超时
     pub const WIFI_CONNECT_TIMEOUT_SECS: u64 = 5;
+    /// USB→WiFi 切换时 connect 轮询最大尝试次数
+    pub const WIFI_HANDSHAKE_MAX_RETRIES: u32 = 6;
+    /// USB→WiFi 切换时 connect 轮询间隔（毫秒）
+    pub const WIFI_HANDSHAKE_RETRY_INTERVAL_MS: u64 = 500;
     /// MQTT keep-alive 间隔（10s：避免 NAT/防火墙 idle 超时，保持连接活跃）
     pub const MQTT_KEEP_ALIVE_SECS: u64 = 10;
     /// ADB shell/cmd 命令超时（防止永久阻塞）

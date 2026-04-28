@@ -130,26 +130,69 @@ pub async fn list_devices(state: tauri::State<'_, AppState>) -> Result<Vec<Devic
 }
 
 /// 把当前 USB 接入的设备切换为无线 ADB：
-/// `adb tcpip 5555` → 抓 wlan0 IP → `adb connect <ip>:5555`。
-/// 拔线后 monitor 会把旧 USB 行通过 reconcile 合并到新无线行。
+/// `adb tcpip 5555` → 抓 wlan0 IP → 轮询 `adb connect <ip>:5555` 直到成功或超时。
+/// connect 成功后立即用 USB 行的 hw_serial 主动 upsert wifi 行 + reconcile（单事务），
+/// 防止 wifi transport 握手未稳时 monitor 走 placeholder 路径产生 hw_serial 占位
+/// 的孤儿 wifi 行（race condition）。
 #[tauri::command]
 pub async fn switch_device_to_wifi(
     serial: String,
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
-    ensure_registered_device(&state, &serial).await?;
-    if serial.contains(':') {
+    let usb_row = state
+        .db
+        .get_device_by_serial(&serial)
+        .await
+        .ok_or_else(|| format!("设备 {} 不存在", serial))?;
+
+    if usb_row.device_type == constants::device_type::WIFI {
         return Err("当前已是无线连接，无需切换".to_string());
     }
 
     let ip = connection::adb::fetch_wlan_ipv4_async(&serial).await?;
     connection::adb::enable_tcpip_async(&serial, 5555).await?;
-    // adbd 重启需 1–2s 才能在 wifi 接口监听
-    tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
 
+    // adbd 重启后 ~1–2s 才能在 wifi 接口监听；不再用固定 sleep，改成轮询：
+    // 首次成功立即返回，最坏 MAX_RETRIES × INTERVAL_MS 后报错给前端。
     let address = format!("{}:5555", ip);
-    connection::adb::connect_wifi_via_adb_async(&address).await?;
+    let mut last_err: Option<String> = None;
+    let mut connected = false;
+    for attempt in 0..constants::timing::WIFI_HANDSHAKE_MAX_RETRIES {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(
+                constants::timing::WIFI_HANDSHAKE_RETRY_INTERVAL_MS,
+            ))
+            .await;
+        }
+        match connection::adb::connect_wifi_via_adb_async(&address).await {
+            Ok(_) => {
+                connected = true;
+                break;
+            },
+            Err(e) => last_err = Some(e),
+        }
+    }
+    if !connected {
+        return Err(last_err.unwrap_or_else(|| "ADB WiFi 连接超时".to_string()));
+    }
+
+    // 用 USB 行属性克隆出 wifi 行（保留真实 hw_serial），原子地 upsert + reconcile，
+    // 把旧 USB 行的引用迁移到 wifi serial 并删除之。命令返回时 DB 已是单行 wifi。
+    let now_ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let mut wifi_row = usb_row.clone();
+    wifi_row.serial = address.clone();
+    wifi_row.device_type = constants::device_type::WIFI.to_string();
+    wifi_row.address = Some(address.clone());
+    wifi_row.state = constants::device_state::DEVICE.to_string();
+    wifi_row.updated_at = now_ts;
+    state
+        .db
+        .upsert_and_reconcile_by_hw_serial(&wifi_row, &usb_row.hw_serial)
+        .await;
 
     let _ = app.emit(constants::tauri_event::DEVICES_CHANGED, ());
     Ok(format!("已切换到无线 {}，可拔出 USB 数据线", address))

@@ -334,7 +334,18 @@ pub fn spawn_device_monitor(
 
                 if state != constants::device_state::DEVICE {
                     let row = placeholder_device_row(&serial, state, existing.as_ref());
-                    db_block_on(&rt_cb, db_cb.upsert_device(&row));
+                    // Ghost 防御：当前 transport serial 在 DB 没记录，
+                    // 但同一物理设备（hw_serial 一致）的另一 transport 已存在 →
+                    // 此次状态变化属于已被 reconcile 合并掉的旧 transport，
+                    // upsert 会重新 INSERT 一条幽灵 OFFLINE 行（USB ↔ 无线切换后拔线常见）。
+                    let is_ghost_transport = existing.is_none() && {
+                        db_block_on(&rt_cb, db_cb.get_device_by_hw_serial(&row.hw_serial))
+                            .map(|other| other.serial != serial)
+                            .unwrap_or(false)
+                    };
+                    if !is_ghost_transport {
+                        db_block_on(&rt_cb, db_cb.upsert_device(&row));
+                    }
                     schedule_devices_changed_emit(&handle_cb, &rt_cb, &emit_pending);
                     return Ok(());
                 }

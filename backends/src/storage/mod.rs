@@ -371,6 +371,23 @@ impl Database {
 /// a_task_runs / a_task_progress 中其他 serial 的引用迁移到 winner，loser 的
 /// local_port 继承到 winner（仅当 winner 为空），最后删除 loser。
 fn dedupe_devices_by_hw_serial(conn: &mut Connection) -> rusqlite::Result<()> {
+    // 先清理"孤儿 wifi placeholder 行"——切换到无线时若 wifi transport 还没握手稳定
+    // 用户就关闭 USB 调试 / 拔线，monitor 在 non-DEVICE 分支用 IP:port 当 hw_serial
+    // 占位 upsert 出一条 wifi-Offline 行；它跟同物理设备的真实 hw_serial USB 行分不到
+    // 一组，下面的 hw_serial 分组合并触不到。这种"hw_serial 等于 IP:port serial 且离线"
+    // 的 wifi 行 99% 是 race 残留，启动时一并删除。
+    // LOWER() 包裹防止历史数据 case 漂移（'WiFi' / 'OFFLINE' 等）漏删
+    let orphan_removed = conn.execute(
+        "DELETE FROM a_devices
+         WHERE LOWER(device_type) = 'wifi'
+           AND hw_serial = serial
+           AND LOWER(state) = 'offline'",
+        [],
+    )?;
+    if orphan_removed > 0 {
+        info!(removed = orphan_removed, "启动期清理孤儿 wifi placeholder 行");
+    }
+
     type Row = (String, String, i64, Option<i64>);
     let rows: Vec<Row> = {
         let mut stmt = conn.prepare(

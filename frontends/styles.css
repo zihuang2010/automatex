@@ -1170,8 +1170,7 @@
 /* ══════ MIRROR ══════ */
 
 /* 设备卡片投屏按钮 */
-.dev-mirror-btn,
-.dev-wifi-btn {
+.dev-mirror-btn {
   @apply flex items-center justify-center rounded-md transition-all;
   width: 22px;
   height: 22px;
@@ -1181,20 +1180,43 @@
   border: none;
 }
 
-.dev-mirror-btn:hover,
-.dev-wifi-btn:hover {
+.dev-mirror-btn:hover {
   color: var(--color-blue);
   background: rgba(37, 99, 235, 0.1);
 }
 
-.dev-mirror-btn .material-symbols-outlined,
-.dev-wifi-btn .material-symbols-outlined {
+.dev-mirror-btn .material-symbols-outlined {
   font-size: 14px;
 }
 
-.dev-wifi-btn:disabled {
-  cursor: wait;
-  opacity: 0.6;
+/* 设备卡片左侧 transport 图标按钮 —— USB 可点切到无线，其他状态 disabled */
+.dev-transport-btn {
+  @apply transition-all;
+  cursor: pointer;
+  background: transparent;
+}
+
+.dev-transport-btn[data-transport-switch]:hover:not(:disabled) {
+  border-color: var(--color-blue);
+  color: var(--color-blue);
+  background: rgba(37, 99, 235, 0.06);
+}
+
+.dev-transport-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.85;
+}
+
+.dev-transport-wifi-badge {
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  font-size: 10px !important;
+  background: white;
+  border-radius: 50%;
+  padding: 1px;
+  color: var(--color-blue);
+  line-height: 1;
 }
 
 @keyframes dev-btn-spin {
@@ -1203,8 +1225,12 @@
   }
 }
 
-.dev-wifi-btn.is-loading .material-symbols-outlined {
+.dev-transport-btn.is-loading .dev-transport-main {
   animation: dev-btn-spin 0.9s linear infinite;
+}
+
+.dev-transport-btn.is-loading {
+  cursor: wait;
 }
 
 /* ═══════════════════════════════════════════════════
