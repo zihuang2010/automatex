@@ -1,6 +1,6 @@
 [package]
 name = "automatex"
-version = "1.0.6"
+version = "1.0.7"
 description = "AutomateX — ADB Device Manager"
 authors = ["you"]
 edition = "2021"
