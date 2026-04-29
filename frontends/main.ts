@@ -1,6 +1,7 @@
 /**
  * AutomateX — Application Entry Point
  */
+import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import { type UnlistenFn, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -638,6 +639,19 @@ window.addEventListener('DOMContentLoaded', () => {
   appBootstrapped = true;
   // ── Step 0: 初始化主题 ──
   initTheme();
+
+  // ── Step 0.1: 把所有 .js-app-version 元素替换成真实版本号（从 tauri.conf.json 读）──
+  // 元素自己负责前缀（v/V/Version），JS 只填裸版本号 1.0.6
+  void (async () => {
+    try {
+      const v = await getVersion();
+      document.querySelectorAll<HTMLElement>('.js-app-version').forEach(el => {
+        el.textContent = v;
+      });
+    } catch (err) {
+      console.warn('[main] 读取 app version 失败:', err);
+    }
+  })();
 
   // ── Step 0.5: 自定义窗口控件（全平台 decorations: false）──
   const currentPlatform = platform();

@@ -67,7 +67,12 @@ function showUpdateModal(info: UpdateInfo) {
 
   if (versionEl) versionEl.textContent = info.version;
   if (currentEl) currentEl.textContent = info.current_version;
-  if (notesEl) notesEl.textContent = info.notes?.trim() || '本次更新没有提供说明。';
+  if (notesEl) {
+    const md = info.notes?.trim();
+    notesEl.innerHTML = md
+      ? renderNotesMarkdown(md)
+      : '<p class="text-s500">本次更新没有提供说明。</p>';
+  }
   if (progressWrap) progressWrap.style.display = 'none';
   if (progressBar) progressBar.style.width = '0%';
   if (progressText) progressText.textContent = '';
@@ -104,6 +109,74 @@ function setProgress(progress: UpdateProgress) {
     progressBar.style.width = '100%';
     progressText.textContent = `${formatBytes(progress.downloaded)} 已下载`;
   }
+}
+
+/**
+ * 极简 Markdown 渲染：覆盖 CHANGELOG 里实际用到的语法
+ * - `### header` → 小标题
+ * - `- item` → bullet 列表
+ * - `` `code` `` → inline code
+ * - 其他行 → 段落
+ *
+ * 安全性：先 HTML escape 再做替换，避免 XSS。
+ * 内容来源是 OSS 上由我们控制的 CHANGELOG，非用户输入；escape 是兜底。
+ */
+function renderNotesMarkdown(md: string): string {
+  const escape = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+  const inlineCode = (escaped: string) =>
+    escaped.replace(
+      /`([^`]+)`/g,
+      '<code class="bg-s100 text-s700 rounded px-1 py-0.5 font-mono text-[11px]">$1</code>',
+    );
+
+  const lines = md.split('\n');
+  const out: string[] = [];
+  let inList = false;
+  const closeList = () => {
+    if (inList) {
+      out.push('</ul>');
+      inList = false;
+    }
+  };
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) {
+      closeList();
+      continue;
+    }
+    // ### / ## 标题
+    const headerMatch = line.match(/^(#{2,4})\s+(.+)$/);
+    if (headerMatch) {
+      closeList();
+      const level = headerMatch[1].length;
+      const text = inlineCode(escape(headerMatch[2].trim()));
+      const cls =
+        level === 2
+          ? 'text-s800 mt-3 mb-1 text-[14px] font-bold first:mt-0'
+          : 'text-s700 mt-3 mb-1 text-[12.5px] font-bold first:mt-0';
+      out.push(`<h4 class="${cls}">${text}</h4>`);
+      continue;
+    }
+    // - bullet
+    if (line.startsWith('- ') || line.startsWith('* ')) {
+      if (!inList) {
+        out.push(
+          '<ul class="text-s600 my-1 list-outside list-disc space-y-1 pl-4 leading-relaxed">',
+        );
+        inList = true;
+      }
+      out.push(`<li>${inlineCode(escape(line.slice(2).trim()))}</li>`);
+      continue;
+    }
+    // 段落
+    closeList();
+    out.push(`<p class="text-s600 my-1 leading-relaxed">${inlineCode(escape(line))}</p>`);
+  }
+  closeList();
+  return out.join('\n');
 }
 
 function formatBytes(n: number): string {
