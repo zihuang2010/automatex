@@ -734,6 +734,14 @@ window.addEventListener('DOMContentLoaded', () => {
         showToast(`切换无线失败: ${e}`, 'error');
       }
     },
+    async (serial: string) => {
+      try {
+        const msg = await invoke<string>('disconnect_device_wifi', { serial });
+        showToast(msg, 'info');
+      } catch (e) {
+        showToast(`断开无线失败: ${e}`, 'error');
+      }
+    },
   );
   setTaskViewCallbacks(
     () => updateCardSelection(),

@@ -10,6 +10,7 @@ let _onLoadTasksForDevice: ((serial: string) => void) | null = null;
 let _onShowDeviceInfo: ((serial: string) => void) | null = null;
 let _onStartMirror: ((serial: string) => void) | null = null;
 let _onSwitchToWifi: ((serial: string) => void | Promise<void>) | null = null;
+let _onDisconnectWifi: ((serial: string) => void | Promise<void>) | null = null;
 let _pendingRafId: number | null = null;
 let _deviceCache: DeviceRow[] = [];
 // 正在切到无线的 serial 集合：作为 spinner 状态的唯一来源，
@@ -37,11 +38,13 @@ export function setDeviceCallbacks(
   onShowDeviceInfo: (serial: string) => void,
   onStartMirror?: (serial: string) => void,
   onSwitchToWifi?: (serial: string) => void | Promise<void>,
+  onDisconnectWifi?: (serial: string) => void | Promise<void>,
 ) {
   _onLoadTasksForDevice = onLoadTasks;
   _onShowDeviceInfo = onShowDeviceInfo;
   _onStartMirror = onStartMirror ?? null;
   _onSwitchToWifi = onSwitchToWifi ?? null;
+  _onDisconnectWifi = onDisconnectWifi ?? null;
 }
 
 /* ===== Device List ===== */
@@ -125,8 +128,11 @@ interface TransportCtx {
 function transportIconButton(d: DeviceRow, ctx: TransportCtx): string {
   const isWifi = d.device_type === 'wifi';
   const switching = _switchingSerials.has(d.serial);
-  const clickable =
+  // USB 状态下：仅 ready 可点（切到无线）
+  // WiFi 状态下：在线即可点（断开无线）
+  const usbClickable =
     !isWifi && !ctx.running && !ctx.flagged && !ctx.hasError && !ctx.offline && !switching;
+  const wifiClickable = isWifi && !ctx.offline && !switching;
 
   let frameCls: string;
   if (ctx.offline) {
@@ -145,9 +151,9 @@ function transportIconButton(d: DeviceRow, ctx: TransportCtx): string {
 
   let title: string;
   if (switching) {
-    title = '切换中…';
+    title = isWifi ? '断开中…' : '切换中…';
   } else if (isWifi) {
-    title = '已是无线连接';
+    title = ctx.offline ? '设备离线' : '已连接无线 — 点击断开';
   } else if (ctx.offline) {
     title = '设备离线';
   } else if (ctx.hasError) {
@@ -161,7 +167,14 @@ function transportIconButton(d: DeviceRow, ctx: TransportCtx): string {
   }
 
   // switching 状态由 _switchingSerials Set 驱动，跨 re-render 保持
-  const switchAttr = clickable ? `data-transport-switch="${esc(d.serial)}"` : 'disabled';
+  let actionAttr: string;
+  if (usbClickable) {
+    actionAttr = `data-transport-switch="${esc(d.serial)}"`;
+  } else if (wifiClickable) {
+    actionAttr = `data-transport-disconnect="${esc(d.serial)}"`;
+  } else {
+    actionAttr = 'disabled';
+  }
   const loadingCls = switching ? ' is-loading' : '';
   const mainIcon = switching ? 'progress_activity' : 'smartphone';
   const wifiBadge =
@@ -169,7 +182,7 @@ function transportIconButton(d: DeviceRow, ctx: TransportCtx): string {
       ? '<span class="dev-transport-wifi-badge material-symbols-outlined">wifi</span>'
       : '';
 
-  return `<button type="button" class="dev-transport-btn${loadingCls} h-9 w-9 rounded-md ${frameCls} border flex items-center justify-center shrink-0 relative" title="${esc(title)}" ${switchAttr}>
+  return `<button type="button" class="dev-transport-btn${loadingCls} h-9 w-9 rounded-md ${frameCls} border flex items-center justify-center shrink-0 relative" title="${esc(title)}" ${actionAttr}>
       <span class="dev-transport-main material-symbols-outlined text-xl fill-1">${mainIcon}</span>
       ${wifiBadge}
     </button>`;
@@ -473,6 +486,18 @@ function attachDelegatedListeners(tree: HTMLElement) {
       return;
     }
 
+    // 1b) transport 按钮（WiFi → 主动断开）
+    const disconnectBtn = target.closest<HTMLButtonElement>(
+      '.dev-transport-btn[data-transport-disconnect]',
+    );
+    if (disconnectBtn) {
+      e.stopPropagation();
+      const serial = disconnectBtn.dataset.transportDisconnect;
+      if (!serial || disconnectBtn.disabled || !_onDisconnectWifi) return;
+      void handleDisconnectWifi(serial);
+      return;
+    }
+
     // 2) 投屏按钮
     const mirrorBtn = target.closest<HTMLElement>('.dev-mirror-btn');
     if (mirrorBtn) {
@@ -515,6 +540,18 @@ async function handleSwitchToWifi(serial: string) {
     _switchingSerials.delete(serial);
     // 命令成功通常会触发 devices-changed → refreshDevices；
     // 失败时这一步用缓存重绘把 spinner 状态清回正常，避免假死
+    rerenderDeviceCardsFromCache();
+  }
+}
+
+async function handleDisconnectWifi(serial: string) {
+  if (_switchingSerials.has(serial) || !_onDisconnectWifi) return;
+  _switchingSerials.add(serial);
+  rerenderDeviceCardsFromCache();
+  try {
+    await _onDisconnectWifi(serial);
+  } finally {
+    _switchingSerials.delete(serial);
     rerenderDeviceCardsFromCache();
   }
 }

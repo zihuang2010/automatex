@@ -349,6 +349,7 @@ pub fn run() {
             remove_device,
             list_devices,
             switch_device_to_wifi,
+            disconnect_device_wifi,
             execute_shell,
             get_device_info,
             install_apk,

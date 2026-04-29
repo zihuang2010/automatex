@@ -215,6 +215,14 @@ pub async fn switch_device_to_wifi(
             Err(e) => {
                 warn!(attempt = attempt + 1, error = %e, "[switch_to_wifi] connect 失败");
                 last_err = Some(e);
+                // 第 3 次失败（attempt index 2）后清一次 ADB server transport 缓存。
+                // adb server 会缓存 endpoint 的 unreachable 状态，kill+start 可强制刷新。
+                if attempt == 2 {
+                    info!("[switch_to_wifi] 重启 ADB server 以清理 transport 缓存");
+                    if let Err(re) = connection::adb::kill_restart_adb_server().await {
+                        warn!(error = %re, "[switch_to_wifi] ADB server 重启失败");
+                    }
+                }
             },
         }
     }
@@ -243,6 +251,30 @@ pub async fn switch_device_to_wifi(
 
     let _ = app.emit(constants::tauri_event::DEVICES_CHANGED, ());
     Ok(format!("已切换到无线 {}，可拔出 USB 数据线", address))
+}
+
+/// 主动断开当前 WiFi 连接的设备，从 DB 移除该 wifi 行。
+/// 若同 hw_serial 的设备仍以 USB 在线，monitor 下一轮扫描会自动加回 USB 行。
+#[tauri::command]
+pub async fn disconnect_device_wifi(
+    serial: String,
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    ensure_registered_device(&state, &serial).await?;
+
+    if !serial.contains(':') {
+        return Err("当前设备不是无线连接，无需断开".to_string());
+    }
+
+    info!(serial = %serial, "[disconnect_wifi] 开始");
+    let msg = connection::adb::disconnect_wifi_via_adb_async(&serial).await?;
+
+    state.db.delete_device(&serial).await;
+
+    let _ = app.emit(constants::tauri_event::DEVICES_CHANGED, ());
+    info!(serial = %serial, "[disconnect_wifi] 完成");
+    Ok(msg)
 }
 
 #[tauri::command]

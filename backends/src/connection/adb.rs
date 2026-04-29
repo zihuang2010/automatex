@@ -276,6 +276,26 @@ pub fn resolve_adb_port() {
     );
 }
 
+/// 重启 ADB server：kill-server → 短暂等待 → start-server。
+/// 用于 transport 缓存陈旧（"No route to host"）等场景的本地恢复。
+pub async fn kill_restart_adb_server() -> Result<(), String> {
+    let port = adb_port();
+
+    let mut kill = adb_command();
+    kill.arg("kill-server");
+    if let Err(e) = run_adb_timed(&mut kill, 5) {
+        warn!(error = %e, "kill-server 失败（可能 server 未运行，将继续 start-server）");
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let mut start = adb_command_raw();
+    start.args(["-P", &port.to_string(), "start-server"]);
+    run_adb_timed(&mut start, 10)
+        .map(|_| ())
+        .map_err(|e| format!("start-server 失败: {}", e))
+}
+
 /// 二进制完整性校验：验证 sidecar 文件存在且大小合理
 ///
 /// 检测点：文件存在、大小 > 100KB（防截断）、可读。
