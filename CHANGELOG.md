@@ -8,6 +8,18 @@
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-04-28
+
+### 修复
+
+- USB→WiFi 切换在 adb server 缓存了 endpoint 为 unreachable 状态时，仍会立即报 `No route to host` 的 bug：在 connect 重试前主动 `adb disconnect` 一次清掉 transport tracker 缓存，让重试真正去做 TCP 探测，不再读 stale 状态。这是慢网络下切换失败的最根本原因（adb daemon 一次失败就缓存，之后所有 connect 25ms 内立即返回失败，根本不真做 TCP）。
+- USB→WiFi 切换 connect 重试预算从 2.5s 提升到 9s：新增 1.5s 初始等待让手机 adbd 先切到 TCP 监听 + WiFi 网卡 ARP 上线，重试间隔从 500ms 调到 1500ms。
+- USB→WiFi 切换在多 ADB server 共存环境下（电脑同时跑 Android Studio 等占用 5037 端口的工具）报 `No route to host` 的 bug：`run_adb_async_raw` 现在跟同步版 `adb_command()` 行为一致，非默认端口自动注入 `-P <port>`，确保 `adb connect` / `disconnect` 命令打到 app 自己的 adb server 而不是别人家的。
+
+### 内部
+
+- USB→WiFi 切换流程加全链路 `INFO` 级日志：`[switch_to_wifi]` / `[connect_wifi]` / `[run_adb_async_raw]`，包含 adb path / port / args / exit / 耗时 / stdout / stderr，方便后续诊断。
+
 ## [1.0.5] - 2026-04-28
 
 ### 新增
